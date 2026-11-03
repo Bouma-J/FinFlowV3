@@ -9,24 +9,31 @@
 # l'installation (/root/.config/finflow/github.token) est réutilisé. Sinon :
 #   sudo GITHUB_TOKEN='ghp_…' bash deploy/ubuntu-update.sh
 #
+# Le code neuf est cloné dans une copie propre (/opt/finflow-update),
+# puis copié vers l'installation. On ne fait pas git pull dans /opt/finflow :
+# l'installation y modifie des fichiers et ferait échouer la fusion.
+# Le fichier .env de l'installation est conservé.
+#
 # Usage :
+#   sudo git clone https://github.com/Bouma-J/FinFlowV3.git /opt/finflow-update
+#   sudo bash /opt/finflow-update/deploy/ubuntu-update.sh
+#   sudo bash /opt/finflow-update/deploy/ubuntu-update.sh /opt/finflow
 #   sudo finflow-update
-#   sudo bash deploy/ubuntu-update.sh
-#   sudo bash deploy/ubuntu-update.sh /opt/finflow
 #   sudo bash deploy/ubuntu-update.sh --check /opt/finflow
 #
 # Options (variables d'environnement) :
-#   INSTALL_DIR=/opt/finflow   Répertoire d'installation
-#   GIT_BRANCH=main            Branche à tirer
-#   REPO_URL=…                 Dépôt (défaut : FinFlowV3)
-#   GITHUB_TOKEN=…             Jeton Contents: Read, si pas encore enregistré
-#   SKIP_BACKUP=1              Ne pas sauvegarder la DB avant update
-#   SKIP_GIT=1                 Ne pas faire git pull (images/code déjà présents)
-#   SKIP_BUILD=0               1 = up -d sans --build (déconseillé)
+#   INSTALL_DIR=/opt/finflow       Répertoire d'installation (la pile qui tourne)
+#   UPDATE_DIR=/opt/finflow-update Copie Git propre, séparée de l'installation
+#   GIT_BRANCH=main                Branche à tirer
+#   REPO_URL=…                     Dépôt (défaut : FinFlowV3)
+#   GITHUB_TOKEN=…                 Jeton Contents: Read, si le dépôt est privé
+#   SKIP_BACKUP=1                  Ne pas sauvegarder la DB avant update
+#   SKIP_GIT=1                     Ne pas chercher de nouveau code
+#   SKIP_BUILD=0                   1 = up -d sans --build (déconseillé)
 #
 # Le script :
 #   1. (optionnel) snapshot Postgres + MinIO + secrets
-#   2. git fetch + pull --ff-only
+#   2. clone ou pull dans /opt/finflow-update, puis copie vers l'installation
 #   3. docker compose pull + up -d --build
 #      (mode IP / IP+TLS via deploy/compose-files.sh)
 #   4. migrate + sync_role_packs + bootstrap_all_tenants
@@ -43,7 +50,16 @@ SCRIPT_DIR="$(cd "$(dirname "$_self")" && pwd)"
 source "${SCRIPT_DIR}/lib-ubuntu.sh"
 
 INSTALL_DIR_DEFAULT="/opt/finflow"
+UPDATE_DIR_DEFAULT="/opt/finflow-update"
 REPO_URL_DEFAULT="$FINFLOW_REPO_DEFAULT"
+
+if [[ "${FINFLOW_UPDATE_RUNNER:-}" != "1" ]]; then
+  _runner="$(mktemp -d /tmp/finflow-update.XXXXXX)"
+  cp "${SCRIPT_DIR}/ubuntu-update.sh" "${SCRIPT_DIR}/lib-ubuntu.sh" "$_runner/"
+  export FINFLOW_UPDATE_RUNNER=1
+  exec bash "$_runner/ubuntu-update.sh" "$@"
+fi
+trap 'rm -rf "$SCRIPT_DIR"' EXIT
 
 if [[ -t 1 ]]; then
   C_INFO='\033[1;36m'
@@ -174,29 +190,52 @@ ensure_mail_env() {
   fi
 }
 
-pull_code() {
-  local dir="$1"
+refresh_stage() {
+  local stage="$1"
   local branch="$2"
   local repo="$3"
 
-  if [[ ! -d "$dir/.git" ]]; then
-    warn "Pas de dépôt git dans $dir — skip git pull."
+  finflow_prepare_git_auth
+  if [[ -d "$stage/.git" && -f "$stage/docker-compose.yml" ]]; then
+    log "Mise à jour de la copie propre ${stage}"
+    finflow_git "$stage" remote set-url origin "$repo"
+    if ! finflow_git "$stage" fetch --all --prune; then
+      die "git fetch impossible pour ${repo}. Si le dépôt est privé, enregistrez un jeton dans ${FINFLOW_GIT_TOKEN_FILE}."
+    fi
+    finflow_git "$stage" checkout "$branch"
+    finflow_git "$stage" pull --ff-only origin "$branch"
     return
   fi
-  finflow_prepare_git_auth
-  log "git fetch / checkout ${branch} / pull --ff-only…"
-  finflow_git "$dir" remote set-url origin "$repo"
-  if ! finflow_git "$dir" fetch --all --prune; then
-    die "git fetch impossible pour ${repo}.
-Si le dépôt est privé, enregistrez un jeton GitHub (Contents: Read) :
-  sudo install -d -m 700 /root/.config/finflow
-  sudo tee ${FINFLOW_GIT_TOKEN_FILE} >/dev/null
-  sudo chmod 600 ${FINFLOW_GIT_TOKEN_FILE}
-Puis relancez : sudo finflow-update"
+
+  if [[ -d "$stage" && -n "$(ls -A "$stage" 2>/dev/null || true)" ]]; then
+    die "${stage} n'est pas un clone FinFlow. Videz-le ou choisissez un autre UPDATE_DIR."
   fi
-  finflow_git "$dir" checkout "$branch"
-  finflow_git "$dir" pull --ff-only origin "$branch"
-  ok "Code à jour : $(finflow_git "$dir" rev-parse --short HEAD) ($(finflow_git "$dir" log -1 --pretty=%s))"
+  log "Clone propre de ${repo} (${branch}) → ${stage}"
+  mkdir -p "$(dirname "$stage")"
+  finflow_clone "$repo" "$stage" "$branch" \
+    || die "git clone impossible pour ${repo}."
+}
+
+apply_stage() {
+  local stage="$1"
+  local dest="$2"
+
+  [[ -f "$stage/docker-compose.yml" ]] || die "Code source incomplet : ${stage}"
+  command -v rsync >/dev/null 2>&1 || die "rsync est requis : sudo apt-get install -y rsync"
+  log "Copie ${stage} → ${dest} (.env et état local conservés)"
+  rsync -a --delete \
+    --exclude '.env' \
+    --exclude '.git/' \
+    --exclude '.finflow-deploy-mode' \
+    --exclude '.finflow-tls-mode' \
+    --exclude 'node_modules/' \
+    --exclude '.venv/' \
+    --exclude 'backend/media/' \
+    --exclude 'backend/staticfiles/' \
+    --exclude 'backend/certs/ca-bundle.crt' \
+    --exclude 'frontend/certs/ca-bundle.crt' \
+    "${stage}/" "${dest}/"
+  ok "Code appliqué : $(git -C "$stage" rev-parse --short HEAD) ($(git -C "$stage" log -1 --pretty=%s))"
 }
 
 chmod_deploy_scripts() {
@@ -387,7 +426,7 @@ main() {
     case "$1" in
       --check) check=1; shift ;;
       -h|--help)
-        sed -n '2,34p' "$0"
+        sed -n '2,40p' "$0"
         exit 0
         ;;
       *)
@@ -407,6 +446,7 @@ main() {
 
   local branch="${GIT_BRANCH:-main}"
   local repo="${REPO_URL:-$REPO_URL_DEFAULT}"
+  local stage="${UPDATE_DIR:-$UPDATE_DIR_DEFAULT}"
   local skip_backup="${SKIP_BACKUP:-0}"
   local skip_git="${SKIP_GIT:-0}"
   local skip_build="${SKIP_BUILD:-0}"
@@ -427,6 +467,7 @@ main() {
 
   COMPOSE_FILES="$(detect_compose_files "$dir")"
   log "Install dir : $dir"
+  log "Copie Git   : $stage"
   log "Compose     : docker compose $COMPOSE_FILES"
   log "Branche     : $branch"
 
@@ -437,9 +478,10 @@ main() {
   fi
 
   if [[ "$skip_git" != "1" ]]; then
-    pull_code "$dir" "$branch" "$repo"
+    refresh_stage "$stage" "$branch" "$repo"
+    apply_stage "$stage" "$dir"
   else
-    warn "SKIP_GIT=1 — pas de git pull."
+    warn "SKIP_GIT=1 — le code de ${dir} n'est pas remplacé."
   fi
 
   chmod_deploy_scripts "$dir"

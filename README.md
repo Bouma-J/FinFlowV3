@@ -131,9 +131,8 @@ sudo bash deploy/ubuntu-install.sh
 Mise à jour d’une instance déjà en production :
 
 ```bash
-sudo finflow-update
-# ou :
-sudo bash /opt/finflow/deploy/ubuntu-update.sh
+sudo git clone https://github.com/Bouma-J/FinFlowV3.git /opt/finflow-update
+sudo bash /opt/finflow-update/deploy/ubuntu-update.sh
 ```
 
 Détail : [`documentation/13-guide-deploiement-ubuntu.md`](documentation/13-guide-deploiement-ubuntu.md), scripts `deploy/ubuntu-install.sh`, `deploy/ubuntu-install-ip.sh` et `deploy/ubuntu-update.sh`.

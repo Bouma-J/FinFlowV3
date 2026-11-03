@@ -39,11 +39,14 @@ sudo bash deploy/ubuntu-install-ip.sh
 
 **Mise à jour (instance déjà déployée) :**
 
+Le code neuf est cloné dans `/opt/finflow-update`, puis copié vers `/opt/finflow`. Le `.env` de l’installation n’est pas écrasé, et on ne fait pas `git pull` dans le dossier qui tourne.
+
 ```bash
-sudo finflow-update
-# ou :
-sudo bash /opt/finflow/deploy/ubuntu-update.sh
+sudo git clone https://github.com/Bouma-J/FinFlowV3.git /opt/finflow-update
+sudo bash /opt/finflow-update/deploy/ubuntu-update.sh
 ```
+
+Les fois suivantes : `sudo finflow-update`.
 
 Le script d’update : backup DB → `git pull` → `docker compose up -d --build` → `migrate` → `sync_role_packs` → `bootstrap_all_tenants` (circuits ML / Dation / Formalisation). Les scripts d’install demandent IP ou domaines, mots de passe PostgreSQL/MinIO, `DJANGO_SECRET_KEY`, etc., puis déploient sous `/opt/finflow` (personnalisable). Le mode IP utilise [`docker-compose.ip.yml`](../docker-compose.ip.yml) (MinIO sur `:9000` en HTTP) et, une fois HTTPS activé, [`docker-compose.ip-tls.yml`](../docker-compose.ip-tls.yml) (MinIO en `127.0.0.1:19000`, Nginx termine le TLS sur `:443` et `:9000`). Les sections ci-dessous restent la référence manuelle pas à pas.
 
