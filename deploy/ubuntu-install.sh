@@ -2,9 +2,11 @@
 # =========================================================================
 # FIN_FLOW — déploiement interactif Ubuntu (22.04 / 24.04 LTS)
 #
-# Usage (depuis une machine Ubuntu, avec sudo) :
-#   curl -fsSL https://raw.githubusercontent.com/Bouma-J/FinFlow/main/deploy/ubuntu-install.sh | sudo bash
-#   # ou, si le dépôt est déjà cloné :
+# Cible : Ubuntu Server 22.04 / 24.04 LTS (sans interface graphique).
+# Dépôt public : aucun jeton. S'il redevient privé, le script demande
+# un jeton GitHub (Contents: Read) et le range hors du projet.
+#
+# Usage, sur le serveur, après un premier clone authentifié :
 #   sudo bash deploy/ubuntu-install.sh
 #
 # Le script demande les domaines, mots de passe DB/MinIO, e-mail Certbot, etc.,
@@ -19,7 +21,15 @@
 # =========================================================================
 set -euo pipefail
 
-REPO_URL_DEFAULT="https://github.com/Bouma-J/FinFlow.git"
+_self="${BASH_SOURCE[0]}"
+if [[ -L "$_self" ]]; then
+  _self="$(readlink -f "$_self")"
+fi
+SCRIPT_DIR="$(cd "$(dirname "$_self")" && pwd)"
+# shellcheck disable=SC1091
+source "${SCRIPT_DIR}/lib-ubuntu.sh"
+
+REPO_URL_DEFAULT="$FINFLOW_REPO_DEFAULT"
 INSTALL_DIR_DEFAULT="/opt/finflow"
 COMPOSE_FILES="-f docker-compose.yml -f docker-compose.prod.yml"
 DEPLOY_MODE="domain"
@@ -52,10 +62,10 @@ prompt() {
   local label="$1"
   local def="${2:-}"
   if [[ -n "$def" ]]; then
-    read -r -p "$label [$def] : " REPLY || true
+    finflow_read -r -p "$label [$def] : " REPLY
     REPLY="${REPLY:-$def}"
   else
-    read -r -p "$label : " REPLY || true
+    finflow_read -r -p "$label : " REPLY
   fi
 }
 
@@ -63,12 +73,12 @@ prompt_secret() {
   local label="$1"
   local def="${2:-}"
   if [[ -n "$def" ]]; then
-    read -r -s -p "$label [généré si vide] : " REPLY || true
-    echo
+    finflow_read -r -s -p "$label [généré si vide] : " REPLY
+    finflow_newline
     REPLY="${REPLY:-$def}"
   else
-    read -r -s -p "$label : " REPLY || true
-    echo
+    finflow_read -r -s -p "$label : " REPLY
+    finflow_newline
   fi
 }
 
@@ -77,7 +87,7 @@ ask_yes_no() {
   local def="${2:-y}"
   local hint="y/N"
   [[ "$def" == "y" || "$def" == "Y" ]] && hint="Y/n"
-  read -r -p "$label [$hint] : " REPLY || true
+  finflow_read -r -p "$label [$hint] : " REPLY
   REPLY="${REPLY:-$def}"
   [[ "$REPLY" =~ ^[yYoO] ]]
 }
@@ -122,9 +132,29 @@ detect_ubuntu() {
   esac
 }
 
+ensure_swap() {
+  local mem swap
+  mem="$(awk '/MemTotal/{print $2}' /proc/meminfo)"
+  swap="$(awk '/SwapTotal/{print $2}' /proc/meminfo)"
+  if [[ "$mem" -ge 4000000 || "$swap" -gt 0 ]]; then
+    return
+  fi
+  warn "Moins de 4 Go de RAM et aucun swap — le build Docker peut être tué (OOM)."
+  if ask_yes_no "Créer un fichier de swap de 2 Go (/swapfile) ?" "y"; then
+    if ! fallocate -l 2G /swapfile 2>/dev/null; then
+      dd if=/dev/zero of=/swapfile bs=1M count=2048 status=progress
+    fi
+    chmod 600 /swapfile
+    mkswap /swapfile
+    swapon /swapfile
+    grep -q '/swapfile' /etc/fstab || echo '/swapfile none swap sw 0 0' >> /etc/fstab
+    ok "Swap 2 Go actif."
+  fi
+}
+
 install_base_packages() {
   log "Mise à jour APT et paquets de base…"
-  export DEBIAN_FRONTEND=noninteractive
+  finflow_prepare_apt
   apt-get update -y
   apt-get upgrade -y
   apt-get install -y \
@@ -139,24 +169,18 @@ install_base_packages() {
 install_docker() {
   if command -v docker >/dev/null 2>&1 && docker compose version >/dev/null 2>&1; then
     ok "Docker déjà installé : $(docker --version)"
-    return
+  else
+    log "Installation Docker Engine + Compose plugin…"
+    finflow_install_docker
+    ok "Docker installé."
   fi
-  log "Installation Docker Engine + Compose plugin…"
-  install -m 0755 -d /etc/apt/keyrings
-  curl -fsSL https://download.docker.com/linux/ubuntu/gpg \
-    | gpg --dearmor -o /etc/apt/keyrings/docker.gpg
-  chmod a+r /etc/apt/keyrings/docker.gpg
-  # shellcheck disable=SC1091
-  . /etc/os-release
-  echo \
-    "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] \
-    https://download.docker.com/linux/ubuntu ${VERSION_CODENAME} stable" \
-    > /etc/apt/sources.list.d/docker.list
-  apt-get update -y
-  apt-get install -y docker-ce docker-ce-cli containerd.io \
-    docker-buildx-plugin docker-compose-plugin
-  systemctl enable --now docker
-  ok "Docker installé."
+  local logs
+  logs="$(finflow_docker_log_limits || true)"
+  case "$logs" in
+    restarted) ok "Rotation des logs Docker activée (20 Mo × 3)." ;;
+    deferred) warn "Rotation écrite dans /etc/docker/daemon.json. Redémarrez Docker quand la pile pourra s'arrêter." ;;
+    *) log "Rotation des logs Docker déjà configurée." ;;
+  esac
 }
 
 configure_ufw() {
@@ -164,13 +188,10 @@ configure_ufw() {
   ufw default deny incoming
   ufw default allow outgoing
 
-  # Profil « OpenSSH » absent si openssh-server n'est pas installé (ex. certaines images cloud).
-  if ufw app list 2>/dev/null | grep -qx 'OpenSSH'; then
-    ufw allow OpenSSH
-  else
-    warn "Profil UFW OpenSSH introuvable — ouverture du port 22/tcp."
-    ufw allow 22/tcp
-  fi
+  # Port SSH réel (sshd_config, drop-ins, session courante) — pas seulement 22.
+  local ssh_port
+  ssh_port="$(finflow_ufw_allow_ssh)"
+  ok "UFW : SSH autorisé (port ${ssh_port})."
 
   ufw allow 80/tcp
   ufw allow 443/tcp
@@ -189,18 +210,23 @@ prepare_install_dir() {
   local branch="$3"
 
   mkdir -p "$dir"
+  finflow_prepare_git_auth
   if [[ -f "$dir/docker-compose.yml" && -f "$dir/docker-compose.prod.yml" ]]; then
     log "Projet déjà présent dans $dir — git pull…"
-    git -C "$dir" fetch --all --prune || true
-    git -C "$dir" checkout "$branch" || true
-    git -C "$dir" pull --ff-only origin "$branch" || warn "git pull échoué (déploiement local ?)."
+    finflow_git "$dir" remote set-url origin "$repo" || true
+    finflow_git "$dir" fetch --all --prune || true
+    finflow_git "$dir" checkout "$branch" || true
+    finflow_git "$dir" pull --ff-only origin "$branch" \
+      || warn "git pull échoué (dépôt privé sans jeton, ou copie locale)."
   else
     if [[ -n "$(ls -A "$dir" 2>/dev/null || true)" ]]; then
       die "Le répertoire $dir n'est pas vide et ne contient pas FinFlow."
     fi
     log "Clone de $repo → $dir (branche $branch)…"
-    git clone --branch "$branch" "$repo" "$dir"
+    finflow_clone "$repo" "$dir" "$branch" \
+      || die "git clone impossible. Si le dépôt est privé, relancez avec un jeton GitHub (Contents: Read)."
   fi
+  chmod +x "$dir"/deploy/*.sh "$dir"/deploy/backup/*.sh "$dir"/deploy/tls-ip/*.sh 2>/dev/null || true
 
   # Si le script est lancé depuis une copie locale (dev), synchroniser optionnel
   SCRIPT_SRC="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd 2>/dev/null || true)"
@@ -508,6 +534,20 @@ collect_inputs() {
   prompt "Branche Git" "main"
   GIT_BRANCH="$REPLY"
 
+  finflow_prepare_git_auth
+  if [[ -f "$FINFLOW_GIT_TOKEN_FILE" ]]; then
+    ok "Jeton GitHub déjà enregistré (${FINFLOW_GIT_TOKEN_FILE})."
+  else
+    prompt_secret "Jeton GitHub (laisser vide si le dépôt est public)" ""
+    if [[ -n "$REPLY" ]]; then
+      finflow_save_github_token "$REPLY"
+      unset REPLY
+      ok "Jeton enregistré (${FINFLOW_GIT_TOKEN_FILE}, mode 600)."
+    else
+      ok "Pas de jeton — clone public, sans authentification."
+    fi
+  fi
+
   prompt "Domaine applicatif (ex. finflow.exemple.tld)" ""
   APP_DOMAIN="$REPLY"
   [[ -n "$APP_DOMAIN" ]] || die "Le domaine applicatif est obligatoire."
@@ -594,6 +634,7 @@ collect_inputs() {
   echo "---------- Récapitulatif ----------"
   echo "  Install dir : $INSTALL_DIR"
   echo "  Repo/branch : $REPO_URL @ $GIT_BRANCH"
+  echo "  Jeton Git   : $([[ -f $FINFLOW_GIT_TOKEN_FILE ]] && echo enregistré || echo absent)"
   echo "  App domain  : $APP_DOMAIN"
   echo "  MinIO domain: $MINIO_DOMAIN"
   echo "  DB user     : finflow"
@@ -608,14 +649,18 @@ collect_inputs() {
 
 main() {
   need_root
+  finflow_require_tty
   detect_ubuntu
 
   echo
-  echo "FIN_FLOW — installateur Ubuntu interactif"
+  echo "FIN_FLOW — installation interactive (Ubuntu Server 22.04 / 24.04)"
+  echo "Répondez aux questions dans ce terminal. Entrée conserve la valeur entre crochets."
   echo "Guide : documentation/13-guide-deploiement-ubuntu.md"
   echo
 
   collect_inputs
+  finflow_prepare_apt
+  ensure_swap
   install_base_packages
   install_docker
   systemctl enable --now fail2ban || true

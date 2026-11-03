@@ -1,7 +1,7 @@
 # 04 — Guide de déploiement complet
 
-> **Dépôt Git :** [https://github.com/Bouma-J/FinFlow](https://github.com/Bouma-J/FinFlow)  
-> (`git clone https://github.com/Bouma-J/FinFlow.git`)
+> **Dépôt Git :** [https://github.com/Bouma-J/FinFlowV3](https://github.com/Bouma-J/FinFlowV3)  
+> (`git clone https://github.com/Bouma-J/FinFlowV3.git`)
 >
 > **Production sur Ubuntu Server** (outils, Docker, Nginx/TLS, sauvegardes) :  
 > voir le guide dédié [13 — Déploiement Ubuntu](13-guide-deploiement-ubuntu.md)  

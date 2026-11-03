@@ -2,7 +2,7 @@
 
 Plateforme **SaaS multi-tenants** de gestion du cycle de vie complet des dossiers de crédit, avec consolidation Groupe et intégration multi-Core Banking. Ce dépôt contient le **backend** (API REST Django) et le **frontend** (SPA React), conformes au cahier des charges `charge.txt`, ainsi qu'une **orchestration Docker** complète.
 
-**Dépôt :** [https://github.com/Bouma-J/FinFlow](https://github.com/Bouma-J/FinFlow)
+**Dépôt :** [https://github.com/Bouma-J/FinFlowV3](https://github.com/Bouma-J/FinFlowV3)
 
 ## Sommaire
 - [Architecture](#architecture)
@@ -118,12 +118,14 @@ Hors proxy d'entreprise, cette étape est inutile : créez simplement les fichie
 
 > Note : `npm install` en local sur cette machine nécessite aussi `--use-system-ca` (Node 20+) ; définissez `NODE_OPTIONS=--use-system-ca` avant de lancer npm.
 
-## Déploiement Ubuntu
+## Déploiement Ubuntu Server
 
-Installation serveur (Docker, TLS, backups) :
+Ubuntu Server 22.04 ou 24.04 LTS. L'installation pose ses questions dans le terminal SSH (domaine, mots de passe, TLS). Tant que le dépôt est public, le jeton GitHub se laisse vide.
 
 ```bash
-sudo bash -c 'curl -fsSL https://raw.githubusercontent.com/Bouma-J/FinFlow/main/deploy/ubuntu-install.sh | bash'
+git clone https://github.com/Bouma-J/FinFlowV3.git
+cd FinFlowV3
+sudo bash deploy/ubuntu-install.sh
 ```
 
 Mise à jour d’une instance déjà en production :
@@ -131,7 +133,7 @@ Mise à jour d’une instance déjà en production :
 ```bash
 sudo finflow-update
 # ou :
-sudo bash -c 'curl -fsSL https://raw.githubusercontent.com/Bouma-J/FinFlow/main/deploy/ubuntu-update.sh | bash'
+sudo bash /opt/finflow/deploy/ubuntu-update.sh
 ```
 
 Détail : [`documentation/13-guide-deploiement-ubuntu.md`](documentation/13-guide-deploiement-ubuntu.md), scripts `deploy/ubuntu-install.sh`, `deploy/ubuntu-install-ip.sh` et `deploy/ubuntu-update.sh`.

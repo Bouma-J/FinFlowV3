@@ -4,15 +4,22 @@
 #
 # À lancer sur le serveur où FinFlow est installé (typiquement /opt/finflow).
 #
+# Cible : Ubuntu Server, instance déjà installée (typiquement /opt/finflow).
+# Dépôt public : git pull sans jeton. S'il est privé, le jeton posé à
+# l'installation (/root/.config/finflow/github.token) est réutilisé. Sinon :
+#   sudo GITHUB_TOKEN='ghp_…' bash deploy/ubuntu-update.sh
+#
 # Usage :
+#   sudo finflow-update
 #   sudo bash deploy/ubuntu-update.sh
 #   sudo bash deploy/ubuntu-update.sh /opt/finflow
 #   sudo bash deploy/ubuntu-update.sh --check /opt/finflow
-#   sudo bash -c 'curl -fsSL https://raw.githubusercontent.com/Bouma-J/FinFlow/main/deploy/ubuntu-update.sh | bash'
 #
 # Options (variables d'environnement) :
 #   INSTALL_DIR=/opt/finflow   Répertoire d'installation
 #   GIT_BRANCH=main            Branche à tirer
+#   REPO_URL=…                 Dépôt (défaut : FinFlowV3)
+#   GITHUB_TOKEN=…             Jeton Contents: Read, si pas encore enregistré
 #   SKIP_BACKUP=1              Ne pas sauvegarder la DB avant update
 #   SKIP_GIT=1                 Ne pas faire git pull (images/code déjà présents)
 #   SKIP_BUILD=0               1 = up -d sans --build (déconseillé)
@@ -27,8 +34,16 @@
 # =========================================================================
 set -euo pipefail
 
+_self="${BASH_SOURCE[0]}"
+if [[ -L "$_self" ]]; then
+  _self="$(readlink -f "$_self")"
+fi
+SCRIPT_DIR="$(cd "$(dirname "$_self")" && pwd)"
+# shellcheck disable=SC1091
+source "${SCRIPT_DIR}/lib-ubuntu.sh"
+
 INSTALL_DIR_DEFAULT="/opt/finflow"
-REPO_URL_DEFAULT="https://github.com/Bouma-J/FinFlow.git"
+REPO_URL_DEFAULT="$FINFLOW_REPO_DEFAULT"
 
 if [[ -t 1 ]]; then
   C_INFO='\033[1;36m'
@@ -164,17 +179,24 @@ pull_code() {
   local branch="$2"
   local repo="$3"
 
-  cd "$dir"
-  if [[ ! -d .git ]]; then
+  if [[ ! -d "$dir/.git" ]]; then
     warn "Pas de dépôt git dans $dir — skip git pull."
     return
   fi
+  finflow_prepare_git_auth
   log "git fetch / checkout ${branch} / pull --ff-only…"
-  git remote set-url origin "$repo" 2>/dev/null || true
-  git fetch --all --prune
-  git checkout "$branch"
-  git pull --ff-only origin "$branch"
-  ok "Code à jour : $(git rev-parse --short HEAD) ($(git log -1 --pretty=%s))"
+  finflow_git "$dir" remote set-url origin "$repo"
+  if ! finflow_git "$dir" fetch --all --prune; then
+    die "git fetch impossible pour ${repo}.
+Si le dépôt est privé, enregistrez un jeton GitHub (Contents: Read) :
+  sudo install -d -m 700 /root/.config/finflow
+  sudo tee ${FINFLOW_GIT_TOKEN_FILE} >/dev/null
+  sudo chmod 600 ${FINFLOW_GIT_TOKEN_FILE}
+Puis relancez : sudo finflow-update"
+  fi
+  finflow_git "$dir" checkout "$branch"
+  finflow_git "$dir" pull --ff-only origin "$branch"
+  ok "Code à jour : $(finflow_git "$dir" rev-parse --short HEAD) ($(finflow_git "$dir" log -1 --pretty=%s))"
 }
 
 chmod_deploy_scripts() {
@@ -365,7 +387,7 @@ main() {
     case "$1" in
       --check) check=1; shift ;;
       -h|--help)
-        sed -n '2,28p' "$0"
+        sed -n '2,34p' "$0"
         exit 0
         ;;
       *)
@@ -392,9 +414,11 @@ main() {
   [[ "$skip_build" == "1" ]] && with_build=0
 
   echo
-  echo "FIN_FLOW — mise à jour production"
+  echo "FIN_FLOW — mise à jour Ubuntu Server"
   echo "Guide : documentation/13-guide-deploiement-ubuntu.md"
   echo
+
+  finflow_prepare_apt
 
   [[ -d "$dir" ]] || die "Répertoire introuvable : $dir"
   [[ -f "$dir/docker-compose.yml" ]] || die "docker-compose.yml manquant dans $dir"

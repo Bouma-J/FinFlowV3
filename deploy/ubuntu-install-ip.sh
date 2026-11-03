@@ -8,9 +8,11 @@
 #   • IP publique  → Let's Encrypt (certificat IP, ~6 jours) + HSTS 7 jours
 #   sudo bash deploy/tls-ip/enable-ip-tls.sh /opt/finflow --self-signed
 #
-# Usage :
-#   curl -fsSL https://raw.githubusercontent.com/Bouma-J/FinFlow/main/deploy/ubuntu-install-ip.sh | sudo bash
-#   # ou dépôt déjà cloné :
+# Cible : Ubuntu Server 22.04 / 24.04 LTS, sans nom de domaine.
+# Dépôt public : aucun jeton. S'il redevient privé, le script demande
+# un jeton GitHub (Contents: Read), stocké hors du projet.
+#
+# Usage, sur le serveur, depuis le dépôt cloné :
 #   sudo bash deploy/ubuntu-install-ip.sh
 #
 # Variante avec domaines + TLS :
@@ -21,7 +23,15 @@
 # =========================================================================
 set -euo pipefail
 
-REPO_URL_DEFAULT="https://github.com/Bouma-J/FinFlow.git"
+_self="${BASH_SOURCE[0]}"
+if [[ -L "$_self" ]]; then
+  _self="$(readlink -f "$_self")"
+fi
+SCRIPT_DIR="$(cd "$(dirname "$_self")" && pwd)"
+# shellcheck disable=SC1091
+source "${SCRIPT_DIR}/lib-ubuntu.sh"
+
+REPO_URL_DEFAULT="$FINFLOW_REPO_DEFAULT"
 INSTALL_DIR_DEFAULT="/opt/finflow"
 COMPOSE_FILES="-f docker-compose.yml -f docker-compose.prod.yml -f docker-compose.ip.yml"
 DEPLOY_MODE="ip"
@@ -55,10 +65,10 @@ prompt() {
   local label="$1"
   local def="${2:-}"
   if [[ -n "$def" ]]; then
-    read -r -p "$label [$def] : " REPLY || true
+    finflow_read -r -p "$label [$def] : " REPLY
     REPLY="${REPLY:-$def}"
   else
-    read -r -p "$label : " REPLY || true
+    finflow_read -r -p "$label : " REPLY
   fi
 }
 
@@ -66,12 +76,12 @@ prompt_secret() {
   local label="$1"
   local def="${2:-}"
   if [[ -n "$def" ]]; then
-    read -r -s -p "$label [généré si vide] : " REPLY || true
-    echo
+    finflow_read -r -s -p "$label [généré si vide] : " REPLY
+    finflow_newline
     REPLY="${REPLY:-$def}"
   else
-    read -r -s -p "$label : " REPLY || true
-    echo
+    finflow_read -r -s -p "$label : " REPLY
+    finflow_newline
   fi
 }
 
@@ -80,7 +90,7 @@ ask_yes_no() {
   local def="${2:-y}"
   local hint="y/N"
   [[ "$def" == "y" || "$def" == "Y" ]] && hint="Y/n"
-  read -r -p "$label [$hint] : " REPLY || true
+  finflow_read -r -p "$label [$hint] : " REPLY
   REPLY="${REPLY:-$def}"
   [[ "$REPLY" =~ ^[yYoO] ]]
 }
@@ -143,7 +153,7 @@ detect_ubuntu() {
 
 install_base_packages() {
   log "Mise à jour APT et paquets de base…"
-  export DEBIAN_FRONTEND=noninteractive
+  finflow_prepare_apt
   apt-get update -y
   apt-get upgrade -y
   apt-get install -y \
@@ -158,36 +168,27 @@ install_base_packages() {
 install_docker() {
   if command -v docker >/dev/null 2>&1 && docker compose version >/dev/null 2>&1; then
     ok "Docker déjà installé : $(docker --version)"
-    return
+  else
+    log "Installation Docker Engine + Compose plugin…"
+    finflow_install_docker
+    ok "Docker installé."
   fi
-  log "Installation Docker Engine + Compose plugin…"
-  install -m 0755 -d /etc/apt/keyrings
-  curl -fsSL https://download.docker.com/linux/ubuntu/gpg \
-    | gpg --dearmor -o /etc/apt/keyrings/docker.gpg
-  chmod a+r /etc/apt/keyrings/docker.gpg
-  # shellcheck disable=SC1091
-  . /etc/os-release
-  echo \
-    "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] \
-    https://download.docker.com/linux/ubuntu ${VERSION_CODENAME} stable" \
-    > /etc/apt/sources.list.d/docker.list
-  apt-get update -y
-  apt-get install -y docker-ce docker-ce-cli containerd.io \
-    docker-buildx-plugin docker-compose-plugin
-  systemctl enable --now docker
-  ok "Docker installé."
+  local logs
+  logs="$(finflow_docker_log_limits || true)"
+  case "$logs" in
+    restarted) ok "Rotation des logs Docker activée (20 Mo × 3)." ;;
+    deferred) warn "Rotation écrite dans /etc/docker/daemon.json. Redémarrez Docker quand la pile pourra s'arrêter." ;;
+    *) log "Rotation des logs Docker déjà configurée." ;;
+  esac
 }
 
 configure_ufw() {
   log "Configuration UFW (SSH / 80 / 9000 MinIO${ENABLE_TLS:+ / 443})…"
   ufw default deny incoming
   ufw default allow outgoing
-  if ufw app list 2>/dev/null | grep -qx 'OpenSSH'; then
-    ufw allow OpenSSH
-  else
-    warn "Profil UFW OpenSSH introuvable — ouverture du port 22/tcp."
-    ufw allow 22/tcp
-  fi
+  local ssh_port
+  ssh_port="$(finflow_ufw_allow_ssh)"
+  ok "UFW : SSH autorisé (port ${ssh_port})."
   ufw allow 80/tcp
   ufw allow 9000/tcp
   if [[ "${ENABLE_TLS:-0}" -eq 1 ]]; then
@@ -204,18 +205,23 @@ prepare_install_dir() {
   local branch="$3"
 
   mkdir -p "$dir"
+  finflow_prepare_git_auth
   if [[ -f "$dir/docker-compose.yml" && -f "$dir/docker-compose.prod.yml" ]]; then
     log "Projet déjà présent dans $dir — git pull…"
-    git -C "$dir" fetch --all --prune || true
-    git -C "$dir" checkout "$branch" || true
-    git -C "$dir" pull --ff-only origin "$branch" || warn "git pull échoué (déploiement local ?)."
+    finflow_git "$dir" remote set-url origin "$repo" || true
+    finflow_git "$dir" fetch --all --prune || true
+    finflow_git "$dir" checkout "$branch" || true
+    finflow_git "$dir" pull --ff-only origin "$branch" \
+      || warn "git pull échoué (dépôt privé sans jeton, ou copie locale)."
   else
     if [[ -n "$(ls -A "$dir" 2>/dev/null || true)" ]]; then
       die "Le répertoire $dir n'est pas vide et ne contient pas FinFlow."
     fi
     log "Clone de $repo → $dir (branche $branch)…"
-    git clone --branch "$branch" "$repo" "$dir"
+    finflow_clone "$repo" "$dir" "$branch" \
+      || die "git clone impossible. Si le dépôt est privé, relancez avec un jeton GitHub (Contents: Read)."
   fi
+  chmod +x "$dir"/deploy/*.sh "$dir"/deploy/backup/*.sh "$dir"/deploy/tls-ip/*.sh 2>/dev/null || true
 
   if [[ ! -f "$dir/docker-compose.ip.yml" ]]; then
     die "docker-compose.ip.yml manquant — tirez la dernière version du dépôt (git pull)."
@@ -482,6 +488,20 @@ collect_inputs() {
   prompt "Branche Git" "main"
   GIT_BRANCH="$REPLY"
 
+  finflow_prepare_git_auth
+  if [[ -f "$FINFLOW_GIT_TOKEN_FILE" ]]; then
+    ok "Jeton GitHub déjà enregistré (${FINFLOW_GIT_TOKEN_FILE})."
+  else
+    prompt_secret "Jeton GitHub (laisser vide si le dépôt est public)" ""
+    if [[ -n "$REPLY" ]]; then
+      finflow_save_github_token "$REPLY"
+      unset REPLY
+      ok "Jeton enregistré (${FINFLOW_GIT_TOKEN_FILE}, mode 600)."
+    else
+      ok "Pas de jeton — clone public, sans authentification."
+    fi
+  fi
+
   DEFAULT_IP="$(detect_default_ip)"
   prompt "Adresse IP d'accès (IPv4)" "${DEFAULT_IP}"
   APP_IP="$REPLY"
@@ -589,15 +609,18 @@ collect_inputs() {
 
 main() {
   need_root
+  finflow_require_tty "sudo bash deploy/ubuntu-install-ip.sh"
   detect_ubuntu
 
   echo
-  echo "FIN_FLOW — installateur Ubuntu par IP (HTTP ou HTTPS sans domaine)"
+  echo "FIN_FLOW — installation interactive par IP (Ubuntu Server)"
+  echo "Répondez aux questions dans ce terminal. Entrée conserve la valeur entre crochets."
   echo "Variante domaines + TLS : deploy/ubuntu-install.sh"
   echo "Guide : documentation/13-guide-deploiement-ubuntu.md"
   echo
 
   collect_inputs
+  finflow_prepare_apt
   install_base_packages
   install_docker
   systemctl enable --now fail2ban || true

@@ -2,8 +2,8 @@
 
 Guide pas à pas pour déployer **FIN_FLOW** sur un serveur **Ubuntu Server 22.04 LTS** ou **24.04 LTS**, avec Docker Compose, reverse-proxy TLS et l’ensemble des outils nécessaires.
 
-**Dépôt Git :** [https://github.com/Bouma-J/FinFlow](https://github.com/Bouma-J/FinFlow)  
-**Clone :** `git clone https://github.com/Bouma-J/FinFlow.git`
+**Dépôt Git :** [https://github.com/Bouma-J/FinFlowV3](https://github.com/Bouma-J/FinFlowV3)  
+**Clone :** `git clone https://github.com/Bouma-J/FinFlowV3.git`
 
 Pour la vue d’ensemble multi-environnements (Compose démo, Kubernetes, bare metal), voir aussi [04 — Guide de déploiement](04-guide-deploiement.md).
 
@@ -18,19 +18,22 @@ Deux scripts interactifs au choix :
 | [`deploy/tls-ip/enable-ip-tls.sh`](../deploy/tls-ip/enable-ip-tls.sh) | HTTPS sur une install IP déjà en place | `https://<IP>/` |
 | [`deploy/ubuntu-update.sh`](../deploy/ubuntu-update.sh) | **Mise à jour** d’une instance déjà en prod | — |
 
+Tant que le dépôt est **public**, le clone et `finflow-update` fonctionnent sans jeton. S’il redevient privé, le script demande un jeton GitHub (**Contents: Read**) et l’enregistre dans `/root/.config/finflow/github.token` (mode 600). Ce jeton n’entre ni dans l’URL `origin`, ni dans le `.env` applicatif.
+
 **Avec domaines + TLS :**
 
+L’installation est un questionnaire dans le terminal SSH (domaine, mots de passe, TLS). Elle refuse de démarrer si elle n’est pas lancée dans un terminal.
+
 ```bash
-sudo bash -c 'curl -fsSL https://raw.githubusercontent.com/Bouma-J/FinFlow/main/deploy/ubuntu-install.sh | bash'
-# ou dépôt cloné :
+git clone https://github.com/Bouma-J/FinFlowV3.git
+cd FinFlowV3
 sudo bash deploy/ubuntu-install.sh
 ```
 
 **Par adresse IP (sans domaine — HTTP, ou HTTPS Let’s Encrypt / auto-signé) :**
 
 ```bash
-sudo bash -c 'curl -fsSL https://raw.githubusercontent.com/Bouma-J/FinFlow/main/deploy/ubuntu-install-ip.sh | bash'
-# ou dépôt cloné :
+cd FinFlowV3
 sudo bash deploy/ubuntu-install-ip.sh
 ```
 
@@ -40,8 +43,6 @@ sudo bash deploy/ubuntu-install-ip.sh
 sudo finflow-update
 # ou :
 sudo bash /opt/finflow/deploy/ubuntu-update.sh
-# depuis le dépôt :
-sudo bash -c 'curl -fsSL https://raw.githubusercontent.com/Bouma-J/FinFlow/main/deploy/ubuntu-update.sh | bash'
 ```
 
 Le script d’update : backup DB → `git pull` → `docker compose up -d --build` → `migrate` → `sync_role_packs` → `bootstrap_all_tenants` (circuits ML / Dation / Formalisation). Les scripts d’install demandent IP ou domaines, mots de passe PostgreSQL/MinIO, `DJANGO_SECRET_KEY`, etc., puis déploient sous `/opt/finflow` (personnalisable). Le mode IP utilise [`docker-compose.ip.yml`](../docker-compose.ip.yml) (MinIO sur `:9000` en HTTP) et, une fois HTTPS activé, [`docker-compose.ip-tls.yml`](../docker-compose.ip-tls.yml) (MinIO en `127.0.0.1:19000`, Nginx termine le TLS sur `:443` et `:9000`). Les sections ci-dessous restent la référence manuelle pas à pas.
@@ -217,15 +218,15 @@ dig +short finflow.votredomaine.tld
 
 ## 4. Récupération du projet
 
-Dépôt officiel : **https://github.com/Bouma-J/FinFlow.git**
+Dépôt officiel : **https://github.com/Bouma-J/FinFlowV3.git**
 
 ```bash
-sudo mkdir -p /opt/finflow
-sudo chown "$USER":"$USER" /opt/finflow
+git clone https://github.com/Bouma-J/FinFlowV3.git /opt/finflow
 cd /opt/finflow
-
-git clone https://github.com/Bouma-J/FinFlow.git .
+sudo bash deploy/ubuntu-install.sh
 ```
+
+Le script d’installation peut aussi cloner lui-même dans `/opt/finflow` s’il est lancé depuis une autre copie du dépôt. La question du jeton se laisse vide tant que le dépôt est public.
 
 Mises à jour ultérieures :
 
@@ -699,7 +700,7 @@ journalctl -u nginx -u docker -n 100 --no-pager
 
 ## 15. Références
 
-- **Dépôt GitHub :** [https://github.com/Bouma-J/FinFlow](https://github.com/Bouma-J/FinFlow)  
+- **Dépôt GitHub :** [https://github.com/Bouma-J/FinFlowV3](https://github.com/Bouma-J/FinFlowV3)  
 - **Script d’install Ubuntu (domaines + TLS) :** [`../deploy/ubuntu-install.sh`](../deploy/ubuntu-install.sh)  
 - **Script d’install Ubuntu (IP, HTTP ou HTTPS) :** [`../deploy/ubuntu-install-ip.sh`](../deploy/ubuntu-install-ip.sh)  
 - **HTTPS sans domaine :** [`../deploy/tls-ip/enable-ip-tls.sh`](../deploy/tls-ip/enable-ip-tls.sh)  
