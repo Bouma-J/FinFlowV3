@@ -1,11 +1,12 @@
 from decimal import Decimal
 
 from django.core.exceptions import ObjectDoesNotExist
+from django.db import transaction
 from rest_framework import serializers
 
 from apps.common.storage_urls import presign_file_fields
 
-from .fees import build_fees_breakdown, sync_extra_fees
+from .fees import build_fees_breakdown, parse_extra_fees, sync_extra_fees
 from .models import (
     AnalysisThreshold,
     CreditApplication,
@@ -22,6 +23,11 @@ from .models import (
 
 
 class AnalysisThresholdSerializer(serializers.ModelSerializer):
+    def validate(self, attrs):
+        from apps.configuration.governance import assert_legacy_configuration_write_allowed
+        assert_legacy_configuration_write_allowed()
+        return attrs
+
     class Meta:
         model = AnalysisThreshold
         fields = [
@@ -40,6 +46,11 @@ class AnalysisThresholdSerializer(serializers.ModelSerializer):
 
 
 class CreditInstructionPolicySerializer(serializers.ModelSerializer):
+    def validate(self, attrs):
+        from apps.configuration.governance import assert_legacy_configuration_write_allowed
+        assert_legacy_configuration_write_allowed()
+        return attrs
+
     class Meta:
         model = CreditInstructionPolicy
         fields = [
@@ -57,10 +68,15 @@ class CreditInstructionPolicySerializer(serializers.ModelSerializer):
             "allow_collateral_during_approval",
             "require_surety_signed_contracts",
             "require_formalization_before_disbursement",
+            "require_credit_contracts", "require_credit_signed_contracts",
+            "require_surety_contracts", "require_setup_request", "require_setup_four_eyes",
+            "risk_mode", "approval_validity_days", "max_analysis_age_days",
+            "require_final_review", "recheck_kyc_on_setup", "require_verified_documents",
+            "setup_execution_role", "require_setup_authorizer_separation",
             "created_at",
             "updated_at",
         ]
-        read_only_fields = ["id", "created_at", "updated_at"]
+        read_only_fields = ["id", "created_at", "updated_at", "require_final_review"]
 
 
 class FinancialDocumentSerializer(serializers.ModelSerializer):
@@ -73,6 +89,10 @@ class FinancialDocumentSerializer(serializers.ModelSerializer):
 
 
 class FinancialAnalysisSerializer(serializers.ModelSerializer):
+    is_reference = serializers.BooleanField(required=False)
+    new_installment = serializers.SerializerMethodField()
+    internal_score = serializers.SerializerMethodField()
+    score_breakdown = serializers.SerializerMethodField()
     client_type = serializers.CharField(read_only=True)
     client_type_source = serializers.CharField(
         source="application.client.client_type", read_only=True
@@ -116,19 +136,48 @@ class FinancialAnalysisSerializer(serializers.ModelSerializer):
             return [FinancialAnalysisSerializer._to_plain(v) for v in value]
         return value
 
-    def get_metrics(self, obj):
+    def _current_metrics(self, obj):
         from .analytics import compute_metrics
         from .models import AnalysisThreshold
 
-        th = AnalysisThreshold.for_tenant(obj.tenant_id)
-        return self._to_plain(compute_metrics(obj, th))
+        cache = getattr(self, "_current_metrics_cache", {})
+        if obj.pk not in cache:
+            th = AnalysisThreshold.for_application(obj.application, individual_profile=obj.individual_profile)
+            cache[obj.pk] = compute_metrics(obj, th, recalculate_installment=True)
+            self._current_metrics_cache = cache
+        return cache[obj.pk]
+
+    def get_metrics(self, obj):
+        return self._to_plain(self._current_metrics(obj))
+
+    def get_new_installment(self, obj):
+        return self._to_plain(self._current_metrics(obj).get("contractual_installment"))
+
+    def _configured_score(self, obj):
+        from .analytics import compute_score
+
+        cache = getattr(self, "_configured_scores", {})
+        key = str(obj.pk)
+        if key not in cache:
+            th = AnalysisThreshold.for_application(obj.application, individual_profile=obj.individual_profile)
+            cache[key] = compute_score(obj, self._current_metrics(obj), th)
+            self._configured_scores = cache
+        return cache[key]
+
+    def get_internal_score(self, obj):
+        score, _ = self._configured_score(obj)
+        return str(score) if score is not None else None
+
+    def get_score_breakdown(self, obj):
+        _, breakdown = self._configured_score(obj)
+        return self._to_plain(breakdown)
 
     def get_thresholds(self, obj):
         from decimal import Decimal
 
         from .models import AnalysisThreshold
 
-        th = AnalysisThreshold.for_tenant(obj.tenant_id)
+        th = AnalysisThreshold.for_application(obj.application, individual_profile=obj.individual_profile)
         keys = [
             "max_debt_ratio", "min_dscr", "max_leverage_ratio",
             "min_living_wage_per_capita", "min_interest_coverage", "max_gearing",
@@ -176,7 +225,13 @@ class FinancialAnalysisSerializer(serializers.ModelSerializer):
             "is_reference",
             "client_type", "client_type_source",
             "individual_profile",
-            "reference_period", "analysis_date",
+            "reference_period", "analysis_date", "analysis_details", "custom_fields",
+            # Cadre, fiabilité et vérification
+            "information_quality", "financial_statement_date",
+            "bank_statement_months", "financial_documents_verified",
+            "field_visit_confirmed", "stock_count_verified",
+            "cash_position_verified", "verification_comment",
+            "primary_repayment_source",
             # Particulier
             "salary_income", "spouse_income", "rental_income",
             "other_activity_income", "other_income",
@@ -187,15 +242,24 @@ class FinancialAnalysisSerializer(serializers.ModelSerializer):
             "turnover", "cogs", "op_rent", "op_salaries", "op_utilities",
             "op_transport", "op_telecom", "op_taxes", "op_maintenance",
             "op_other", "depreciation", "financial_charges",
+            "other_operating_income",
             # Entreprise — bilan
             "stock_value", "receivables", "cash_available", "fixed_assets",
             "supplier_debt", "ongoing_credit_balance", "short_term_debt",
+            "cash_in_hand", "bank_balance", "other_current_assets",
+            "land_building_value", "equipment_value", "vehicle_value",
+            "other_fixed_assets", "tax_social_debt", "other_current_debt",
+            "long_term_debt", "shareholder_debt",
             # Entreprise — N-1 (tendance)
             "turnover_prev", "net_result_prev",
             # Particulier — charges informelles & stabilité
             "tontine_expense", "social_contributions", "family_support_expense",
             "net_salary", "salary_deductions", "employment_seniority_months",
-            "informal_income_weight",
+            "informal_income_weight", "employment_type", "employer_name",
+            "employer_sector", "salary_paid_through_bank", "salary_verified",
+            "variable_income", "pension_income", "other_monthly_obligations",
+            "personal_savings", "personal_real_estate_value",
+            "personal_vehicle_value", "personal_productive_assets",
             # Commun — endettement existant & consolidé
             "existing_debt_institution", "existing_debt_initial_amount",
             "existing_debt_monthly",
@@ -234,13 +298,19 @@ class FinancialAnalysisSerializer(serializers.ModelSerializer):
             "es_action_required", "es_insurance", "es_risk_level", "es_comment",
             # Personne physique — activité génératrice de revenus
             "has_side_activity", "activity_turnover", "activity_expenses",
-            "activity_comment",
+            "activity_comment", "activity_name", "activity_business_age_months",
+            "activity_sales_days", "activity_purchases", "activity_stock_value",
+            "activity_receivables", "activity_cash_available",
+            "activity_fixed_assets", "activity_supplier_debt",
+            "activity_is_formal", "activity_records_available",
             # Groupement
             "members_count", "active_contributing_members",
             "solidarity_commitment", "collective_contributions",
             "collective_savings", "collective_other_income",
             "collective_operating_expenses", "group_activity_turnover",
-            "group_activity_expenses", "group_comment",
+            "group_activity_expenses", "group_comment", "group_age_months",
+            "members_with_arrears", "group_records_verified",
+            "collective_savings_locked",
             # Décision & synthèse
             "internal_score", "score_breakdown",
             "strengths", "weaknesses", "recommended_conditions",
@@ -249,7 +319,6 @@ class FinancialAnalysisSerializer(serializers.ModelSerializer):
         ]
         read_only_fields = [
             "id", "author_role", "created_by", "created_by_display", "can_edit",
-            "is_reference",
             "client_type", "new_installment", "repayment_capacity",
             "debt_ratio", "dscr", "debt_ratio_stress", "dscr_stress",
             "guarantee_coverage", "internal_score", "score_breakdown",
@@ -268,16 +337,88 @@ class FinancialAnalysisSerializer(serializers.ModelSerializer):
             raise serializers.ValidationError(
                 {"application": "Impossible de réaffecter l'analyse à un autre dossier."}
             )
+        errors = {}
+        for name, value in attrs.items():
+            if isinstance(value, Decimal) and name not in ("net_result_prev",) and value < 0:
+                errors[name] = "Le montant doit être positif ou nul."
+        for name in ("informal_income_weight", "prior_repayment_rate"):
+            if attrs.get(name) is not None and attrs[name] > 100:
+                errors[name] = "Le pourcentage doit être compris entre 0 et 100."
+        def current(name):
+            return attrs.get(name, getattr(self.instance, name, None))
+        application = attrs.get("application", getattr(self.instance, "application", None))
+        if application and "custom_fields" in attrs:
+            from apps.configuration.forms_catalog import validate_custom_values
+            from apps.configuration.services import application_configuration
+            from django.core.exceptions import ValidationError as DjangoValidationError
+            configuration = application_configuration(application, individual_profile=current("individual_profile"))
+            try:
+                attrs["custom_fields"] = validate_custom_values(
+                    configuration["forms"]["analysis_fields"], attrs["custom_fields"],
+                    previous=getattr(self.instance, "custom_fields", {}) or {}, require=False,
+                )
+            except DjangoValidationError as exc:
+                raise serializers.ValidationError({"custom_fields": exc.messages}) from exc
+        frozen = getattr(application, "configuration_snapshot", None) or {}
+        if (application and application.status not in {"DRAFT", "RETURNED"}
+                and frozen and "individual_profile" in attrs
+                and attrs["individual_profile"] != frozen.get("context", {}).get("individual_profile")):
+            errors["individual_profile"] = "Le profil de clientèle est conservé avec les règles soumises. Faites retourner ou réexaminer le dossier avant de le changer."
+        if (current("long_term_debt") or 0) > (current("ongoing_credit_balance") or 0):
+            errors["long_term_debt"] = "La part long terme ne peut dépasser l'encours financier total."
+        for name in ("active_contributing_members", "members_with_arrears"):
+            if current(name) is not None and current("members_count") is not None:
+                if current(name) > current("members_count"):
+                    errors[name] = "Le nombre ne peut dépasser l'effectif du groupement."
+        if current("credit_bureau_checked") and not current("credit_bureau_date"):
+            errors["credit_bureau_date"] = "Précisez la date de consultation."
+        if errors:
+            raise serializers.ValidationError(errors)
         return attrs
+
+    def validate_analysis_details(self, value):
+        from .analysis_details import validate_details
+
+        return validate_details(value)
 
     def get_flags(self, obj):
         """Indicateurs de conformité aux seuils de la filiale."""
-        from .analytics import compute_metrics
-        from .models import AnalysisThreshold
+        return self._current_metrics(obj).get("flags", {})
 
-        th = AnalysisThreshold.for_tenant(obj.tenant_id)
-        metrics = compute_metrics(obj, th)
-        return metrics.get("flags", {})
+    def to_representation(self, instance):
+        """Toutes les cartes courantes partagent le même calcul et les mêmes seuils.
+
+        Les anciennes valeurs enregistrées restent identifiées séparément ;
+        une lecture ne réécrit jamais l'analyse ni la décision historique.
+        """
+        from apps.configuration.services import application_configuration
+        from apps.credits.amounts import reference_amount, reference_amount_label
+        from django.utils import timezone
+
+        data = super().to_representation(instance)
+        metrics = self._current_metrics(instance)
+        names = ("new_installment", "repayment_capacity", "debt_ratio", "dscr", "dscr_stress", "debt_ratio_stress", "guarantee_coverage", "internal_score")
+        data["recorded_indicators"] = {
+            "updated_at": instance.updated_at,
+            **{name: self._to_plain(getattr(instance, name)) for name in names},
+        }
+        mapping = {"new_installment": "contractual_installment", "repayment_capacity": "repayment_capacity",
+                   "debt_ratio": "solvency_ratio" if instance.is_corporate else "debt_ratio",
+                   "dscr": "global_dscr", "dscr_stress": "dscr_stress", "debt_ratio_stress": "debt_ratio_stress",
+                   "guarantee_coverage": "guarantee_coverage"}
+        data.update({name: self._to_plain(metrics.get(key)) for name, key in mapping.items()})
+        config = application_configuration(instance.application, individual_profile=instance.individual_profile)
+        data["calculation_context"] = self._to_plain({
+            "calculated_at": timezone.now().isoformat(), "amount": reference_amount(instance.application),
+            "amount_label": reference_amount_label(instance.application), "currency": instance.application.currency,
+            "periodicity": instance.application.periodicity, "duration_months": instance.application.duration_months,
+            "mechanism": instance.application.repayment_mechanism or "DEGRESSIVE", "frozen": bool(config.get("frozen")),
+            "legacy": bool(config.get("legacy")), "captured_at": config.get("captured_at"),
+            "application_status": instance.application.status,
+            "sources": config.get("sources", []), "rates": metrics.get("calculation_rates", {}),
+        })
+        data["custom_field_definitions"] = config.get("forms", {}).get("analysis_fields", [])
+        return data
 
     def _save_documents(self, analysis):
         request = self.context.get("request")
@@ -494,6 +635,10 @@ def _collection_snapshot(loan):
 
 
 class CreditApplicationSerializer(serializers.ModelSerializer):
+    interest_rate = serializers.DecimalField(max_digits=6, decimal_places=3, min_value=Decimal("0"), required=False, allow_null=True)
+    fees_rate = serializers.DecimalField(max_digits=6, decimal_places=3, min_value=Decimal("0"), max_value=Decimal("100"), required=False, allow_null=True)
+    mandatory_savings_rate = serializers.DecimalField(max_digits=6, decimal_places=3, min_value=Decimal("0"), max_value=Decimal("100"), required=False, allow_null=True)
+    pricing_quote = serializers.SerializerMethodField()
     client_display = serializers.CharField(source="client.display_name", read_only=True)
     client_reference = serializers.CharField(source="client.reference", read_only=True)
     client_type = serializers.CharField(source="client.client_type", read_only=True)
@@ -528,7 +673,15 @@ class CreditApplicationSerializer(serializers.ModelSerializer):
         return agency.name or agency.code or ""
 
     def get_fees_breakdown(self, obj):
-        return build_fees_breakdown(obj)
+        return self.get_pricing_quote(obj)["fees"]
+
+    def get_pricing_quote(self, obj):
+        from .pricing import quote_pricing
+        if not hasattr(self, "_pricing_quotes"):
+            self._pricing_quotes = {}
+        if obj.pk not in self._pricing_quotes:
+            self._pricing_quotes[obj.pk] = quote_pricing(obj)
+        return self._pricing_quotes[obj.pk]
 
     def get_cbs_refs(self, obj):
         cached = getattr(obj, "_cbs_refs_cache", None)
@@ -579,11 +732,11 @@ class CreditApplicationSerializer(serializers.ModelSerializer):
             # Conditions
             "amount_requested", "amount_proposed", "interest_rate", "fees_rate",
             "mandatory_savings_rate",
-            "extra_fees", "fees_breakdown",
+            "extra_fees", "fees_breakdown", "pricing_quote",
             "periodicity", "periodicity_label",
             "duration_months", "first_due_date", "last_due_date",
             "repayment_mechanism", "repayment_mechanism_label",
-            "purpose_type", "purpose",
+            "purpose_type", "financing_object", "purpose",
             "request_letter_scan", "currency", "currency_label",
             "cbs_refs",
             # Plan de financement
@@ -604,7 +757,7 @@ class CreditApplicationSerializer(serializers.ModelSerializer):
             "client_account_number", "relationship_start_date",
             "avg_monthly_credit_movements",
             # Assurance
-            "has_credit_insurance", "insurance_company", "insurance_premium",
+            "has_credit_insurance", "insurance_company", "insurance_premium", "insurance_policy_number", "insurance_expiry_date",
             # Conditions particulières
             "special_conditions", "suspensive_conditions",
             # Conformité
@@ -614,6 +767,7 @@ class CreditApplicationSerializer(serializers.ModelSerializer):
             # Suivi
             "status", "status_display", "risk_level",
             "amount_approved", "decision_date", "submitted_at", "disbursed_at",
+            "approval_snapshot", "approval_fingerprint", "setup_review", "setup_authorization", "configuration_snapshot",
             "disbursement_requested_at", "disbursement_requested_by",
             "cbs_demande_number", "cbs_demande_ref", "cbs_contract_number",
             "cbs_operation_date",
@@ -625,6 +779,7 @@ class CreditApplicationSerializer(serializers.ModelSerializer):
         ]
         read_only_fields = [
             "id", "reference", "last_due_date", "financed_quota", "status",
+            "approval_snapshot", "approval_fingerprint", "setup_review", "setup_authorization", "configuration_snapshot",
             "risk_level",
             "submitted_at", "disbursed_at",
             "disbursement_requested_at", "disbursement_requested_by",
@@ -633,7 +788,7 @@ class CreditApplicationSerializer(serializers.ModelSerializer):
             "submitted_by",
             "submitted_by_display", "created_by", "created_by_display",
             "created_at", "updated_at",
-            "extra_fees", "fees_breakdown",
+            "extra_fees", "fees_breakdown", "pricing_quote",
             "cbs_refs", "periodicity_label", "repayment_mechanism_label",
             "currency_label", "agency_display",
             "collection_case_id", "collection_stage", "collection_stage_display",
@@ -664,6 +819,8 @@ class CreditApplicationSerializer(serializers.ModelSerializer):
             merged.status = CreditApplication.Status.DRAFT
             merged.client = attrs.get("client")
             merged.product = attrs.get("product")
+            merged.agency_id = getattr(attrs.get("agency"), "pk", None) or getattr(
+                getattr(self.context.get("request"), "user", None), "agency_id", None)
             merged.amount_requested = attrs.get("amount_requested")
             merged.duration_months = attrs.get("duration_months")
             merged.amount_approved = attrs.get("amount_approved")
@@ -671,7 +828,7 @@ class CreditApplicationSerializer(serializers.ModelSerializer):
             for key, val in attrs.items():
                 setattr(merged, key, val)
 
-        policy = get_instruction_policy(getattr(merged, "tenant_id", None))
+        policy = get_instruction_policy(getattr(merged, "tenant_id", None), application=merged)
 
         if "amount_approved" in attrs and attrs["amount_approved"] is not None:
             if instance is None or not amount_approved_writable(instance):
@@ -729,6 +886,12 @@ class CreditApplicationSerializer(serializers.ModelSerializer):
         from apps.common.upload_validation import validate_attrs_uploads
 
         attrs = validate_attrs_uploads(attrs, self.context, check_quota=True)
+        request = self.context.get("request")
+        if request and "extra_fees" in request.data:
+            try:
+                parse_extra_fees(request.data.get("extra_fees"))
+            except ValueError as exc:
+                raise serializers.ValidationError({"extra_fees": str(exc)}) from exc
         return attrs
 
     def _validate_catalog_refs(self, attrs, tenant_id):
@@ -742,6 +905,15 @@ class CreditApplicationSerializer(serializers.ModelSerializer):
             ("currency", Currency, "devise"),
         ]
         errors = {}
+        if (self.instance is None or "financing_object" in attrs) and not attrs.get("financing_object"):
+            from apps.corebanking.disbursement import requires_financing_object
+
+            if requires_financing_object(tenant_id):
+                errors["financing_object"] = "Sélectionnez l'objet de financement CBS exact dans le référentiel importé."
+        if attrs.get("financing_object") is not None:
+            obj = attrs["financing_object"]
+            if str(obj.tenant_id) != str(tenant_id) or not obj.is_active or not obj.cbs_code.strip():
+                errors["financing_object"] = "Sélectionnez un objet CBS actif importé pour cette filiale."
         for field, model, label in checks:
             if field not in attrs:
                 continue
@@ -780,12 +952,14 @@ class CreditApplicationSerializer(serializers.ModelSerializer):
         except ValueError as exc:
             raise serializers.ValidationError({"extra_fees": str(exc)}) from exc
 
+    @transaction.atomic
     def create(self, validated_data):
         application = super().create(validated_data)
         self._save_stock_photos(application)
         self._save_extra_fees(application)
         return application
 
+    @transaction.atomic
     def update(self, instance, validated_data):
         application = super().update(instance, validated_data)
         self._save_stock_photos(application)
@@ -944,7 +1118,7 @@ class SimulationSerializer(serializers.Serializer):
         max_digits=18, decimal_places=2, min_value=Decimal("1")
     )
     annual_rate = serializers.DecimalField(
-        max_digits=6, decimal_places=3, min_value=Decimal("0")
+        max_digits=6, decimal_places=3, min_value=Decimal("0"), required=False, allow_null=True
     )
     months = serializers.IntegerField(min_value=1, max_value=600)
     periodicity = serializers.CharField(required=False, default="MONTHLY")
@@ -952,9 +1126,16 @@ class SimulationSerializer(serializers.Serializer):
     simulation_date = serializers.DateField(required=False, allow_null=True)
     savings_rate = serializers.DecimalField(
         max_digits=6, decimal_places=3, min_value=Decimal("0"),
-        required=False, default=Decimal("0"),
+        required=False, allow_null=True,
     )
     mechanism = serializers.CharField(required=False, default="DEGRESSIVE")
+    product = serializers.UUIDField(required=False, allow_null=True)
+    agency = serializers.UUIDField(required=False, allow_null=True)
+    client_type = serializers.ChoiceField(choices=["", "INDIVIDUAL", "CORPORATE", "PROFESSIONAL"], required=False, default="")
+    individual_profile = serializers.ChoiceField(choices=["", "SALARIE", "INDEPENDANT", "MIXTE"], required=False, default="")
+    fees_rate = serializers.DecimalField(max_digits=6, decimal_places=3, min_value=Decimal("0"), max_value=Decimal("100"), required=False, allow_null=True)
+    extra_fees = serializers.JSONField(required=False)
+    currency = serializers.RegexField(r"^[A-Z]{3}$", required=False)
 
     def validate(self, attrs):
         from apps.catalog.cbs_resolve import active_codes
@@ -962,6 +1143,19 @@ class SimulationSerializer(serializers.Serializer):
         from apps.common.tenancy import get_current_tenant_id
 
         tenant_id = get_current_tenant_id()
+        if not tenant_id:
+            raise serializers.ValidationError("Sélectionnez une filiale.")
+        if attrs.get("savings_rate") is not None and attrs["savings_rate"] > 100:
+            raise serializers.ValidationError({"savings_rate": "Le taux d'épargne doit être au plus égal à 100 %."})
+        from django.utils import timezone
+        attrs["simulation_date"] = attrs.get("simulation_date") or timezone.localdate()
+        if attrs.get("first_due_date") and attrs["first_due_date"] <= attrs["simulation_date"]:
+            raise serializers.ValidationError({"first_due_date": "La première échéance doit suivre la date de simulation."})
+        if "extra_fees" in attrs:
+            try:
+                attrs["extra_fees"] = parse_extra_fees(attrs["extra_fees"])
+            except ValueError as exc:
+                raise serializers.ValidationError({"extra_fees": str(exc)}) from exc
         periodicity = attrs.get("periodicity") or "MONTHLY"
         mechanism = attrs.get("mechanism") or "DEGRESSIVE"
         period_codes = active_codes(LoanPeriodicity, tenant_id)

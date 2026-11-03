@@ -5,6 +5,7 @@ import { useState, type FormEvent } from "react";
 import { api } from "@/api/client";
 import type { Agency, CbsCatalogItem, Paginated } from "@/api/types";
 import { useAuth } from "@/auth/AuthContext";
+import { hasPerm } from "@/auth/permissions";
 import {
   Card,
   PageHeader,
@@ -29,6 +30,8 @@ export function AdminAgenciesPage() {
   const qc = useQueryClient();
   const { user, activeTenant } = useAuth();
   const needsTenant = Boolean(user?.is_group_level && !activeTenant);
+  const canCreateAgency = hasPerm(user, "tenants.add_agency");
+  const canChangeAgency = hasPerm(user, "tenants.change_agency");
 
   const [showForm, setShowForm] = useState(false);
   const [form, setForm] = useState({ ...EMPTY });
@@ -133,7 +136,7 @@ export function AdminAgenciesPage() {
         icon={MapPin}
         title="Agences"
         subtitle="Création et paramétrage des agences de la filiale"
-        actions={
+        actions={canCreateAgency ? (
           <button
             className="btn btn-primary"
             onClick={() => {
@@ -145,7 +148,7 @@ export function AdminAgenciesPage() {
             {showForm ? <X /> : <Plus />}
             {showForm ? "Fermer" : "Nouvelle agence"}
           </button>
-        }
+        ) : undefined}
       />
 
       {showForm && (
@@ -231,7 +234,7 @@ export function AdminAgenciesPage() {
             </label>
           </div>
           {error && <div className="form-error">{error}</div>}
-          <button className="btn btn-primary" disabled={createMutation.isPending}>
+          <button className="btn btn-primary" disabled={createMutation.isPending || !canCreateAgency}>
             Créer l&apos;agence
           </button>
         </form>
@@ -325,7 +328,7 @@ export function AdminAgenciesPage() {
               </label>
             </div>
             <div className="row-actions">
-              <button className="btn btn-primary btn-sm" disabled={patchMutation.isPending}>
+              <button className="btn btn-primary btn-sm" disabled={patchMutation.isPending || !canChangeAgency}>
                 <Save /> Enregistrer
               </button>
               <button
@@ -362,8 +365,8 @@ export function AdminAgenciesPage() {
             {(agencies.data?.results ?? []).map((a) => (
               <tr
                 key={a.id}
-                className="row-clickable"
-                onClick={() => startEdit(a)}
+                className={canChangeAgency ? "row-clickable" : undefined}
+                onClick={canChangeAgency ? () => startEdit(a) : undefined}
               >
                 <td>{a.code}</td>
                 <td>{a.name}</td>
@@ -382,15 +385,17 @@ export function AdminAgenciesPage() {
                   </span>
                 </td>
                 <td>
-                  <button
-                    className="btn btn-ghost btn-sm"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      startEdit(a);
-                    }}
-                  >
-                    Modifier
-                  </button>
+                  {canChangeAgency && (
+                    <button
+                      className="btn btn-ghost btn-sm"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        startEdit(a);
+                      }}
+                    >
+                      Modifier
+                    </button>
+                  )}
                 </td>
               </tr>
             ))}

@@ -20,6 +20,7 @@ import {
 import { api } from "@/api/client";
 import type { Agency, Paginated, Tenant, TenantOfficer } from "@/api/types";
 import { useAuth } from "@/auth/AuthContext";
+import { hasPerm } from "@/auth/permissions";
 import {
   FilterField,
   FilterSelect,
@@ -61,8 +62,9 @@ const EMPTY_TENANT = {
   email: "",
   is_active: true,
   brand_primary: "#0f9488",
-  brand_secondary: "#0d7a72",
   brand_accent: "#d4a017",
+  brand_sidebar: "#084f4a",
+  brand_sidebar_text: "#ffffff",
 };
 
 const EMPTY_AGENCY = {
@@ -128,6 +130,11 @@ function FormBlock({
 export function AdminTenantsPage() {
   const qc = useQueryClient();
   const { user, setActiveTenant } = useAuth();
+  const canManageTenants = Boolean(
+    user?.is_superuser || (user?.is_group_level && user?.is_staff),
+  );
+  const canViewAgencies = hasPerm(user, "tenants.view_agency");
+  const canCreateAgencies = hasPerm(user, "tenants.add_agency");
   const [showForm, setShowForm] = useState(false);
   const [form, setForm] = useState({ ...EMPTY_TENANT });
   const [officers, setOfficers] = useState<OfficerDraft[]>([]);
@@ -174,7 +181,7 @@ export function AdminTenantsPage() {
           headers: { "X-Tenant-Id": selectedId! },
         })
       ).data,
-    enabled: !!selectedId,
+    enabled: !!selectedId && canViewAgencies,
   });
 
   const createTenant = useMutation({
@@ -228,6 +235,7 @@ export function AdminTenantsPage() {
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["tenants"] });
       qc.invalidateQueries({ queryKey: ["tenant-branding"] });
+      qc.invalidateQueries({ queryKey: ["public-tenant-branding"] });
       setError(null);
     },
     onError: () => setError("Mise à jour impossible."),
@@ -277,8 +285,9 @@ export function AdminTenantsPage() {
       email: t.email ?? "",
       is_active: t.is_active,
       brand_primary: t.brand_primary,
-      brand_secondary: t.brand_secondary,
       brand_accent: t.brand_accent,
+      brand_sidebar: t.brand_sidebar,
+      brand_sidebar_text: t.brand_sidebar_text,
     });
     setOfficers(fromOfficers(t.officers));
     setLogoFile(null);
@@ -299,7 +308,7 @@ export function AdminTenantsPage() {
         icon={Building2}
         title="Filiales"
         subtitle="Création, configuration, logo, couleurs, responsables et agences"
-        actions={
+        actions={canManageTenants ? (
           <button
             className="btn btn-primary"
             type="button"
@@ -311,10 +320,10 @@ export function AdminTenantsPage() {
             {showForm ? <X /> : <Plus />}
             {showForm ? "Fermer" : "Nouvelle filiale"}
           </button>
-        }
+        ) : undefined}
       />
 
-      {showForm && (
+      {showForm && canManageTenants && (
         <form
           className="tenant-compose-form"
           onSubmit={(e: FormEvent) => {
@@ -415,8 +424,9 @@ export function AdminTenantsPage() {
                       aria-hidden
                     >
                       <i style={{ background: t.brand_primary }} />
-                      <i style={{ background: t.brand_secondary }} />
                       <i style={{ background: t.brand_accent }} />
+                      <i style={{ background: t.brand_sidebar }} />
+                      <i style={{ background: t.brand_sidebar_text }} />
                     </span>
                     <span className="tenant-pick-body">
                       <strong>
@@ -452,39 +462,45 @@ export function AdminTenantsPage() {
                   <img src={selected.logo_url} alt="Logo filiale" />
                 </div>
               )}
-              <form
-                className="tenant-compose-form embedded"
-                onSubmit={(e: FormEvent) => {
-                  e.preventDefault();
-                  updateTenant.mutate({
-                    id: selected.id,
-                    data: form,
-                    logo: logoFile,
-                    officerList: officers,
-                  });
-                }}
-              >
-                <TenantFields
-                  form={form}
-                  setForm={setForm}
-                  logoFile={logoFile}
-                  setLogoFile={setLogoFile}
-                  codeReadOnly
-                />
-                <OfficersEditor officers={officers} setOfficers={setOfficers} />
-                {error && <div className="form-error">{error}</div>}
-                <div className="tenant-compose-actions">
-                  <button
-                    className="btn btn-primary"
-                    disabled={updateTenant.isPending}
-                  >
-                    <Save size={16} />
-                    {updateTenant.isPending
-                      ? "Enregistrement…"
-                      : "Enregistrer la filiale"}
-                  </button>
-                </div>
-              </form>
+              {canManageTenants ? (
+                <form
+                  className="tenant-compose-form embedded"
+                  onSubmit={(e: FormEvent) => {
+                    e.preventDefault();
+                    updateTenant.mutate({
+                      id: selected.id,
+                      data: form,
+                      logo: logoFile,
+                      officerList: officers,
+                    });
+                  }}
+                >
+                  <TenantFields
+                    form={form}
+                    setForm={setForm}
+                    logoFile={logoFile}
+                    setLogoFile={setLogoFile}
+                    codeReadOnly
+                  />
+                  <OfficersEditor officers={officers} setOfficers={setOfficers} />
+                  {error && <div className="form-error">{error}</div>}
+                  <div className="tenant-compose-actions">
+                    <button
+                      className="btn btn-primary"
+                      disabled={updateTenant.isPending}
+                    >
+                      <Save size={16} />
+                      {updateTenant.isPending
+                        ? "Enregistrement…"
+                        : "Enregistrer la filiale"}
+                    </button>
+                  </div>
+                </form>
+              ) : (
+                <p className="muted">
+                  La modification des filiales est réservée aux administrateurs Groupe.
+                </p>
+              )}
 
               <section className="tenant-form-block">
                 <header className="tenant-form-block-head">
@@ -499,9 +515,9 @@ export function AdminTenantsPage() {
                   </div>
                 </header>
                 <div className="tenant-form-block-body">
-                  {agencies.isLoading ? (
+                  {canViewAgencies && agencies.isLoading ? (
                     <Spinner />
-                  ) : (
+                  ) : canViewAgencies ? (
                     <ul className="tenant-agency-list">
                       {(agencies.data?.results ?? []).map((a) => (
                         <li key={a.id}>
@@ -524,9 +540,11 @@ export function AdminTenantsPage() {
                         <li className="muted">Aucune agence.</li>
                       )}
                     </ul>
+                  ) : (
+                    <p className="muted">La consultation des agences n’est pas autorisée.</p>
                   )}
 
-                  <form
+                  {canCreateAgencies && <form
                     className="tenant-agency-form"
                     onSubmit={(e: FormEvent) => {
                       e.preventDefault();
@@ -629,7 +647,7 @@ export function AdminTenantsPage() {
                       <Plus size={15} />
                       Ajouter l&apos;agence
                     </button>
-                  </form>
+                  </form>}
                 </div>
               </section>
             </div>
@@ -849,55 +867,25 @@ function TenantFields({
                 <span className="muted small">{logoFile.name}</span>
               )}
             </label>
-            <label className="field color-field">
-              <span>Couleur principale</span>
-              <input
-                type="color"
-                value={form.brand_primary}
-                onChange={(e) =>
-                  setForm({ ...form, brand_primary: e.target.value })
-                }
-              />
-              <input
-                value={form.brand_primary}
-                readOnly
-                className="color-hex"
-              />
-            </label>
-            <label className="field color-field">
-              <span>Couleur secondaire</span>
-              <input
-                type="color"
-                value={form.brand_secondary}
-                onChange={(e) =>
-                  setForm({ ...form, brand_secondary: e.target.value })
-                }
-              />
-              <input
-                value={form.brand_secondary}
-                readOnly
-                className="color-hex"
-              />
-            </label>
-            <label className="field color-field">
-              <span>Couleur d&apos;accent</span>
-              <input
-                type="color"
-                value={form.brand_accent}
-                onChange={(e) =>
-                  setForm({ ...form, brand_accent: e.target.value })
-                }
-              />
-              <input value={form.brand_accent} readOnly className="color-hex" />
-            </label>
+            {([
+              ["brand_primary", "Couleur principale"],
+              ["brand_accent", "Couleur accent"],
+              ["brand_sidebar", "Couleur barre latérale"],
+              ["brand_sidebar_text", "Couleur texte de la barre"],
+            ] as const).map(([key, label]) => <label className="field color-field" key={key}>
+              <span>{label}</span>
+              <input type="color" value={form[key]} onChange={(e) => setForm({ ...form, [key]: e.target.value })} />
+              <input value={form[key]} readOnly className="color-hex" aria-label={`${label} — code hexadécimal`} />
+            </label>)}
           </div>
           <aside
             className="tenant-brand-preview"
             style={
               {
                 "--preview-primary": form.brand_primary,
-                "--preview-secondary": form.brand_secondary,
                 "--preview-accent": form.brand_accent,
+                "--preview-sidebar": form.brand_sidebar,
+                "--preview-sidebar-text": form.brand_sidebar_text,
               } as CSSProperties
             }
           >
@@ -907,13 +895,16 @@ function TenantFields({
               <span className="muted small">
                 {form.code || "CODE"} · {form.country || "Pays"}
               </span>
+              <div className="tenant-brand-preview-menu">
+                <span>Menu latéral</span>
+                <span>Tableau de bord</span>
+                <span className="tenant-brand-preview-active">Dossiers de crédit</span>
+              </div>
               <div className="tenant-brand-preview-swatches">
                 <span style={{ background: form.brand_primary }} title="Principale" />
-                <span
-                  style={{ background: form.brand_secondary }}
-                  title="Secondaire"
-                />
                 <span style={{ background: form.brand_accent }} title="Accent" />
+                <span style={{ background: form.brand_sidebar }} title="Barre latérale" />
+                <span style={{ background: form.brand_sidebar_text }} title="Texte de la barre" />
               </div>
             </div>
           </aside>

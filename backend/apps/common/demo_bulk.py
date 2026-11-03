@@ -107,8 +107,15 @@ def seed_collection_list_widgets(*, tenant, user, stdout=None, limit: int = 12):
         .exclude(stage=CollectionCase.Stage.CLOSED)
         .count()
     )
+    needed = max(15 - open_count, 0)
     if open_count < 15:
-        # Créer des prêts actifs sur dossiers avancés sans prêt.
+        existing_untracked_loans = Loan.objects.filter(
+            tenant=tenant,
+            status=Loan.Status.ACTIVE,
+            collection_case__isnull=True,
+        ).count()
+        loans_to_create = max(needed - existing_untracked_loans, 0)
+        # Créer uniquement les prêts nécessaires pour atteindre le minimum.
         borrow_apps = list(
             CreditApplication.objects.filter(
                 tenant=tenant,
@@ -120,12 +127,12 @@ def seed_collection_list_widgets(*, tenant, user, stdout=None, limit: int = 12):
                 ],
             )
             .exclude(loan__isnull=False)
-            .order_by("created_at")[:20]
+            .order_by("created_at")[: min(20, loans_to_create)]
         )
         for i, app in enumerate(borrow_apps):
             principal = app.amount_approved or app.amount_requested or Decimal("1500000")
             days = 25 + (i * 17) % 120
-            Loan.objects.create(
+            loan = Loan.objects.create(
                 tenant=tenant,
                 application=app,
                 principal=principal,
@@ -136,6 +143,27 @@ def seed_collection_list_widgets(*, tenant, user, stdout=None, limit: int = 12):
                 status=Loan.Status.ACTIVE,
                 core_banking_reference=f"CBS-UI-{str(app.id)[:8]}",
             )
+            installment_principal = (principal / 3).quantize(Decimal("1"))
+            for number in range(1, 4):
+                installment_status = (
+                    Installment.Status.OVERDUE
+                    if number == 1
+                    else Installment.Status.PENDING
+                )
+                interest_due = Decimal("20000")
+                Installment.objects.get_or_create(
+                    tenant=tenant,
+                    loan=loan,
+                    number=number,
+                    defaults={
+                        "due_date": loan.first_due_date
+                        + timedelta(days=30 * (number - 1)),
+                        "principal_due": installment_principal,
+                        "interest_due": interest_due,
+                        "total_due": installment_principal + interest_due,
+                        "status": installment_status,
+                    },
+                )
             if app.status != CreditApplication.Status.DISBURSED:
                 app.status = CreditApplication.Status.DISBURSED
                 app.save(update_fields=["status"])
@@ -145,7 +173,6 @@ def seed_collection_list_widgets(*, tenant, user, stdout=None, limit: int = 12):
             .select_related("application")
             .order_by("created_at")
         )
-        needed = 15 - open_count
         created_cases = 0
         for i, loan in enumerate(active_loans):
             if created_cases >= needed:
@@ -163,14 +190,21 @@ def seed_collection_list_widgets(*, tenant, user, stdout=None, limit: int = 12):
             )
             if not case:
                 continue
+            case_updates = []
             if days >= 90:
-                case.stage = CollectionCase.Stage.LITIGATION
+                stage = CollectionCase.Stage.LITIGATION
             elif days >= 30:
-                case.stage = CollectionCase.Stage.PRECONTENTIOUS
+                stage = CollectionCase.Stage.PRECONTENTIOUS
             else:
-                case.stage = CollectionCase.Stage.AMICABLE
-            case.assigned_to = user
-            case.save()
+                stage = CollectionCase.Stage.AMICABLE
+            if case.stage != stage:
+                case.stage = stage
+                case_updates.append("stage")
+            if case.assigned_to_id != getattr(user, "pk", None):
+                case.assigned_to = user
+                case_updates.append("assigned_to")
+            if case_updates:
+                case.save(update_fields=[*case_updates, "updated_at"])
             CollectionAction.objects.get_or_create(
                 tenant=tenant,
                 case=case,
@@ -195,12 +229,22 @@ def seed_collection_list_widgets(*, tenant, user, stdout=None, limit: int = 12):
         offset = _FOLLOWUP_OFFSETS[i % len(_FOLLOWUP_OFFSETS)]
         action_type = _FOLLOWUP_TYPES[i % len(_FOLLOWUP_TYPES)]
         note = _FOLLOWUP_NOTES[i % len(_FOLLOWUP_NOTES)]
-        case.next_action_date = today + timedelta(days=offset)
-        case.next_action_type = action_type
-        case.next_action_note = note
+        changed_fields = []
+        next_action_date = today + timedelta(days=offset)
+        if case.next_action_date != next_action_date:
+            case.next_action_date = next_action_date
+            changed_fields.append("next_action_date")
+        if case.next_action_type != action_type:
+            case.next_action_type = action_type
+            changed_fields.append("next_action_type")
+        if case.next_action_note != note:
+            case.next_action_note = note
+            changed_fields.append("next_action_note")
         if not case.assigned_to_id and user is not None:
             case.assigned_to = user
-        case.save()
+            changed_fields.append("assigned_to")
+        if changed_fields:
+            case.save(update_fields=[*changed_fields, "updated_at"])
         followups_n += 1
 
     firm, _ = LegalParty.objects.get_or_create(
@@ -238,7 +282,7 @@ def seed_collection_list_widgets(*, tenant, user, stdout=None, limit: int = 12):
         ][: 6 - len(litigation_candidates)]
         for c in extras:
             c.stage = CollectionCase.Stage.LITIGATION
-            c.save(update_fields=["stage"])
+            c.save(update_fields=["stage", "updated_at"])
             litigation_candidates.append(c)
 
     hearings_n = 0
@@ -274,17 +318,27 @@ def seed_collection_list_widgets(*, tenant, user, stdout=None, limit: int = 12):
                 status=LitigationFile.Status.IN_PROGRESS,
                 action_type=LitigationFile.ActionType.SUMMONS,
             )
-        lit.title = lit.title or title
-        lit.status = LitigationFile.Status.IN_PROGRESS
-        lit.action_type = lit.action_type or LitigationFile.ActionType.SUMMONS
-        lit.court_name = _COURTS[i % len(_COURTS)]
-        lit.case_reference = lit.case_reference or f"RG-{2026}-{1000 + i}"
-        lit.law_firm = firm
-        lit.hearing_date = today + timedelta(days=hearing_slots[i % len(hearing_slots)])
-        lit.hearing_time = hearing_hours[i % len(hearing_hours)]
-        lit.hearing_location = "Salle des audiences civiles"
-        lit.first_hearing_date = lit.first_hearing_date or lit.hearing_date
-        lit.save()
+        litigation_updates = {
+            "title": lit.title or title,
+            "status": LitigationFile.Status.IN_PROGRESS,
+            "action_type": lit.action_type or LitigationFile.ActionType.SUMMONS,
+            "court_name": _COURTS[i % len(_COURTS)],
+            "case_reference": lit.case_reference or f"RG-{2026}-{1000 + i}",
+            "law_firm_id": firm.pk,
+            "hearing_date": today + timedelta(days=hearing_slots[i % len(hearing_slots)]),
+            "hearing_time": hearing_hours[i % len(hearing_hours)],
+            "hearing_location": "Salle des audiences civiles",
+        }
+        changed_fields = []
+        for field, value in litigation_updates.items():
+            if getattr(lit, field) != value:
+                setattr(lit, field, value)
+                changed_fields.append(field)
+        if not lit.first_hearing_date:
+            lit.first_hearing_date = litigation_updates["hearing_date"]
+            changed_fields.append("first_hearing_date")
+        if changed_fields:
+            lit.save(update_fields=[*changed_fields, "updated_at"])
         if case.stage != CollectionCase.Stage.LITIGATION:
             case.stage = CollectionCase.Stage.LITIGATION
             case.save(update_fields=["stage"])
@@ -754,6 +808,8 @@ def seed_bulk_operational_data(
         if app.status not in (
             CreditApplication.Status.CLOSED,
             CreditApplication.Status.APPROVED,
+            CreditApplication.Status.CONTRACT_GENERATED,
+            CreditApplication.Status.DISBURSEMENT_PENDING,
             CreditApplication.Status.DISBURSED,
         ):
             continue
@@ -795,6 +851,7 @@ def seed_bulk_operational_data(
             CreditApplication.Status.APPROVED,
             CreditApplication.Status.IN_APPROVAL,
             CreditApplication.Status.CONTRACT_GENERATED,
+            CreditApplication.Status.DISBURSEMENT_PENDING,
         ):
             continue
         ref = f"BULK-DAT-{i:03d}"
@@ -872,7 +929,12 @@ def seed_bulk_operational_data(
                         "status": status,
                     },
                 )
-        if make_overdue and loan.status == Loan.Status.ACTIVE:
+        is_collection_widget_loan = loan.core_banking_reference.startswith("CBS-UI-")
+        if (
+            make_overdue
+            and loan.status == Loan.Status.ACTIVE
+            and not is_collection_widget_loan
+        ):
             case = refresh_loan_overdue(
                 loan,
                 cbs_status={
@@ -907,8 +969,6 @@ def seed_bulk_operational_data(
                     defaults={"comment": f"Relance bulk {app.reference}"},
                 )
                 collections_n += 1
-
-    seed_collection_list_widgets(tenant=tenant, user=user, stdout=stdout)
 
     # --- GED (documents liés) ---
     cat_doc, _ = DocumentCategory.objects.get_or_create(

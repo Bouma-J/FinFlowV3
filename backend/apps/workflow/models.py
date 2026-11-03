@@ -12,7 +12,29 @@ from django.contrib.contenttypes.fields import GenericForeignKey
 from django.contrib.contenttypes.models import ContentType
 from django.db import models
 
-from apps.common.models import TenantScopedModel
+from apps.common.models import AuthoredModel, TenantScopedModel
+
+
+def default_working_days():
+    return [0, 1, 2, 3, 4]
+
+
+class BusinessCalendar(TenantScopedModel, AuthoredModel):
+    code = models.CharField(max_length=50)
+    name = models.CharField(max_length=255)
+    timezone = models.CharField(max_length=64, default="UTC")
+    working_days = models.JSONField(default=default_working_days)
+    opening_time = models.TimeField(default="08:00")
+    closing_time = models.TimeField(default="17:00")
+    holidays = models.JSONField(default=list, blank=True)
+    is_active = models.BooleanField(default=True)
+
+    class Meta:
+        ordering = ["code"]
+        constraints = [models.UniqueConstraint(fields=["tenant", "code"], name="unique_calendar_code_per_tenant")]
+
+    def __str__(self):
+        return self.name
 
 
 class WorkflowDefinition(TenantScopedModel):
@@ -31,6 +53,14 @@ class WorkflowDefinition(TenantScopedModel):
     )
     version = models.PositiveIntegerField("version", default=1)
     is_active = models.BooleanField("actif", default=True)
+    execution_mode = models.CharField(
+        max_length=20, default="EXPLICIT_MODE",
+        choices=[("LEGACY_ORDER", "Historique : même ordre en parallèle"), ("EXPLICIT_MODE", "Modes explicites")],
+    )
+    business_calendar = models.ForeignKey(
+        BusinessCalendar, on_delete=models.PROTECT, null=True, blank=True,
+        related_name="workflow_definitions",
+    )
 
     # Critères de sélection du circuit (optionnels, combinables).
     # - montant seul, produit/famille seul, ou les deux
@@ -171,6 +201,15 @@ class ApprovalStep(TenantScopedModel):
 
     sla_hours = models.PositiveIntegerField("SLA (heures)", default=48)
     allow_return = models.BooleanField("autorise le retour", default=True)
+    committee_quorum = models.PositiveIntegerField(default=1)
+    sla_mode = models.CharField(max_length=10, default="CALENDAR", choices=[("CALENDAR", "Heures continues"), ("BUSINESS", "Heures ouvrées")])
+    committee_enabled = models.BooleanField(default=False)
+    committee_majority = models.CharField(max_length=12, default="SIMPLE", choices=[("SIMPLE", "Majorité stricte"), ("QUALIFIED", "Majorité qualifiée"), ("UNANIMOUS", "Unanimité")])
+    committee_majority_numerator = models.PositiveIntegerField(default=2)
+    committee_majority_denominator = models.PositiveIntegerField(default=3)
+    committee_abstentions = models.CharField(max_length=10, default="INCLUDE", choices=[("INCLUDE", "Incluses"), ("EXCLUDE", "Exclues")])
+    committee_record_required = models.BooleanField(default=False)
+    committee_pv_required = models.BooleanField(default=True)
 
     class Meta:
         verbose_name = "étape d'approbation"
@@ -218,6 +257,7 @@ class WorkflowInstance(TenantScopedModel):
     current_order = models.PositiveIntegerField("étape courante", default=0)
     amount = models.DecimalField(max_digits=18, decimal_places=2, default=0)
     risk_level = models.PositiveIntegerField(null=True, blank=True)
+    calendar_snapshot = models.JSONField(default=dict, blank=True)
 
     class Meta:
         verbose_name = "instance de workflow"
@@ -262,6 +302,8 @@ class ApprovalTask(TenantScopedModel):
         "avis du validateur", max_length=25, choices=Opinion.choices, blank=True
     )
     decision_comment = models.TextField("commentaire de décision", blank=True)
+    decision_snapshot = models.JSONField(default=dict, blank=True)
+    committee_record = models.JSONField(default=dict, blank=True)
     proposed_amount = models.DecimalField(
         "montant proposé à cette étape", max_digits=18, decimal_places=2,
         null=True, blank=True,

@@ -198,6 +198,9 @@ VARIABLE_CATALOG = [
         ("montant_accorde_lettres", "Montant accordé en toutes lettres"),
         ("taux", "Taux d'intérêt (%)"),
         ("frais_dossier", "Frais de dossier (%)"),
+        ("frais_total", "Total des frais, taxes sur frais comprises"),
+        ("taxes_frais_total", "Total des taxes sur les frais configurés"),
+        ("frais_detail", "Liste des frais : label, amount, tax_amount"),
         ("taux_epargne", "Taux d'épargne obligatoire (%)"),
         ("duree_mois", "Durée (mois)"),
         ("periodicite", "Périodicité"),
@@ -409,9 +412,9 @@ def build_context(
     currency_label = "francs CFA" if currency == "XOF" else currency
 
     amount = reference_amount(application)
-    rate = application.interest_rate
-    if rate is None and product is not None:
-        rate = product.interest_rate
+    from apps.credits.pricing import quote_pricing
+    pricing = quote_pricing(application)
+    rate = Decimal(pricing["rates"]["interest_rate"])
 
     ctx: dict = {}
 
@@ -613,7 +616,11 @@ def build_context(
     ctx["montant_accorde"] = fmt_money(amount)
     ctx["montant_accorde_lettres"] = fmt_amount_words(amount, currency_label)
     ctx["taux"] = fmt_money(rate) if rate is not None else ""
-    ctx["frais_dossier"] = fmt_money(application.fees_rate) if application.fees_rate else ""
+    ctx["frais_dossier"] = fmt_money(Decimal(pricing["rates"]["fees_rate"]))
+    ctx["tarification"] = pricing
+    ctx["frais_detail"] = pricing["fees"]["lines"]
+    ctx["frais_total"] = fmt_money(Decimal(pricing["fees"]["total"] or "0"))
+    ctx["taxes_frais_total"] = fmt_money(Decimal(pricing["fees"].get("total_taxes") or "0"))
     ctx["taux_epargne"] = (
         fmt_money(application.mandatory_savings_rate)
         if application.mandatory_savings_rate else ""

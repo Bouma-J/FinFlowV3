@@ -77,6 +77,7 @@ def retry_cbs_integrations(limit: int = 50):
 
     logs = list(
         IntegrationLog.all_tenants.filter(status=IntegrationLog.Status.RETRY)
+        .exclude(operation="SUBMIT_CREDIT")
         .select_related("connector")
         .order_by("created_at")[:limit]
     )

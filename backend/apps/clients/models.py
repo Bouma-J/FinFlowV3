@@ -309,6 +309,7 @@ class Client(TenantScopedModel, AuthoredModel):
     )
 
     # KYC
+    custom_fields = models.JSONField(default=dict, blank=True)
     kyc_status = models.CharField(
         "statut KYC", max_length=20,
         choices=KycStatus.choices, default=KycStatus.PENDING,

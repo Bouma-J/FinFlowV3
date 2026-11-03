@@ -6,23 +6,87 @@ from .models import (
     ApprovalCondition,
     ApprovalStep,
     ApprovalTask,
+    BusinessCalendar,
     WorkflowDefinition,
     WorkflowInstance,
 )
 
 
+class BusinessCalendarSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = BusinessCalendar
+        fields = ["id", "code", "name", "timezone", "working_days", "opening_time", "closing_time", "holidays", "is_active", "created_at", "updated_at"]
+        read_only_fields = ["id", "created_at", "updated_at"]
+
+    def validate(self, attrs):
+        from .calendars import validate_calendar
+        from apps.common.tenancy import get_current_tenant_id
+        code = attrs.get("code", getattr(self.instance, "code", None))
+        duplicates = BusinessCalendar.all_tenants.filter(tenant_id=get_current_tenant_id(), code=code)
+        if self.instance:
+            duplicates = duplicates.exclude(pk=self.instance.pk)
+        if duplicates.exists():
+            raise serializers.ValidationError({"code": "Ce code existe déjà dans la filiale."})
+        values = {name: attrs.get(name, getattr(self.instance, name, default)) for name, default in {
+            "timezone": "UTC", "working_days": [0, 1, 2, 3, 4], "opening_time": "08:00", "closing_time": "17:00", "holidays": [],
+        }.items()}
+        try:
+            validate_calendar(values)
+        except (ValueError, TypeError) as exc:
+            raise serializers.ValidationError({"calendar": str(exc)})
+        return attrs
+
+
 class ApprovalStepSerializer(serializers.ModelSerializer):
+    committee_quorum = serializers.IntegerField(min_value=1, max_value=100, required=False)
+    order = serializers.IntegerField(min_value=1, required=False)
+    sla_hours = serializers.IntegerField(min_value=0, max_value=87600, required=False)
+    min_risk_level = serializers.IntegerField(min_value=0, max_value=5, allow_null=True, required=False)
+    committee_majority_numerator = serializers.IntegerField(min_value=1, max_value=1000, required=False)
+    committee_majority_denominator = serializers.IntegerField(min_value=1, max_value=1000, required=False)
+
+    def validate(self, attrs):
+        from apps.accounts.models import TenantRole
+        from apps.accounts.services import GROUP_CREDIT_COMMITTEE_DJANGO_GROUP
+
+        definition = attrs.get("definition", getattr(self.instance, "definition", None))
+        from apps.common.tenancy import get_current_tenant_id
+        if definition and str(definition.tenant_id) != str(get_current_tenant_id()):
+            raise serializers.ValidationError({"definition": "Le circuit doit appartenir à la filiale sélectionnée."})
+        group = attrs.get("required_group", getattr(self.instance, "required_group", None))
+        if definition and group:
+            if not TenantRole.objects.filter(tenant_id=definition.tenant_id, group=group).exists() and group.name != GROUP_CREDIT_COMMITTEE_DJANGO_GROUP:
+                raise serializers.ValidationError({
+                    "required_group": "Le rôle doit appartenir à la filiale du circuit ou être le comité Groupe."
+                })
+        if self.instance and definition and definition.pk != self.instance.definition_id:
+            raise serializers.ValidationError({"definition": "Une étape ne peut pas être déplacée vers un autre circuit."})
+        low = attrs.get("min_amount", getattr(self.instance, "min_amount", None))
+        high = attrs.get("max_amount", getattr(self.instance, "max_amount", None))
+        if (low is not None and low < 0) or (high is not None and high < 0) or (low is not None and high is not None and low > high):
+            raise serializers.ValidationError({"max_amount": "Les bornes doivent être positives et le plafond supérieur ou égal au plancher."})
+        numerator = attrs.get("committee_majority_numerator", getattr(self.instance, "committee_majority_numerator", 2))
+        denominator = attrs.get("committee_majority_denominator", getattr(self.instance, "committee_majority_denominator", 3))
+        if numerator > denominator or numerator * 2 <= denominator:
+            raise serializers.ValidationError({"committee_majority_numerator": "La majorité qualifiée doit être strictement supérieure à 1/2 et au plus égale à 1."})
+        if attrs.get("sla_mode", getattr(self.instance, "sla_mode", "CALENDAR")) == "BUSINESS" and definition and not definition.business_calendar_id:
+            raise serializers.ValidationError({"sla_mode": "Associez d'abord un calendrier ouvré au circuit."})
+        return attrs
+
     class Meta:
         model = ApprovalStep
         fields = [
             "id", "definition", "name", "order", "required_group", "mode",
             "step_kind", "min_amount", "max_amount", "min_risk_level",
-            "sla_hours", "allow_return",
+            "sla_hours", "allow_return", "committee_quorum",
+            "sla_mode", "committee_enabled", "committee_majority", "committee_majority_numerator",
+            "committee_majority_denominator", "committee_abstentions", "committee_record_required", "committee_pv_required",
         ]
         read_only_fields = ["id"]
 
 
 class WorkflowDefinitionSerializer(serializers.ModelSerializer):
+    version = serializers.IntegerField(min_value=1, required=False)
     steps = ApprovalStepSerializer(many=True, read_only=True)
     is_used = serializers.SerializerMethodField()
     decision_gaps = serializers.SerializerMethodField()
@@ -39,6 +103,7 @@ class WorkflowDefinitionSerializer(serializers.ModelSerializer):
             "target_type",
             "version",
             "is_active",
+            "execution_mode", "business_calendar",
             "is_used",
             "decision_gaps",
             "min_amount",
@@ -74,6 +139,19 @@ class WorkflowDefinitionSerializer(serializers.ModelSerializer):
         return obj.specificity_score()
 
     def validate(self, attrs):
+        from apps.common.tenancy import get_current_tenant_id
+        if self.instance is None:
+            if attrs.get("is_active") is True:
+                raise serializers.ValidationError({"is_active": "Créez le circuit inactif, ajoutez les étapes puis activez-le."})
+            attrs["is_active"] = False
+        duplicates = WorkflowDefinition.all_tenants.filter(
+            tenant_id=get_current_tenant_id(), code=attrs.get("code", getattr(self.instance, "code", None)),
+            version=attrs.get("version", getattr(self.instance, "version", 1)),
+        )
+        if self.instance:
+            duplicates = duplicates.exclude(pk=self.instance.pk)
+        if duplicates.exists():
+            raise serializers.ValidationError({"version": "Cette version du circuit existe déjà dans la filiale."})
         min_amount = attrs.get(
             "min_amount", getattr(self.instance, "min_amount", None)
         )
@@ -88,6 +166,8 @@ class WorkflowDefinitionSerializer(serializers.ModelSerializer):
             raise serializers.ValidationError(
                 {"max_amount": "Le plafond doit être supérieur ou égal au plancher."}
             )
+        if (min_amount is not None and min_amount < 0) or (max_amount is not None and max_amount < 0):
+            raise serializers.ValidationError({"min_amount": "Les montants du circuit doivent être positifs ou nuls."})
 
         product = attrs.get("product", getattr(self.instance, "product", None))
         category = attrs.get(
@@ -102,6 +182,12 @@ class WorkflowDefinitionSerializer(serializers.ModelSerializer):
                         )
                     }
                 )
+        calendar = attrs.get("business_calendar", getattr(self.instance, "business_calendar", None))
+        for field, value in (("product", product), ("product_category", category), ("business_calendar", calendar)):
+            if value is not None and str(value.tenant_id) != str(get_current_tenant_id()):
+                raise serializers.ValidationError({field: "La référence doit appartenir à la filiale sélectionnée."})
+        if calendar is not None and not calendar.is_active and "business_calendar" in attrs:
+            raise serializers.ValidationError({"business_calendar": "Choisissez un calendrier actif."})
         return attrs
 
     def get_decision_gaps(self, obj):
@@ -125,6 +211,19 @@ class WorkflowDefinitionSerializer(serializers.ModelSerializer):
 
 
 class ApprovalTaskSerializer(serializers.ModelSerializer):
+    committee_quorum = serializers.IntegerField(source="step.committee_quorum", read_only=True)
+    committee_majority = serializers.CharField(source="step.committee_majority", read_only=True)
+    committee_majority_numerator = serializers.IntegerField(source="step.committee_majority_numerator", read_only=True)
+    committee_majority_denominator = serializers.IntegerField(source="step.committee_majority_denominator", read_only=True)
+    committee_abstentions = serializers.CharField(source="step.committee_abstentions", read_only=True)
+    committee_pv_required = serializers.BooleanField(source="step.committee_pv_required", read_only=True)
+    committee_record_required = serializers.BooleanField(source="step.committee_record_required", read_only=True)
+    sla_mode = serializers.CharField(source="step.sla_mode", read_only=True)
+    is_committee = serializers.SerializerMethodField()
+
+    def get_is_committee(self, obj):
+        from .services import is_credit_committee_step
+        return is_credit_committee_step(obj.step)
     step_name = serializers.CharField(source="step.name", read_only=True)
     step_order = serializers.IntegerField(source="step.order", read_only=True)
     step_kind = serializers.CharField(source="step.step_kind", read_only=True)
@@ -146,7 +245,9 @@ class ApprovalTaskSerializer(serializers.ModelSerializer):
             "allow_return", "status", "opinion", "opinion_display",
             "decision_comment", "reject_reason", "proposed_amount",
             "acted_by", "acted_by_display", "acted_at", "due_at", "application",
-            "target_meta",
+            "target_meta", "decision_snapshot", "committee_record", "committee_quorum", "is_committee",
+            "committee_majority", "committee_majority_numerator", "committee_majority_denominator",
+            "committee_abstentions", "committee_pv_required", "committee_record_required", "sla_mode",
         ]
         read_only_fields = fields
 
@@ -278,11 +379,13 @@ class WorkflowInstanceSerializer(serializers.ModelSerializer):
             "id", "definition", "definition_code", "content_type", "object_id",
             "status", "current_order", "amount", "risk_level", "tasks",
             "created_at",
+            "calendar_snapshot",
         ]
         read_only_fields = fields
 
 
 class DecisionSerializer(serializers.Serializer):
+    committee_record = serializers.JSONField(required=False)
     decision = serializers.ChoiceField(
         choices=["APPROVED", "REJECTED", "RETURNED"]
     )

@@ -30,17 +30,17 @@ l’action est refusée (403), pas seulement masquée dans l’UI.
 | Rôle | Contenu typique |
 |------|-----------------|
 | **Administrateur filiale** | Pack complet (tous modules métier + paramétrage) : clients, dossiers, garanties, recouvrement, admin — **uniquement** sa filiale |
-| **Chargé d'affaire** | Instruction : clients, dossiers (création / édition créateur), analyses, garanties, cautions, contrats générés — pas de décaissement |
+| **Chargé d'affaire** | Instruction : clients, dossiers (création / édition créateur), analyses, garanties, cautions, contrats générés — pas de mise en place |
 | **Chef d'agence** | Même pack instruction (validation 1er niveau via groupe circuit) |
 | **Analyste crédit et risque** | Analyses / visites / documents uniquement — **pas** de création ni d’édition des champs dossier |
 | **Responsable crédit et risque** | Lecture large + contributions analyse — pas d’édition dossier ni paramétrage |
 | **Responsable exploitation** | Lecture transverse activité |
 | **Responsable retails** | Portefeuille retail (lecture + contributions limitées) |
 | **Comité de crédit** | Lecture + contributions analyses/visites en circuit — pas de création de dossier |
-| **Directeur Général** | Lecture quasi complète — **pas** de décaissement ni admin technique |
+| **Directeur Général** | Lecture quasi complète — **pas** de mise en place ni admin technique |
 | **Lecteur** | Consultation seule (clients, dossiers, garanties, contrats, circuit, recouvrement) — **aucune** écriture ni décision |
-| **Responsable des opérations** | Contrats générés, main levée / dation, **validation du décaissement**, CBS |
-| **Assistant des opérations** | Contrats générés + **initiation** du décaissement (à valider par le responsable) |
+| **Responsable des opérations** | Contrats générés, main levée / dation, **validation de la mise en place**, CBS |
+| **Assistant des opérations** | Contrats générés + **initiation** de la mise en place (à valider par le responsable) |
 | **Responsable Juridique** / **Assistant juridique** | Lecture transverse (exploitation + recouvrement) + contentieux / intervenants ; Resp. : main levée / dation ; Assist. : contentieux sans initiation ML/dation |
 | **Responsable / Assistant recouvrement** | Module recouvrement + initiation dation (+ lecture clients / dossiers / circuit) |
 | **Responsable administratif et financier** | Lecture transverse + pilotage encaissements / recouvrement financier + audit |
@@ -52,11 +52,11 @@ l’action est refusée (403), pas seulement masquée dans l’UI.
 Les anciens rôles bootstrap **Analyste crédit** et **Responsable agence** sont
 retirés (supprimés à la sync s'ils n'ont plus d'utilisateur).
 
-#### Décaissement (séparation des pouvoirs)
+#### Mise en place (séparation des pouvoirs)
 
 1. L’**Assistant des opérations** initie (`credits.initiate_disburse_creditapplication`) → statut `DISBURSEMENT_PENDING`.
 2. Le **Responsable des opérations** valide (`credits.disburse_creditapplication`) → prêt + échéancier.
-3. Le responsable peut aussi décaisser directement sans étape d’initiation.
+3. Le responsable peut aussi mettre en place directement sans étape d’initiation.
 
 Les ViewSets métier (`TenantScopedViewSet`) appliquent `HasModelPermission` par défaut.
 Exceptions : décisions workflow (`decide` / levée de réserves) = groupes de circuit ;

@@ -256,7 +256,7 @@ def test_id_gestionnaire_prefers_submitted_by_cbs_id(
     assert payload["idGestionnaire"] == "GEST-USER"
 
 
-def test_id_gestionnaire_falls_back_to_employee_then_default(
+def test_id_gestionnaire_does_not_use_hr_employee_id(
     tenant_a, catalog, connector, agency, prepared_product, prepared_client,
 ):
     user = User.objects.create_user(
@@ -275,7 +275,8 @@ def test_id_gestionnaire_falls_back_to_employee_then_default(
         officer=user,
     )
     payload = build_credit_disbursement_payload(app, connector=connector)
-    assert payload["idGestionnaire"] == "EMP-42"
+    # Le matricule RH n'est pas un identifiant du référentiel CBS.
+    assert payload["idGestionnaire"] == "GEST-DEFAULT"
 
     user.employee_id = ""
     user.save(update_fields=["employee_id"])
@@ -578,14 +579,15 @@ def test_api_catalog_crud_and_tenant_isolation(
     assert res_create.status_code == 201, res_create.content
     created_id = res_create.json()["id"]
 
-    # Patch cbs_code
+    # L'identifiant CBS du mécanisme configure idProduitRemb.
     res_patch = api.patch(
         f"/api/v1/repayment-methods/{created_id}/",
-        {"cbs_code": "REMB-LINEAR-V2"},
+        {"cbs_code": "REMB-LINEAR-V2", "label": "Linéaire modifié"},
         format="json",
     )
     assert res_patch.status_code == 200
     assert res_patch.json()["cbs_code"] == "REMB-LINEAR-V2"
+    assert res_patch.json()["label"] == "Linéaire modifié"
 
     # Invisible pour filiale B
     api.credentials(HTTP_X_TENANT_ID=str(tenant_b.id))
@@ -603,6 +605,10 @@ def test_api_catalog_crud_and_tenant_isolation(
 
 
 def test_api_user_cbs_id_create_and_patch(tenant_a, agency, staff_admin):
+    from apps.catalog.models import CbsManager
+
+    for code in ("GEST-NEW-99", "GEST-UPDATED"):
+        CbsManager.all_tenants.create(tenant=tenant_a, code=code, label=code, cbs_code=code)
     api = APIClient()
     api.force_authenticate(staff_admin)
     api.credentials(HTTP_X_TENANT_ID=str(tenant_a.id))
@@ -698,7 +704,7 @@ def test_rest_adapter_crd_simple_success_and_business_error(tenant_a, catalog):
     assert result["num_demande"] == "DEM1"
     post.assert_called_once()
     args, kwargs = post.call_args
-    assert args[0].endswith("gateway-perfect/crd/simple")
+    assert kwargs["url"].endswith("gateway-perfect/crd/simple")
     assert kwargs["headers"]["Authorization"] == "Bearer ABC"
     assert kwargs["json"]["externalId"] == "EXT-1"
 
@@ -785,7 +791,7 @@ def test_perfect_authentification_form_urlencoded_and_access_token(tenant_a, cat
     assert result["num_contrat"] == "CTR-A"
     assert post.call_count == 2
     auth_args, auth_kwargs = post.call_args_list[0]
-    assert auth_args[0].endswith("gateway-perfect/authentification")
+    assert auth_kwargs["url"].endswith("gateway-perfect/authentification")
     assert auth_kwargs["headers"]["Content-Type"] == (
         "application/x-www-form-urlencoded"
     )
@@ -795,7 +801,7 @@ def test_perfect_authentification_form_urlencoded_and_access_token(tenant_a, cat
         "scope": "perfect",
     }
     crd_args, crd_kwargs = post.call_args_list[1]
-    assert crd_args[0].endswith("gateway-perfect/crd/simple")
+    assert crd_kwargs["url"].endswith("gateway-perfect/crd/simple")
     assert crd_kwargs["headers"]["Authorization"] == (
         "Bearer eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.demo"
     )
@@ -861,6 +867,9 @@ def test_submit_credit_cbs_mode_uses_rest_and_journals(
         officer=officer,
         reference="ADV-REST-1",
     )
+    from tests.setup_helpers import configure_verified_cbs, prepare_setup
+    configure_verified_cbs(app, conn, officer)
+    prepare_setup(app)
 
     mock_resp = MagicMock()
     mock_resp.status_code = 200
@@ -908,7 +917,9 @@ def test_callback_secret_and_updates(
         ), patch(
             "apps.workflow.services.has_pending_conditions", return_value=False
         ):
-            loan = disburse_application(app)
+            from tests.setup_helpers import prepare_setup
+            executor = prepare_setup(app)
+            loan = disburse_application(app, user=executor)
 
     with pytest.raises(CoreBankingError, match="Secret"):
         apply_cbs_callback(
@@ -978,6 +989,8 @@ def test_disburse_api_endpoint_with_cbs_local(
     ), patch(
         "apps.workflow.services.has_pending_conditions", return_value=False
     ):
+        from tests.setup_helpers import prepare_setup
+        prepare_setup(app, executor=officer)
         res = api.post(
             f"/api/v1/credit-applications/{app.pk}/disburse/",
             {},
@@ -1015,8 +1028,10 @@ def test_disburse_blocks_when_cbs_rejects(
         ), patch(
             "apps.workflow.services.has_pending_conditions", return_value=False
         ):
+            from tests.setup_helpers import prepare_setup
+            executor = prepare_setup(app)
             with pytest.raises(WorkflowError, match="Limite"):
-                disburse_application(app)
+                disburse_application(app, user=executor)
     assert not hasattr(app, "loan") or not CreditApplication.objects.filter(
         pk=app.pk, status=CreditApplication.Status.DISBURSED
     ).exists()

@@ -25,6 +25,11 @@ def user_has_agency_access(user, agency_id):
         return True
     if getattr(user, "is_group_level", False):
         return True
+    # TENANT means the full branch, including agency records. Keep this
+    # consistent with apply_data_scope(); callers still validate that the
+    # agency belongs to the active tenant before relying on this check.
+    if getattr(user, "data_scope", None) == DataScope.TENANT:
+        return True
     return agency_id in get_user_agency_ids(user)
 
 
@@ -89,3 +94,20 @@ def apply_related_data_scope(qs, user, agency_lookup):
         return qs.filter(Q(**{f"{base}__created_by": user}))
 
     return qs
+
+
+def apply_workflow_credit_scope(qs, user, *, prefix=""):
+    """Applique aussi le périmètre crédit aux liens génériques des circuits."""
+    from django.contrib.contenttypes.models import ContentType
+    from apps.credits.models import CreditApplication
+
+    if not user or not user.is_authenticated:
+        return qs.none()
+    if user.is_group_level or user.data_scope == DataScope.TENANT:
+        return qs
+    credit_type = ContentType.objects.get_for_model(CreditApplication)
+    visible = apply_data_scope(CreditApplication.objects.all(), user).values("pk")
+    return qs.filter(
+        ~Q(**{f"{prefix}content_type": credit_type})
+        | Q(**{f"{prefix}content_type": credit_type, f"{prefix}object_id__in": visible})
+    )

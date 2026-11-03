@@ -1,4 +1,8 @@
 import json
+from copy import copy
+
+from django.core.exceptions import ValidationError as DjangoValidationError
+from django.utils import timezone
 
 from rest_framework import serializers
 
@@ -66,6 +70,13 @@ class ClientSerializer(serializers.ModelSerializer):
     display_name = serializers.CharField(read_only=True)
     phones = ClientPhoneSerializer(many=True, read_only=True)
     additional_phones = PhonesInputField(write_only=True, required=False)
+    configuration_application = serializers.UUIDField(write_only=True, required=False)
+
+    def get_fields(self):
+        fields = super().get_fields()
+        for key in ("civility", "marital_status", "id_document_type", "manager_id_document_type", "legal_form"):
+            fields[key] = serializers.CharField(required=False, allow_blank=True, max_length=Client._meta.get_field(key).max_length)
+        return fields
 
     class Meta:
         model = Client
@@ -105,11 +116,11 @@ class ClientSerializer(serializers.ModelSerializer):
             "cbs_point_of_service_name", "cbs_external_id",
             "cbs_context", "cbs_message", "cbs_synced_at", "cbs_situation",
             # KYC / statut
-            "kyc_status", "kyc_validated_at", "is_active",
+            "kyc_status", "kyc_validated_at", "is_active", "custom_fields", "configuration_application",
             "created_at", "updated_at",
         ]
         read_only_fields = [
-            "id", "reference", "is_active", "created_at", "updated_at",
+            "id", "reference", "is_active", "created_at", "updated_at", "kyc_validated_at",
             "cbs_full_name", "cbs_order_number", "cbs_profession_id",
             "cbs_nationality_id", "cbs_sector_id", "cbs_client_type_id",
             "cbs_zone_id", "cbs_savings_product_id", "cbs_signature_count",
@@ -160,6 +171,38 @@ class ClientSerializer(serializers.ModelSerializer):
                 raise serializers.ValidationError(
                     {"last_name": "Obligatoire pour une personne physique."}
                 )
+        from apps.common.tenancy import get_current_tenant_id
+        from apps.configuration.forms_catalog import validate_custom_values
+        from .compliance import client_configuration, dossier_configuration, kyc_failures
+
+        configuration_application = attrs.pop("configuration_application", None)
+        candidate = copy(self.instance) if self.instance else Client(tenant_id=get_current_tenant_id())
+        for key, value in attrs.items():
+            if key != "additional_phones":
+                setattr(candidate, key, value)
+        if not candidate.agency_id:
+            candidate.agency = getattr(getattr(self.context.get("request"), "user", None), "agency", None)
+        config = dossier_configuration(self.context.get("request"), getattr(self.instance, "pk", None), configuration_application) if configuration_application else client_configuration(candidate)
+        for key in ("civility", "marital_status", "id_document_type", "manager_id_document_type", "legal_form"):
+            if key not in attrs or not attrs[key] or self.instance and attrs[key] == getattr(self.instance, key):
+                continue
+            reference = "id_document_type" if key == "manager_id_document_type" else key
+            if attrs[key] not in {entry["code"] for entry in config["references"][reference] if entry["active"]}:
+                raise serializers.ValidationError({key: "Code inconnu ou désactivé dans les référentiels applicables."})
+        if "custom_fields" in attrs:
+            try:
+                attrs["custom_fields"] = validate_custom_values(config["forms"]["client_fields"], attrs["custom_fields"],
+                    previous=getattr(self.instance, "custom_fields", {}) or {})
+            except DjangoValidationError as exc:
+                raise serializers.ValidationError({"custom_fields": exc.messages}) from exc
+            candidate.custom_fields = attrs["custom_fields"]
+        if candidate.kyc_status == "VALIDATED":
+            if not self.instance or self.instance.kyc_status != "VALIDATED" or attrs.get("kyc_status") == "VALIDATED":
+                candidate.kyc_validated_at = timezone.localdate()
+                attrs["kyc_validated_at"] = candidate.kyc_validated_at
+            failures = kyc_failures(candidate, configuration=config)
+            if failures:
+                raise serializers.ValidationError({"kyc_status": failures})
         return attrs
 
     def _sync_phones(self, client, phones):

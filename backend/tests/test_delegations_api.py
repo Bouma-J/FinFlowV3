@@ -41,7 +41,8 @@ def test_give_mine_revoke_self_service(tenant_a):
     data = res.json()
     assert data["delegator"] == str(delegator.id)
     assert data["delegate"] == str(delegate.id)
-    assert data["is_currently_valid"] is True
+    assert data["is_currently_valid"] is False
+    assert data["approval_required"] is True
     del_id = data["id"]
 
     mine = api.get(

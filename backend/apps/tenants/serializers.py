@@ -75,7 +75,7 @@ class TenantSerializer(serializers.ModelSerializer):
             "id", "code", "name", "country", "zone", "currency",
             "timezone", "is_active", "address", "phone", "email",
             "logo", "logo_url", "brand_primary", "brand_secondary",
-            "brand_accent", "ged_quota_bytes", "ged_used_bytes",
+            "brand_accent", "brand_sidebar", "brand_sidebar_text", "ged_quota_bytes", "ged_used_bytes",
             "officers", "created_at", "updated_at",
         ]
         read_only_fields = [
@@ -86,6 +86,17 @@ class TenantSerializer(serializers.ModelSerializer):
         from apps.common.storage_urls import tenant_logo_url
 
         return tenant_logo_url(obj, self.context.get("request"))
+
+    def validate(self, attrs):
+        # Les anciennes variantes foncées sont conservées tant que la couleur
+        # principale ne change pas. Les nouvelles chartes dérivent leur nuance.
+        primary = attrs.get("brand_primary")
+        if primary and "brand_secondary" not in attrs and (
+            self.instance is None or primary.lower() != self.instance.brand_primary.lower()
+        ):
+            from .branding import secondary_from_primary
+            attrs["brand_secondary"] = secondary_from_primary(primary)
+        return attrs
 
     def validate_logo(self, value):
         if not value:
@@ -137,6 +148,8 @@ class PublicTenantBrandingSerializer(serializers.ModelSerializer):
             "brand_primary",
             "brand_secondary",
             "brand_accent",
+            "brand_sidebar",
+            "brand_sidebar_text",
         ]
         read_only_fields = fields
 

@@ -74,7 +74,7 @@ class IntegrationLog(TenantScopedModel):
     direction = models.CharField(
         max_length=10, choices=Direction.choices, default=Direction.OUTBOUND
     )
-    # Clé d'idempotence pour éviter les doublons (ex. double décaissement)
+    # Clé d'idempotence pour éviter les doublons (ex. doubla mise en place)
     idempotency_key = models.CharField(max_length=120, blank=True, db_index=True)
 
     request_payload = models.JSONField(default=dict, blank=True)

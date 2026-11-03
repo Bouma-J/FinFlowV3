@@ -49,6 +49,7 @@ api_v1 = [
     path("", include("apps.audit.urls")),
     path("", include("apps.reporting.urls")),
     path("", include("apps.notifications.urls")),
+    path("", include("apps.configuration.urls")),
 ]
 
 urlpatterns = [

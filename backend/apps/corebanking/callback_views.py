@@ -9,7 +9,7 @@ from apps.corebanking.services import CoreBankingError
 
 class CreditDisbursementCallbackView(APIView):
     """
-    Callback Perfect pour une demande de crédit / décaissement.
+    Callback Perfect pour une demande de crédit / mise en place.
 
     POST /api/v1/cbs/callbacks/crd/<application_id>/
     Header requis : X-CBS-Callback-Secret (doit correspondre à callback_secret

@@ -14,6 +14,7 @@ import { useRef, useState, type FormEvent } from "react";
 import { api } from "@/api/client";
 import type { CbsConnector, IntegrationLog, Paginated } from "@/api/types";
 import { useAuth } from "@/auth/AuthContext";
+import { hasPerm } from "@/auth/permissions";
 import { isFinflowAdmin } from "@/auth/routePerms";
 import {
   Badge,
@@ -268,7 +269,11 @@ export function AdminConnectorsPage() {
   const { user, activeTenant } = useAuth();
   const qc = useQueryClient();
   const needsTenant = Boolean(user?.is_group_level && !activeTenant);
-  const canImportCbs = isFinflowAdmin(user);
+  const canView = hasPerm(user, "corebanking.view_corebankingconnector");
+  const canAdd = hasPerm(user, "corebanking.add_corebankingconnector");
+  const canChange = hasPerm(user, "corebanking.change_corebankingconnector");
+  const canViewLogs = hasPerm(user, "corebanking.view_integrationlog");
+  const canImportCbs = isFinflowAdmin(user) && canChange;
 
   const [showForm, setShowForm] = useState(false);
   const [editing, setEditing] = useState<CbsConnector | null>(null);
@@ -286,7 +291,7 @@ export function AdminConnectorsPage() {
           params: { page_size: 100 },
         })
       ).data,
-    enabled: !needsTenant,
+    enabled: !needsTenant && canView,
   });
 
   const logs = useQuery({
@@ -297,7 +302,7 @@ export function AdminConnectorsPage() {
           params: { page_size: 30, ordering: "-created_at" },
         })
       ).data,
-    enabled: !needsTenant,
+    enabled: !needsTenant && canViewLogs,
   });
 
   const opsMetrics = useQuery({
@@ -457,8 +462,12 @@ export function AdminConnectorsPage() {
 
   function onSubmit(e: FormEvent) {
     e.preventDefault();
-    if (editing) patch.mutate();
-    else create.mutate();
+    if (editing ? canChange : canAdd) {
+      if (editing) patch.mutate();
+      else create.mutate();
+    } else {
+      setError("Vous n'avez pas le droit de modifier ce connecteur.");
+    }
   }
 
   if (needsTenant) {
@@ -494,9 +503,9 @@ export function AdminConnectorsPage() {
       <PageHeader
         icon={Cable}
         title="Connecteurs Core Banking"
-        subtitle="API Perfect : authentification, crédits existants, décaissement"
+        subtitle="API Perfect : authentification, crédits existants, mise en place"
         actions={
-          <button
+          (formOpen ? canChange || canAdd : canAdd) ? <button
             type="button"
             className="btn btn-primary"
             onClick={() => (formOpen ? closeForm() : openCreate())}
@@ -504,6 +513,7 @@ export function AdminConnectorsPage() {
             {formOpen ? <X size={16} /> : <Plus size={16} />}
             {formOpen ? "Fermer" : "Nouveau connecteur Perfect"}
           </button>
+            : undefined
         }
       />
 
@@ -513,7 +523,7 @@ export function AdminConnectorsPage() {
         </div>
       )}
 
-      {formOpen && (
+      {formOpen && (editing ? canChange : canAdd) && (
         <form className="tenant-compose-form" onSubmit={onSubmit}>
           <div className="form-section-head">
             <div className="form-section-icon">
@@ -628,7 +638,7 @@ export function AdminConnectorsPage() {
               </select>
             </label>
             <label className="field">
-              <span>Mode décaissement</span>
+              <span>Mode mise en place</span>
               <select
                 value={form.disburse_mode}
                 onChange={(e) =>
@@ -646,7 +656,7 @@ export function AdminConnectorsPage() {
 
           {form.disburse_mode === "LOCAL" && (
             <div className="form-error" style={{ marginTop: 10 }}>
-              Mode LOCAL : aucun appel CBS. Décaissements et contrôles
+              Mode LOCAL : aucun appel CBS. Mises en place et contrôles
               (soldes, situation) restent simulés — réservé à la démo / UAT
               tant que le CBS n’est pas disponible.
             </div>
@@ -743,7 +753,7 @@ export function AdminConnectorsPage() {
               />
             </label>
             <label className="field full-span">
-              <span>Décaissement crédit (crd/simple)</span>
+              <span>Mise en place crédit (crd/simple)</span>
               <input
                 value={form.crd_simple_path}
                 onChange={(e) =>
@@ -779,7 +789,7 @@ export function AdminConnectorsPage() {
           <div className="form-section-head" style={{ marginTop: 12 }}>
             <div className="form-section-heading">
               <div className="form-section-title">
-                Défauts décaissement Perfect
+                Défauts mise en place Perfect
               </div>
               <div className="form-section-desc">
                 Utilisés si agence / utilisateur / produit n’ont pas de code
@@ -807,13 +817,15 @@ export function AdminConnectorsPage() {
               />
             </label>
             <label className="field">
-              <span>idProduitRemb</span>
+              <span>idProduitRemb historique (simulation uniquement)</span>
               <input
                 value={form.id_produit_remb}
+                disabled={form.disburse_mode !== "LOCAL"}
                 onChange={(e) =>
                   setForm({ ...form, id_produit_remb: e.target.value })
                 }
               />
+              <small>En mode CBS réel, sélectionnez un produit de remboursement confirmé dans le paramétrage du produit de crédit.</small>
             </label>
           </div>
 
@@ -902,7 +914,7 @@ export function AdminConnectorsPage() {
           {(connectors.data?.results ?? []).some((c) => connectorMode(c) === "LOCAL") && (
             <div className="form-error" style={{ marginBottom: 12 }}>
               Au moins un connecteur est en mode LOCAL (démo / hors CBS) :
-              les décaissements ne partent pas vers le core banking.
+              les mises en place ne partent pas vers le core banking.
             </div>
           )}
         <table className="table card">
@@ -926,8 +938,8 @@ export function AdminConnectorsPage() {
               return (
                 <tr
                   key={c.id}
-                  className="row-clickable"
-                  onClick={() => openEdit(c)}
+                  className={canChange ? "row-clickable" : undefined}
+                  onClick={canChange ? () => openEdit(c) : undefined}
                 >
                   <td>
                     <strong>{c.name}</strong>
@@ -965,22 +977,22 @@ export function AdminConnectorsPage() {
                       style={{ display: "flex", gap: 6, flexWrap: "wrap" }}
                       onClick={(e) => e.stopPropagation()}
                     >
-                      <button
+                      {canChange && <button
                         type="button"
                         className="btn btn-ghost btn-sm"
                         onClick={() => openEdit(c)}
                       >
                         Modifier
-                      </button>
-                      <button
+                      </button>}
+                      {canChange && <button
                         type="button"
                         className="btn btn-ghost btn-sm"
                         onClick={() => toggleActive.mutate(c)}
                         disabled={toggleActive.isPending}
                       >
                         {c.is_active ? "Désactiver" : "Activer"}
-                      </button>
-                      <button
+                      </button>}
+                      {canChange && <button
                         type="button"
                         className="btn btn-ghost btn-sm"
                         onClick={() => {
@@ -990,7 +1002,7 @@ export function AdminConnectorsPage() {
                         disabled={testPing.isPending}
                       >
                         Test PING
-                      </button>
+                      </button>}
                       {canImportCbs && (
                         <>
                           <button
@@ -1027,9 +1039,10 @@ export function AdminConnectorsPage() {
         </>
       </QueryStatus>
 
+      {canViewLogs ? (<>
       <h3 style={{ marginTop: 28, marginBottom: 8 }}>Journaux d&apos;intégration</h3>
       <p className="muted small" style={{ marginBottom: 12 }}>
-        Derniers échanges CBS (décaissements, callbacks, PING…).
+        Derniers échanges CBS (mises en place, callbacks, PING…).
       </p>
       {opsMetrics.data?.celery && (
         <div className="card" style={{ marginBottom: 16, padding: 12 }}>
@@ -1094,6 +1107,7 @@ export function AdminConnectorsPage() {
           </tbody>
         </table>
       </QueryStatus>
+      </>) : <p className="muted small">Votre rôle ne permet pas de consulter les journaux d&apos;intégration.</p>}
     </div>
   );
 }

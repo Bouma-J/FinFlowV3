@@ -61,6 +61,7 @@ def test_my_pending_includes_delegate_tasks(tenant_a, product_a, client_a):
         username="val_del_b",
         tenant=tenant_a,
         password="x",
+        data_scope="TENANT",
     )
     perm = Permission.objects.get(
         content_type__app_label="workflow",

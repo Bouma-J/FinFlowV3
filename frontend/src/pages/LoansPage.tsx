@@ -116,7 +116,7 @@ export function LoansPage() {
         <PageHeader
           icon={Banknote}
           title="Prêts"
-          subtitle="Prêts décaissés et références CBS"
+          subtitle="Prêts mis en place et références CBS"
         />
         {needsTenant && <TenantScopeNotice />}
 
@@ -162,7 +162,7 @@ export function LoansPage() {
           </FilterField>
           <ProductFilter value={product} onChange={setFilter(setProduct)} />
           <AgencyFilter value={agency} onChange={setFilter(setAgency)} />
-          <FilterField label="Décaissé du" active={!!disbursedAfter}>
+          <FilterField label="Mis en place du" active={!!disbursedAfter}>
             <input
               type="date"
               value={disbursedAfter}
@@ -196,7 +196,7 @@ export function LoansPage() {
                     <th>Client</th>
                     <th className="num">Capital</th>
                     <th>Durée</th>
-                    <th>Décaissé</th>
+                    <th>Mis en place</th>
                     <th>Statut</th>
                     <th>CBS</th>
                     <th>Recouvrement</th>

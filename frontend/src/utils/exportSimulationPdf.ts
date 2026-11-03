@@ -3,6 +3,7 @@ import autoTable from "jspdf-autotable";
 
 import type { SimulationResult } from "@/api/types";
 import { PDF_BRAND_FILL, pdfMoney, pdfText } from "@/utils/pdfHelpers";
+import { DAY_COUNT_LABELS, DUE_ADJUSTMENT_LABELS } from "@/api/simulation";
 
 function hexToRgb(hex: string | null | undefined): [number, number, number] {
   const raw = (hex || "#0f9488").replace("#", "").trim();
@@ -44,6 +45,7 @@ function formatDueDate(value: string): string {
 }
 
 export type SimulationPdfParams = {
+  currency?: string;
   amount: string | number;
   annualRate: string | number;
   months: string | number;
@@ -62,6 +64,8 @@ export function exportSimulationPdf(
   result: SimulationResult,
   params: SimulationPdfParams,
 ) {
+  const currency = params.currency ?? result.parameters?.currency ?? "XOF";
+  const conventions = result.simulation_conventions ?? result.pricing_quote?.simulation_conventions;
   const hasSavings = num(result.total_savings) > 0;
   const doc = new jsPDF({ orientation: "landscape", unit: "mm", format: "a4" });
   const pageWidth = doc.internal.pageSize.getWidth();
@@ -107,13 +111,13 @@ export function exportSimulationPdf(
   doc.line(marginX, 29.5, pageWidth - marginX, 29.5);
 
   const summaryPairs: [string, string][] = [
-    ["Montant", `${money(params.amount)} XOF`],
+    ["Montant", `${money(params.amount)} ${currency}`],
     ["Taux annuel", `${params.annualRate} %`],
     ["Duree", `${params.months} mois`],
     ["Periodicite", pdfText(params.periodicityLabel)],
     ["Mecanisme", pdfText(params.mechanismLabel)],
     ["Nb echeances", String(result.schedule.length)],
-    ["Interets totaux", `${money(result.total_interest)} XOF`],
+    ["Interets totaux", `${money(result.total_interest)} ${currency}`],
     [
       hasSavings ? "Total institution" : "Total a rembourser",
       `${money(
@@ -121,16 +125,28 @@ export function exportSimulationPdf(
           ? result.total_institution ??
               num(result.total_repayment) - num(result.total_savings)
           : result.total_repayment,
-      )} XOF`,
+      )} ${currency}`,
     ],
   ];
+  if (conventions?.engine === "CONFIGURED") summaryPairs.push(
+    ["Base des interets", DAY_COUNT_LABELS[conventions.day_count]],
+    ["Pas / arrondi", `${conventions.amount_step} ${currency} / ${conventions.rounding}`],
+    ["Ajustement des dates", DUE_ADJUSTMENT_LABELS[conventions.due_adjustment]],
+    ["Dates pour les interets", conventions.interest_dates === "ADJUSTED" ? "Dates ajustees" : "Dates nominales"],
+    ["Calendrier conserve", conventions.calendar_snapshot?.name ?? "Aucun"],
+  );
   if (hasSavings) {
     summaryPairs.push(
       ["Epargne obligatoire", `${params.savingsRate ?? 0} %`],
-      ["Epargne totale", `${money(result.total_savings)} XOF`],
-      ["Total client", `${money(result.total_repayment)} XOF`],
+      ["Epargne totale", `${money(result.total_savings)} ${currency}`],
+      ["Total client", `${money(result.total_repayment)} ${currency}`],
     );
   }
+  if (result.total_fees != null) summaryPairs.push(
+    ["Frais et taxes sur frais", `${money(result.total_fees)} ${currency}`],
+    ["Interets + frais (hors epargne)", `${money(result.total_cost_excluding_savings)} ${currency}`],
+    ["Flux client total (frais et epargne)", `${money(result.total_client_outflow)} ${currency}`],
+  );
   if (params.simulationDate) {
     summaryPairs.splice(5, 0, [
       "Date simulation",
@@ -172,9 +188,19 @@ export function exportSimulationPdf(
     tableLineWidth: 0,
   });
 
-  const afterSummary =
+  let afterSummary =
     (doc as jsPDF & { lastAutoTable?: { finalY: number } }).lastAutoTable
       ?.finalY ?? 48;
+  if (result.pricing_quote?.fees.lines.length) {
+    autoTable(doc, {
+      startY: afterSummary + 4,
+      head: [["Frais", "Base / hors taxe", "Taxe sur frais", `Total (${currency})`]],
+      body: result.pricing_quote.fees.lines.map((line) => [pdfText(line.label), money(line.base_excluding_tax ?? line.amount), line.tax_amount == null ? "-" : money(line.tax_amount), money(line.amount)]),
+      styles: { fontSize: 8 }, headStyles: { fillColor: primary },
+      margin: { left: marginX, right: marginX, bottom: 14 },
+    });
+    afterSummary = (doc as jsPDF & { lastAutoTable?: { finalY: number } }).lastAutoTable?.finalY ?? afterSummary;
+  }
 
   const head = hasSavings
     ? [
@@ -331,7 +357,9 @@ export function exportSimulationPdf(
       doc.setFontSize(7.5);
       doc.setTextColor(...muted);
       doc.text(
-        "Simulation indicative - ACT/365, convention CBS (1ere periode theorique). Echeancier definitif au decaissement.",
+        conventions?.engine === "CONFIGURED"
+          ? "Simulation indicative - conventions configurees ci-dessus. Frais decrits seulement ; epargne distincte du cout. Concordance a verifier avec le CBS."
+          : "Simulation indicative - ACT/365 historique (1ere periode theorique). Frais decrits seulement ; epargne distincte du cout. Echeancier definitif dans le CBS.",
         marginX,
         pageHeight - 6,
       );

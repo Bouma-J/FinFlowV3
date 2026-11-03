@@ -1,10 +1,12 @@
 import mimetypes
 import os
+from django.core.exceptions import ValidationError as DjangoValidationError
 
 from django.http import FileResponse, HttpResponse
 from rest_framework.decorators import action
 from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
+from rest_framework.exceptions import ValidationError, PermissionDenied
 
 from apps.common.access import apply_data_scope
 from apps.common.permissions import HasModelPermission, MustChangePasswordGate
@@ -78,6 +80,7 @@ class ClientViewSet(AgencyScopedViewSet):
         "files": ["clients.view_client"],
         "cbs_preview": ["clients.add_client"],
         "cbs_import": ["clients.add_client"],
+        "form_configuration": ["clients.view_client"],
     }
     filterset_fields = ["client_type", "kyc_status", "agency", "is_active", "city"]
     search_fields = [
@@ -87,6 +90,31 @@ class ClientViewSet(AgencyScopedViewSet):
         "cbs_client_id", "cbs_account_number",
     ]
     ordering_fields = ["created_at", "last_name", "company_name"]
+
+    @action(detail=False, methods=["get"], url_path="form-configuration")
+    def form_configuration(self, request):
+        from apps.common.access import user_has_agency_access
+        from apps.configuration.services import resolve_context
+        from apps.tenants.models import Agency
+        tenant_id = get_current_tenant_id()
+        if not tenant_id:
+            raise ValidationError("Sélectionnez une filiale.")
+        if request.query_params.get("application"):
+            from .compliance import dossier_configuration
+            return Response(dossier_configuration(request, request.query_params.get("client"), request.query_params["application"]))
+        client_type = request.query_params.get("client_type", "INDIVIDUAL")
+        if client_type not in Client.ClientType.values:
+            raise ValidationError("Type de client invalide.")
+        agency_id = request.query_params.get("agency") or getattr(request.user, "agency_id", None)
+        if agency_id:
+            try:
+                valid = Agency.objects.filter(pk=agency_id, tenant_id=tenant_id).exists()
+            except (ValueError, DjangoValidationError):
+                valid = False
+            if not valid or not user_has_agency_access(request.user, agency_id):
+                raise PermissionDenied("Agence hors de votre périmètre.")
+        return Response(resolve_context(tenant_id, {"product": "", "agency": str(agency_id or ""),
+                                                    "client_type": client_type, "individual_profile": ""}, resolve_conventions=False))
 
     # Consultation ouverte à toute la filiale (si droit view_client).
     TENANT_READ_ACTIONS = frozenset({"list", "retrieve", "photo", "files"})

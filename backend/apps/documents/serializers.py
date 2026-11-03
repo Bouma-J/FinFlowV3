@@ -36,6 +36,7 @@ class DocumentSerializer(serializers.ModelSerializer):
             "size_bytes",
             "sha256",
             "version",
+            "verification_status", "verified_by", "verified_at", "verification_comment",
             "issue_date",
             "expiry_date",
             "content_type",
@@ -52,6 +53,7 @@ class DocumentSerializer(serializers.ModelSerializer):
             "created_at",
         ]
         read_only_fields = [
+            "verification_status", "verified_by", "verified_at", "verification_comment",
             "id",
             "mime_type",
             "size_bytes",

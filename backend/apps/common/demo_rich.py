@@ -10,7 +10,6 @@ from apps.catalog.models import CreditProduct, ProductCategory
 from apps.clients.models import Client, IdDocumentType, LegalForm
 from apps.collections.models import CollectionAction, CollectionActionType, CollectionCase
 from apps.collections.services import refresh_loan_overdue
-from apps.common.demo_bulk import seed_collection_list_widgets
 from apps.credits.models import (
     ActivitySector,
     CreditApplication,
@@ -251,9 +250,6 @@ def seed_rich_operational_data(*, tenant, agency, product, user, stdout=None):
             number=spec.get("phone") or obj.phone or f"+2250700{key[-2:]}",
             defaults={"label": "Principal"},
         )
-
-    # Compat : ancienne caution Paul Aka
-    surety = sureties["DEMO-CAU-01"]
 
     S = CreditApplication.Status
     apps_spec = [
@@ -538,14 +534,14 @@ def seed_rich_operational_data(*, tenant, agency, product, user, stdout=None):
             "profile": "INDEPENDANT",
             "side_turnover": "420000",
             "side_expenses": "160000",
-            "comment": "Indépendant — prêt pour décaissement.",
+            "comment": "Indépendant — prêt pour mise en place.",
         },
         "DEMO-CR-DISB-1": {
             "kind": "individual",
             "recommendation": FinancialAnalysis.Recommendation.FAVORABLE,
             "salary": "350000",
             "profile": "SALARIE",
-            "comment": "Analyse historique du prêt décaissé.",
+            "comment": "Analyse historique du prêt mis en place.",
         },
         "DEMO-CR-DISB-2": {
             "kind": "individual",
@@ -895,8 +891,6 @@ def seed_rich_operational_data(*, tenant, agency, product, user, stdout=None):
                     action_date=date.today() - timedelta(days=2),
                     defaults={"comment": "Relance téléphonique démo"},
                 )
-
-    seed_collection_list_widgets(tenant=tenant, user=user, stdout=stdout, limit=8)
 
     log(
         "Données riches : "

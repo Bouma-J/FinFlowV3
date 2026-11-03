@@ -20,6 +20,7 @@ def flag_sla_breaches():
     overdue = (
         ApprovalTask.all_tenants.filter(
             status=ApprovalTask.Status.PENDING,
+            instance__status="IN_PROGRESS",
             due_at__isnull=False,
             due_at__lt=now,
         )

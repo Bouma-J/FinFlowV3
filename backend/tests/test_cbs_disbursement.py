@@ -19,6 +19,7 @@ from apps.corebanking.services import CoreBankingError
 from apps.credits.models import CreditApplication, Loan
 from apps.credits.services import WorkflowError, disburse_application
 from apps.tenants.models import Agency
+from tests.setup_helpers import prepare_setup
 
 pytestmark = pytest.mark.django_db
 
@@ -188,7 +189,8 @@ def test_disburse_application_pushes_cbs_then_creates_loan(
             "apps.workflow.services.has_pending_conditions",
             return_value=False,
         ):
-            loan = disburse_application(approved_app)
+            executor = prepare_setup(approved_app)
+            loan = disburse_application(approved_app, user=executor)
 
     assert loan.cbs_contract_number.startswith("CONTRAT-SIM-")
     assert loan.cbs_external_id == "EXT-CRD-001"
@@ -216,8 +218,9 @@ def test_disburse_blocks_on_cbs_error(approved_app, cbs_connector):
             "apps.workflow.services.has_pending_conditions",
             return_value=False,
         ):
+            executor = prepare_setup(approved_app)
             with pytest.raises(WorkflowError, match="Limite de crédit"):
-                disburse_application(approved_app)
+                disburse_application(approved_app, user=executor)
     assert not Loan.all_tenants.filter(application=approved_app).exists()
 
 
@@ -230,7 +233,8 @@ def test_cbs_callback_updates_loan(approved_app, cbs_connector):
             "apps.workflow.services.has_pending_conditions",
             return_value=False,
         ):
-            loan = disburse_application(approved_app)
+            executor = prepare_setup(approved_app)
+            loan = disburse_application(approved_app, user=executor)
 
     factory = APIRequestFactory()
     request = factory.post(

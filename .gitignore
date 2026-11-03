@@ -22,6 +22,10 @@ db.sqlite3
 .env
 *.env
 !*.env.example
+.finflow-deploy-mode
+.finflow-tls-mode
+.finflow-lan-cidr
+.finflow-install-state
 
 # Certificats CA locaux (proxy à inspection TLS) — spécifiques au poste.
 # Les dossiers backend/certs et frontend/certs restent versionnés (.gitkeep)
@@ -34,6 +38,9 @@ db.sqlite3
 node_modules/
 /frontend/dist/
 /frontend/.vite/
+/frontend/test-results/
+/frontend/playwright-report/
+/frontend/test-results-api/
 npm-debug.log*
 
 # IDE / OS
@@ -53,4 +60,7 @@ docker-rebuild.log
 # Artefacts de campagnes QA/tests manuels (rapports, configs capturées).
 # Ils périment vite et peuvent contenir des identifiants de recette.
 _qa_*
+
+# Artefacts temporaires produits par les tests d'audit locaux.
+**/.audit-*/
 

@@ -151,7 +151,7 @@ export function FinancialAnalysisPage() {
           />
           <p className="form-error">
             {analysisLocked
-              ? "Ce dossier est décaissé ou clôturé : l'analyse financière n'est plus modifiable."
+              ? "Ce dossier est mis en place ou clôturé : l'analyse financière n'est plus modifiable."
               : "Vous ne pouvez pas modifier cette analyse (droits insuffisants ou fenêtre de contribution fermée)."}
           </p>
         </div>
@@ -173,7 +173,7 @@ export function FinancialAnalysisPage() {
         />
         <p className="form-error">
           {analysisLocked
-            ? "Ce dossier est décaissé ou clôturé : aucune nouvelle analyse financière ne peut être ajoutée."
+            ? "Ce dossier est mis en place ou clôturé : aucune nouvelle analyse financière ne peut être ajoutée."
             : "Vous n'êtes pas autorisé à ajouter une analyse sur ce dossier."}
         </p>
       </div>

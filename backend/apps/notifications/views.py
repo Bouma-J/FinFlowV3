@@ -4,7 +4,7 @@ from rest_framework.response import Response
 from rest_framework.viewsets import ReadOnlyModelViewSet
 import logging
 
-from apps.common.permissions import MustChangePasswordGate
+from apps.common.permissions import MustChangePasswordGate, is_configuration_administrator
 from apps.common.tenancy import get_current_tenant_id
 from apps.common.viewsets import TenantContextMixin, TenantScopedReadOnlyViewSet
 from apps.tenants.models import Tenant
@@ -49,6 +49,9 @@ class TenantNotificationSettingsViewSet(TenantContextMixin, ReadOnlyModelViewSet
     """
 
     serializer_class = TenantNotificationSettingsSerializer
+    # Read access is decided by _can_view; settings writes and SMTP tests use
+    # _can_manage in their actions. A class-level admin gate would block the
+    # read-only permission checked by the UI and its API contract.
     permission_classes = [IsAuthenticated, MustChangePasswordGate]
     queryset = TenantNotificationSettings.objects.select_related("tenant").all()
 
@@ -64,8 +67,9 @@ class TenantNotificationSettingsViewSet(TenantContextMixin, ReadOnlyModelViewSet
 
     def _can_manage(self, user) -> bool:
         return bool(
-            user.is_superuser
-            or getattr(user, "is_group_level", False)
+            is_configuration_administrator(user)
+            or user.is_superuser
+            or (getattr(user, "is_group_level", False) and user.is_staff)
             or user.has_perm("notifications.change_tenantnotificationsettings")
             or user.has_perm("tenants.change_tenant")
         )

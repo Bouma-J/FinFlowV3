@@ -423,7 +423,7 @@ def workflow_kpis(application_qs, user=None):
 
 
 def funnel_kpis(application_qs):
-    """Tunnel commercial : soumission → décision → décaissement."""
+    """Tunnel commercial : soumission → décision → mise en place."""
     submitted = application_qs.exclude(
         status__in=[
             CreditApplication.Status.DRAFT,

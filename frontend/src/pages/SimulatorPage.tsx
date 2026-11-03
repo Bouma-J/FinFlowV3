@@ -8,19 +8,22 @@ import {
   Play,
   RotateCcw,
 } from "lucide-react";
-import { useMemo, useState, type FormEvent, type ReactNode } from "react";
+import { useEffect, useMemo, useState, type FormEvent, type ReactNode } from "react";
 
 import { api } from "@/api/client";
 import {
   CREDIT_LABELS,
   type CbsCatalogItem,
+  type CreditProduct, type Agency,
   type Paginated,
   type SimulationResult,
 } from "@/api/types";
 import { useAuth } from "@/auth/AuthContext";
-import { Card, PageHeader, formatMoney } from "@/components/ui";
+import { Card, PageHeader, formatMoney as displayMoney } from "@/components/ui";
 import { useTenantBranding } from "@/hooks/useTenantBranding";
 import { exportSimulationPdf } from "@/utils/exportSimulationPdf";
+import { PricingQuoteSummary } from "@/components/PricingQuoteSummary";
+import { apiErrorMessage } from "@/utils/apiError";
 
 function formatDueDate(value: string) {
   if (!value) return "—";
@@ -30,11 +33,6 @@ function formatDueDate(value: string) {
     return `${m[3]}/${m[2]}/${m[1]}`;
   }
   return new Date(value).toLocaleDateString("fr-FR");
-}
-
-/** Arrondi à la dizaine — même règle que le moteur backend. */
-function roundStep(n: number) {
-  return Math.round(n / 10) * 10;
 }
 
 const PERIODICITY_FALLBACK = Object.keys(CREDIT_LABELS.periodicity);
@@ -50,6 +48,7 @@ function todayISO() {
 }
 
 const DEFAULT_FORM = {
+  product: "", agency: "", client_type: "", individual_profile: "", fees_rate: "", currency: "XOF",
   amount: "1000000",
   annual_rate: "12.5",
   months: "12",
@@ -100,6 +99,8 @@ export function SimulatorPage() {
   const [form, setForm] = useState<SimForm>(DEFAULT_FORM);
   const { tenantName, branding } = useTenantBranding();
   const { activeTenant } = useAuth();
+  const products = useQuery({ queryKey: ["simulator-products", activeTenant], queryFn: async () => (await api.get<Paginated<CreditProduct>>("/credit-products/", { params: { is_active: true, page_size: 200 } })).data });
+  const agencies = useQuery({ queryKey: ["simulator-agencies", activeTenant], queryFn: async () => (await api.get<Paginated<Agency>>("/agencies/", { params: { page_size: 200 } })).data });
 
   const { data: periodicities } = useQuery({
     queryKey: ["loan-periodicities", activeTenant],
@@ -150,13 +151,12 @@ export function SimulatorPage() {
 
   const sim = useMutation({
     mutationFn: async () => {
-      const savingsRate =
-        form.include_savings && num(form.savings_rate) > 0
-          ? form.savings_rate
-          : "0";
+      const savingsRate = form.include_savings ? (form.savings_rate || null) : "0";
       const payload: Record<string, string | number | null> = {
+        product: form.product || null, agency: form.agency || null, client_type: form.client_type,
+        individual_profile: form.individual_profile, fees_rate: form.fees_rate || null, currency: form.currency,
         amount: form.amount,
-        annual_rate: form.annual_rate,
+        annual_rate: form.annual_rate || null,
         months: Number(form.months),
         periodicity: form.periodicity,
         mechanism: form.mechanism,
@@ -172,6 +172,8 @@ export function SimulatorPage() {
     },
   });
 
+  useEffect(() => { setForm({ ...DEFAULT_FORM, simulation_date: todayISO() }); sim.reset(); }, [activeTenant]);
+
   function submit(e: FormEvent) {
     e.preventDefault();
     sim.mutate();
@@ -182,42 +184,36 @@ export function SimulatorPage() {
     sim.reset();
   }
 
-  const savingsPerInstallment = useMemo(() => {
-    if (!form.include_savings) return 0;
-    const principal = num(form.amount);
-    const rate = num(form.savings_rate);
-    if (!principal || rate <= 0) return 0;
-    return roundStep((principal * rate) / 100);
-  }, [form.amount, form.include_savings, form.savings_rate]);
-
   const result = sim.data;
+  function formatMoney(value: Parameters<typeof displayMoney>[0], currency = result?.parameters?.currency ?? form.currency) { return displayMoney(value, currency); }
+  const resultPeriodicity = result?.parameters?.periodicity ?? form.periodicity;
+  const resultMechanism = result?.parameters?.mechanism ?? form.mechanism;
   const hasSavings = Boolean(result && num(result.total_savings) > 0);
   const periodLabel =
-    periodicityOptions.find((o) => o.value === form.periodicity)?.label ||
-    CREDIT_LABELS.periodicity[form.periodicity] ||
-    form.periodicity;
+    periodicityOptions.find((o) => o.value === resultPeriodicity)?.label ||
+    CREDIT_LABELS.periodicity[resultPeriodicity] || resultPeriodicity;
   const mechanismLabel =
-    mechanismOptions.find((o) => o.value === form.mechanism)?.label ||
-    CREDIT_LABELS.repayment_mechanism[form.mechanism] ||
-    form.mechanism;
+    mechanismOptions.find((o) => o.value === resultMechanism)?.label ||
+    CREDIT_LABELS.repayment_mechanism[resultMechanism] || resultMechanism;
 
   const installmentLabel = useMemo(() => {
-    if (form.mechanism === "BULLET") return "Échéance unique (institution)";
-    if (form.mechanism === "IN_FINE") return "1ʳᵉ échéance (intérêts)";
+    if (resultMechanism === "BULLET") return "Échéance unique (institution)";
+    if (resultMechanism === "IN_FINE") return "1ʳᵉ échéance (intérêts)";
     return `Échéance institution (${periodLabel.toLowerCase()})`;
-  }, [form.mechanism, periodLabel]);
+  }, [resultMechanism, periodLabel]);
 
   function exportPdf() {
     if (!result) return;
     exportSimulationPdf(result, {
-      amount: form.amount,
-      annualRate: form.annual_rate,
-      months: form.months,
-      periodicityLabel: periodLabel,
-      mechanismLabel,
-      savingsRate: form.include_savings ? form.savings_rate : 0,
-      firstDueDate: form.first_due_date || undefined,
-      simulationDate: form.simulation_date || undefined,
+      amount: result.parameters?.amount ?? form.amount,
+      annualRate: result.parameters?.annual_rate ?? form.annual_rate,
+      months: result.parameters?.months ?? form.months,
+      periodicityLabel: periodicityOptions.find((item) => item.value === result.parameters?.periodicity)?.label ?? periodLabel,
+      mechanismLabel: mechanismOptions.find((item) => item.value === result.parameters?.mechanism)?.label ?? mechanismLabel,
+      savingsRate: result.parameters?.savings_rate ?? (form.include_savings ? form.savings_rate : 0),
+      firstDueDate: result.parameters?.first_due_date ?? undefined,
+      simulationDate: result.parameters?.simulation_date ?? form.simulation_date,
+      currency: result.parameters?.currency ?? form.currency,
       tenantName,
       brandPrimary: branding?.brand_primary,
       brandSecondary: branding?.brand_secondary,
@@ -230,7 +226,7 @@ export function SimulatorPage() {
       <PageHeader
         icon={Calculator}
         title="Simulateur d'amortissement"
-        subtitle="Même moteur que les dossiers de crédit — ACT/365, convention CBS"
+        subtitle="Moteur partagé avec les dossiers de crédit et conventions de la filiale"
         actions={
           result ? (
             <button type="button" className="btn btn-ghost" onClick={exportPdf}>
@@ -245,8 +241,16 @@ export function SimulatorPage() {
         <Card title="Paramètres du crédit">
           <form onSubmit={submit} className="stack">
             <div className="form-grid two-col">
+              <label className="field"><span>Produit (optionnel)</span><select value={form.product} onChange={(e) => {
+                const product = products.data?.results.find((row) => row.id === e.target.value);
+                setForm({ ...form, product: e.target.value, currency: product?.currency ?? "XOF", annual_rate: product ? "" : DEFAULT_FORM.annual_rate, fees_rate: "", client_type: product?.client_type === "ALL" ? "" : product?.client_type ?? "", individual_profile: "", include_savings: Boolean(product), savings_rate: "" });
+              }}><option value="">Simulation libre</option>{products.data?.results.map((row) => <option key={row.id} value={row.id}>{row.label}</option>)}</select></label>
+              <label className="field"><span>Agence (optionnelle)</span><select value={form.agency} onChange={(e) => setForm({ ...form, agency: e.target.value })}><option value="">Agence de l'utilisateur / sans agence</option>{agencies.data?.results.map((row) => <option key={row.id} value={row.id}>{row.name}</option>)}</select></label>
+              <label className="field"><span>Type de clientèle</span><select value={form.client_type} onChange={(e) => setForm({ ...form, client_type: e.target.value, individual_profile: "" })}><option value="">Contexte générique / produit</option><option value="INDIVIDUAL">Personne physique</option><option value="CORPORATE">Personne morale</option><option value="PROFESSIONAL">Groupement</option></select></label>
+              {form.client_type === "INDIVIDUAL" && <label className="field"><span>Profil particulier</span><select value={form.individual_profile} onChange={(e) => setForm({ ...form, individual_profile: e.target.value })}><option value="">Tous profils</option><option value="SALARIE">Salarié</option><option value="INDEPENDANT">Indépendant / AGR</option><option value="MIXTE">Mixte</option></select></label>}
+              <label className="field"><span>Frais de dossier (%)</span><input type="number" min={0} max={100} step="0.001" value={form.fees_rate} placeholder="Selon le barème, sinon zéro" onChange={(e) => setForm({ ...form, fees_rate: e.target.value })} /></label>
               <label className="field">
-                <span>Montant du crédit (XOF)</span>
+                <span>Montant du crédit ({form.currency})</span>
                 <input
                   type="text"
                   inputMode="numeric"
@@ -264,7 +268,8 @@ export function SimulatorPage() {
                   type="number"
                   min={0}
                   step="0.001"
-                  required
+                  required={!form.product}
+                  placeholder="Taux du barème / produit"
                   value={form.annual_rate}
                   onChange={(e) =>
                     setForm({ ...form, annual_rate: e.target.value })
@@ -357,9 +362,11 @@ export function SimulatorPage() {
                     <span>Taux d'épargne obligatoire (%)</span>
                     <input
                       type="number"
-                      min={0.001}
+                      min={0}
+                      max={100}
                       step="0.001"
-                      required
+                      required={!form.product}
+                      placeholder="Selon le barème, sinon zéro"
                       value={form.savings_rate}
                       onChange={(e) =>
                         setForm({ ...form, savings_rate: e.target.value })
@@ -367,14 +374,9 @@ export function SimulatorPage() {
                     />
                   </label>
                   <p className="muted small">
-                    Montant fixe par échéance :{" "}
-                    <strong>
-                      {savingsPerInstallment > 0
-                        ? formatMoney(savingsPerInstallment)
-                        : "—"}
-                    </strong>{" "}
-                    (= capital × taux, arrondi à la dizaine). Hors ratios
-                    institution — colonne séparée dans le tableau.
+                    L'épargne est calculée sur le capital avec le taux effectif et
+                    les arrondis du serveur. Son montant figure séparément dans
+                    le tableau après simulation, hors coût du crédit.
                   </p>
                 </div>
               )}
@@ -402,7 +404,7 @@ export function SimulatorPage() {
 
             {sim.isError && (
               <p className="form-error">
-                Impossible de calculer l'échéancier. Vérifiez les paramètres.
+                {apiErrorMessage(sim.error, "Impossible de calculer l'échéancier. Vérifiez les paramètres.")}
               </p>
             )}
           </form>
@@ -474,6 +476,12 @@ export function SimulatorPage() {
                   tone="ok"
                 />
               </div>
+              <div className="metric-grid">
+                <Metric label="Frais et taxes sur frais" value={formatMoney(result.total_fees ?? 0, result.parameters?.currency)} />
+                <Metric label="Intérêts + frais (hors épargne)" value={formatMoney(result.total_cost_excluding_savings ?? result.total_interest, result.parameters?.currency)} />
+                <Metric label="Flux client total, frais et épargne compris" value={formatMoney(result.total_client_outflow ?? result.total_repayment, result.parameters?.currency)} />
+              </div>
+              {result.pricing_quote && <PricingQuoteSummary quote={result.pricing_quote} />}
             </>
           )}
         </Card>
@@ -515,7 +523,7 @@ export function SimulatorPage() {
                   {result.schedule.map((row) => (
                     <tr key={row.number}>
                       <td>{row.number}</td>
-                      <td>{formatDueDate(row.due_date)}</td>
+                      <td>{formatDueDate(row.due_date)}{row.nominal_due_date && row.nominal_due_date !== row.due_date && <span className="muted small"> · nominale {formatDueDate(row.nominal_due_date)}</span>}</td>
                       <td className="num">{formatMoney(row.principal)}</td>
                       <td className="num">{formatMoney(row.interest)}</td>
                       {hasSavings && (
@@ -563,8 +571,8 @@ export function SimulatorPage() {
         <div className="notice-info simulator-basis">
           <Info size={18} />
           <div>
-            <strong>Base de calcul (core banking)</strong>
-            <ul>
+            <strong>Conventions de calcul</strong>
+            {result?.pricing_quote?.simulation_conventions?.engine === "CONFIGURED" ? <p>Les conventions effectives figurent avec le devis. Les intérêts utilisent les périodes définies par les dates choisies ; la première période peut être irrégulière. La dernière échéance solde le capital après arrondis. Les dates nominales et ajustées peuvent différer selon le calendrier conservé. La concordance de ces conditions avec le CBS doit être vérifiée.</p> : <ul>
               <li>
                 Intérêts jour / jour : taux journalier = taux annuel ÷ 365
                 (ACT/365).
@@ -587,7 +595,7 @@ export function SimulatorPage() {
                 Épargne obligatoire : colonne séparée ; l'échéance institution =
                 capital + intérêts (hors épargne).
               </li>
-            </ul>
+            </ul>}
           </div>
         </div>
       </div>

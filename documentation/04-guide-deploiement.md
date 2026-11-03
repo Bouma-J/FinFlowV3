@@ -1,6 +1,6 @@
 # 04 — Guide de déploiement complet
 
-> **Dépôt Git :** [https://github.com/Bouma-J/FinFlowV3](https://github.com/Bouma-J/FinFlowV3)  
+> **Dépôt Git :** [https://github.com/Bouma-J/FinFlowV3](https://github.com/Bouma-J/FinFlowV3)<br>
 > (`git clone https://github.com/Bouma-J/FinFlowV3.git`)
 >
 > **Production sur Ubuntu Server** (outils, Docker, Nginx/TLS, sauvegardes) :  
@@ -16,7 +16,7 @@
 | Disque | ≥ 20 Go (images + volumes + GED) |
 | Ports libres | 8080 (SPA Docker démo), 9000, 9001 (et 5432/6379 si exposés). Port 80 en production Ubuntu derrière Nginx. |
 
-Pour un déploiement « bare metal » hors Docker : Python 3.12, Node 20, PostgreSQL 16, Redis 7, bucket S3.
+Pour un déploiement « bare metal » hors Docker : Python 3.12, Node 24 LTS, PostgreSQL 16, Redis 7, bucket S3.
 
 ## 2. Déploiement Docker Compose (référence démo / UAT)
 
@@ -163,8 +163,8 @@ Scripts utiles :
 
 ## 7. Sauvegarde / restauration
 
-Mécanisme d’instance : `deploy/backup/backup.sh` (Postgres `-Fc` + MinIO +
-secrets chiffrés), `verify.sh`, `restore.sh --target drill|live`. Détail et
+Mécanisme d’instance : `deploy/backup/backup.sh` (archive GPG chiffrée contenant
+Postgres `-Fc`, MinIO et les secrets), `verify.sh`, `restore.sh --target drill|live`. Détail et
 cron : [13 — Déploiement Ubuntu §11](13-guide-deploiement-ubuntu.md).
 
 | Volume / composant | Action |
@@ -172,15 +172,14 @@ cron : [13 — Déploiement Ubuntu §11](13-guide-deploiement-ubuntu.md).
 | PostgreSQL | inclus dans le snapshot (`pg_dump -Fc`) |
 | MinIO/S3 | miroir du bucket + versioning recommandé |
 | Redis | non sauvegardé (cache / files Celery) |
-| Secrets | `secrets.env.enc` dans le snapshot (`FIELD_ENCRYPTION_KEY`) |
+| Chiffrement | Archive GPG AES-256 complète; les clés restent aussi chiffrées dans l'archive |
 
 ## 8. Mise à jour d’une release
 
 1. Backup DB + bucket  
-2. `git pull`  
-3. `docker compose up -d --build`  
-4. Vérifier `/api/v1/health/` et Swagger  
-5. Smoke login + dashboard  
+2. `sudo bash /opt/finflow-update/deploy/ubuntu-update.sh`  
+3. Vérifier `/api/v1/health/` et Swagger  
+4. Smoke login + dashboard  
 
 ## 9. Dépannage rapide
 

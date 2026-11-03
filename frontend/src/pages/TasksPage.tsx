@@ -77,7 +77,7 @@ const TASK_STATUS_OPTIONS = [
   ["REJECTED", "Rejeté"],
   ["RETURNED", "Retourné"],
   ["COMPLETED", "Clôturé"],
-  ["DISBURSED", "Décaissé"],
+  ["DISBURSED", "Mis en place"],
   ["CANCELLED", "Annulé"],
   ["BLOCKED", "Bloqué"],
 ] as const;

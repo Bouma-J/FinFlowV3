@@ -9,6 +9,15 @@ export MSYS_NO_PATHCONV=1
 
 command -v docker >/dev/null || die "docker est requis"
 
+INSTANCE_DIR="$(finflow_dir)"
+POSTGRES_IMAGE="${POSTGRES_IMAGE:-$(load_dotenv_value "$INSTANCE_DIR/.env" POSTGRES_IMAGE)}"
+POSTGRES_IMAGE="${POSTGRES_IMAGE:-postgres:16-alpine}"
+MINIO_IMAGE="${MINIO_IMAGE:-$(load_dotenv_value "$INSTANCE_DIR/.env" MINIO_IMAGE)}"
+MINIO_IMAGE="${MINIO_IMAGE:-pgsty/silo:RELEASE.2026-10-26T00-00-00Z}"
+MINIO_CLIENT_IMAGE="${MINIO_CLIENT_IMAGE:-$(load_dotenv_value "$INSTANCE_DIR/.env" MINIO_CLIENT_IMAGE)}"
+MINIO_CLIENT_IMAGE="${MINIO_CLIENT_IMAGE:-pgsty/silo:RELEASE.2026-10-26T00-00-00Z}"
+export POSTGRES_IMAGE MINIO_IMAGE MINIO_CLIENT_IMAGE
+
 if [[ -n "${LOCALAPPDATA:-}" ]]; then
   _tmp="$(cygpath -u "$LOCALAPPDATA" 2>/dev/null || echo "$LOCALAPPDATA")/Temp"
 elif [[ -d /c/Windows/Temp ]]; then
@@ -34,7 +43,7 @@ cat > "${WORKDIR}/docker-compose.yml" <<'YAML'
 name: ffbackupselftest
 services:
   db:
-    image: postgres:16-alpine
+    image: ${POSTGRES_IMAGE}
     environment:
       POSTGRES_USER: finflow
       POSTGRES_PASSWORD: selftest
@@ -45,18 +54,22 @@ services:
       timeout: 3s
       retries: 30
   minio:
-    image: pgsty/silo:RELEASE.2026-10-26T00-00-00Z
+    image: ${MINIO_IMAGE}
+    user: "0:0"
     command: server /data --console-address ":9001"
     environment:
       MINIO_ROOT_USER: minioadmin
       MINIO_ROOT_PASSWORD: minioadmin
 YAML
 
-cat > "${WORKDIR}/.env" <<'ENV'
+cat > "${WORKDIR}/.env" <<ENV
 POSTGRES_USER=finflow
 POSTGRES_DB=finflow
 MINIO_ROOT_USER=minioadmin
 MINIO_ROOT_PASSWORD=minioadmin
+POSTGRES_IMAGE=${POSTGRES_IMAGE}
+MINIO_IMAGE=${MINIO_IMAGE}
+MINIO_CLIENT_IMAGE=${MINIO_CLIENT_IMAGE}
 AWS_STORAGE_BUCKET_NAME=finflow-documents
 FIELD_ENCRYPTION_KEY=selftest-fernet-key-not-for-prod
 DJANGO_SECRET_KEY=selftest-django-secret
@@ -80,12 +93,13 @@ NETWORK="$(docker inspect -f '{{range $k, $v := .NetworkSettings.Networks}}{{$k}
   "$(docker compose --project-directory "$WORKDIR_HOST" ps -q minio)")"
 docker run --rm --network "$NETWORK" \
   -e MC_HOST_src="http://minioadmin:minioadmin@minio:9000" \
-  --entrypoint mcli pgsty/silo:RELEASE.2026-10-26T00-00-00Z mb -p src/finflow-documents
+  --entrypoint mcli "$MINIO_CLIENT_IMAGE" mb -p src/finflow-documents
 printf 'ged-selftest' > "${WORKDIR}/selftest.txt"
 docker run --rm --network "$NETWORK" \
   -e MC_HOST_src="http://minioadmin:minioadmin@minio:9000" \
+  --user 0:0 \
   -v "$(host_path "${WORKDIR}/selftest.txt"):/data/selftest.txt:ro" \
-  --entrypoint mcli pgsty/silo:RELEASE.2026-10-26T00-00-00Z cp /data/selftest.txt src/finflow-documents/selftest.txt
+  --entrypoint mcli "$MINIO_CLIENT_IMAGE" cp /data/selftest.txt src/finflow-documents/selftest.txt
 
 export FINFLOW_DIR="$WORKDIR"
 export COMPOSE_FILES="-f docker-compose.yml"
@@ -95,7 +109,7 @@ export SKIP_APP_PAUSE=1
 export FINFLOW_DRILL_MIN_TABLES=1
 
 SNAP="$(bash "${SCRIPT_DIR}/backup.sh" | tail -n 1)"
-[[ -d "$SNAP" ]] || die "backup.sh n'a pas renvoyé un dossier snapshot"
+[[ -f "$SNAP" ]] || die "backup.sh n'a pas renvoyé une archive chiffrée"
 bash "${SCRIPT_DIR}/verify.sh" "$SNAP"
 
 bash "${SCRIPT_DIR}/restore.sh" --target drill --snapshot "$SNAP" --keep

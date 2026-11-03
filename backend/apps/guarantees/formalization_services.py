@@ -1,6 +1,6 @@
 """Services métier : formalisation / constitution juridique des garanties.
 
-Par défaut le processus est parallèle au crédit (ne bloque pas le décaissement).
+Par défaut le processus est parallèle au crédit (ne bloque pas la mise en place).
 La politique filiale ``require_formalization_before_disbursement`` peut le rendre
 bloquant via ``missing_formalizations_for_disbursement``.
 """
@@ -167,7 +167,7 @@ def initiate_formalization_request(
     Ouvre un dossier de formalisation sur une garantie ACTIVE
     rattachée à un dossier de crédit.
 
-    N'altère pas le statut de la garantie (reste ACTIVE) → décaissement non bloqué.
+    N'altère pas le statut de la garantie (reste ACTIVE) → mise en place non bloqué.
     """
     if guarantee.status != Guarantee.Status.ACTIVE:
         raise ProcessError(

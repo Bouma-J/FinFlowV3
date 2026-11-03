@@ -2,7 +2,7 @@
 Configuration Perfect API par défaut pour les connecteurs CBS.
 
 Source unique des chemins, auth, mapping périodicité / objet de financement
-et règles de décaissement documentés pour gateway-perfect.
+et règles de mise en place documentés pour gateway-perfect.
 """
 from __future__ import annotations
 
@@ -65,7 +65,7 @@ PURPOSE_CBS = {
     "OTHER": "AUTRE",
 }
 
-# Défauts métier décaissement (surchargeables agence / produit / utilisateur)
+# Défauts métier mise en place (surchargeables agence / produit / utilisateur)
 DISBURSEMENT_DEFAULTS = {
     "idPointService": "PS01",
     "idGestionnaire": "GEST01",
@@ -78,7 +78,7 @@ def perfect_mapping_rules(*, demo: bool = False) -> dict:
     ``mapping_rules`` prêts pour Perfect.
 
     - prod / filiale : mode CBS, pas de simulation forcée
-    - demo : force_simulate + décaissement LOCAL (aucun HTTP)
+    - demo : force_simulate + mise en place LOCAL (aucun HTTP)
     """
     rules = {
         "provider": "perfect",
@@ -149,14 +149,9 @@ def ensure_perfect_connector(tenant, *, demo: bool = False, name: str | None = N
     defaults = perfect_connector_defaults(demo=demo)
 
     with tenant_context(tenant.id):
-        existing = (
-            CoreBankingConnector.objects.filter(
-                protocol=CoreBankingConnector.Protocol.REST,
-                is_active=True,
-            )
-            .order_by("created_at")
-            .first()
-        )
+        candidates = CoreBankingConnector.objects.filter(protocol=CoreBankingConnector.Protocol.REST)
+        candidates = candidates.filter(name=name) if name else candidates.filter(is_active=True)
+        existing = candidates.order_by("created_at").first()
         if existing is None:
             return CoreBankingConnector.objects.create(
                 tenant=tenant,

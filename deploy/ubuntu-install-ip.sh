@@ -2,20 +2,17 @@
 # =========================================================================
 # FIN_FLOW — déploiement Ubuntu par adresse IP (sans nom de domaine)
 #
-# Cible principale : réseau interne (IP privée, sans DNS).
-# HTTP par défaut. HTTPS optionnel :
-#   • IP privée    → certificat auto-signé, HSTS désactivé (cas prévu)
-#   • IP publique  → Let's Encrypt (certificat IP, ~6 jours) + HSTS 7 jours
+# Cible : réseau interne (adresse privée et CIDR LAN requis).
+# HTTP par défaut. HTTPS optionnel avec certificat auto-signé.
 #   sudo bash deploy/tls-ip/enable-ip-tls.sh /opt/finflow --self-signed
 #
-# Cible : Ubuntu Server 22.04 / 24.04 LTS, sans nom de domaine.
-# Dépôt public : aucun jeton. S'il redevient privé, le script demande
-# un jeton GitHub (Contents: Read), stocké hors du projet.
-#
-# Usage, sur le serveur, depuis le dépôt cloné :
+# Usage :
 #   sudo bash deploy/ubuntu-install-ip.sh
 #
-# Variante avec domaines + TLS :
+# Dépôt public : aucun jeton. S'il redevient privé, le script demande
+# un jeton GitHub (Contents: Read) et le range hors du projet.
+#
+# Variante avec noms DNS internes :
 #   sudo bash deploy/ubuntu-install.sh
 #
 # Mise à jour d'une instance déjà déployée :
@@ -23,21 +20,16 @@
 # =========================================================================
 set -euo pipefail
 
-_self="${BASH_SOURCE[0]}"
-if [[ -L "$_self" ]]; then
-  _self="$(readlink -f "$_self")"
-fi
-SCRIPT_DIR="$(cd "$(dirname "$_self")" && pwd)"
-# shellcheck disable=SC1091
-source "${SCRIPT_DIR}/lib-ubuntu.sh"
-
-REPO_URL_DEFAULT="$FINFLOW_REPO_DEFAULT"
-INSTALL_DIR_DEFAULT="/opt/finflow"
+INSTALL_DIR_DEFAULT="${INSTALL_DIR_DEFAULT:-/opt/finflow}"
 COMPOSE_FILES="-f docker-compose.yml -f docker-compose.prod.yml -f docker-compose.ip.yml"
 DEPLOY_MODE="ip"
 ENABLE_TLS=0
 TLS_MODE=""
-LETSENCRYPT_EMAIL=""
+LAN_CIDR=""
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck disable=SC1091
+source "${SCRIPT_DIR}/lib-ubuntu.sh"
+REPO_URL_DEFAULT="${REPO_URL:-$FINFLOW_REPO_DEFAULT}"
 
 if [[ -t 1 ]]; then
   C_INFO='\033[1;36m'
@@ -54,6 +46,16 @@ ok()   { echo -e "${C_OK}[OK]${C_RST} $*"; }
 warn() { echo -e "${C_WARN}[WARN]${C_RST} $*"; }
 err()  { echo -e "${C_ERR}[ERR]${C_RST} $*" >&2; }
 die()  { err "$*"; exit 1; }
+
+installation_exit_notice() {
+  local rc=$?
+  local dir="${INSTALL_DIR:-}"
+  if [[ "$rc" -ne 0 && -n "$dir" && -f "$dir/.env" && -f "$dir/.finflow-install-state" ]]; then
+    echo "[WARN] Installation interrompue ; secrets et données conservés. Reprise : sudo bash $dir/deploy/ubuntu-install-ip.sh --resume $dir" >&2
+    echo "[INFO] Si le téléchargement d'une image échoue, adaptez MINIO_IMAGE / MINIO_CLIENT_IMAGE dans $dir/.env avant la reprise." >&2
+  fi
+}
+trap installation_exit_notice EXIT
 
 need_root() {
   if [[ "${EUID}" -ne 0 ]]; then
@@ -77,11 +79,11 @@ prompt_secret() {
   local def="${2:-}"
   if [[ -n "$def" ]]; then
     finflow_read -r -s -p "$label [généré si vide] : " REPLY
-    finflow_newline
+    echo
     REPLY="${REPLY:-$def}"
   else
     finflow_read -r -s -p "$label : " REPLY
-    finflow_newline
+    echo
   fi
 }
 
@@ -104,19 +106,35 @@ rand_fernet_key() {
   openssl rand -base64 32 | tr '+/' '-_' | tr -d '\n'
 }
 
+validate_fernet_key() {
+  printf '%s' "$1" | python3 -c '
+import base64, re, sys
+key = sys.stdin.read()
+if not re.fullmatch(r"[A-Za-z0-9_-]{43}=", key):
+    raise SystemExit(1)
+try:
+    raw = base64.urlsafe_b64decode(key)
+except (ValueError, base64.binascii.Error):
+    raise SystemExit(1)
+raise SystemExit(0 if len(raw) == 32 else 1)
+'
+}
+
 rand_password() {
-  openssl rand -base64 32 | tr -d '/+=' | head -c 28
+  # Hex URL-safe pour .env, URLs PostgreSQL et MC_HOST MinIO.
+  openssl rand -hex 18
   echo
 }
 
 escape_env() {
-  printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'
+  # Les valeurs Compose single-quoted sont littérales, notamment les $ des mots de passe SMTP.
+  printf '%s' "$1" | sed "s/'/\\\\'/g"
 }
 
 env_line() {
   local key="$1"
   local val="$2"
-  printf '%s="%s"\n' "$key" "$(escape_env "$val")"
+  printf "%s='%s'\n" "$key" "$(escape_env "$val")"
 }
 
 detect_default_ip() {
@@ -129,13 +147,40 @@ detect_default_ip() {
 }
 
 is_ipv4() {
-  [[ "$1" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]]
+  python3 - "$1" <<'PY' >/dev/null 2>&1
+import ipaddress, sys
+ip = ipaddress.ip_address(sys.argv[1])
+raise SystemExit(0 if isinstance(ip, ipaddress.IPv4Address) else 1)
+PY
 }
 
 is_private_ip() {
-  [[ "$1" =~ ^10\. ]] || [[ "$1" =~ ^192\.168\. ]] || [[ "$1" =~ ^127\. ]] \
-    || [[ "$1" =~ ^169\.254\. ]] \
-    || [[ "$1" =~ ^172\.(1[6-9]|2[0-9]|3[01])\. ]]
+  python3 - "$1" <<'PY' >/dev/null 2>&1
+import ipaddress, sys
+ip = ipaddress.ip_address(sys.argv[1])
+ranges = map(ipaddress.ip_network, ("10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16"))
+raise SystemExit(0 if any(ip in net for net in ranges) else 1)
+PY
+}
+
+valid_image_ref() { [[ "$1" =~ ^[A-Za-z0-9][A-Za-z0-9._:/@-]*$ ]]; }
+
+detect_default_lan_cidr() {
+  bash "$SCRIPT_DIR/lan-firewall.sh" detect-default-cidr
+}
+
+validate_lan_settings() {
+  LAN_CIDR="$(bash "$SCRIPT_DIR/lan-firewall.sh" validate-cidr "$LAN_CIDR")" \
+    || die "CIDR LAN invalide : $LAN_CIDR"
+  ip -4 -o addr show scope global | awk '$2 !~ /^(docker|br-|veth)/ {split($4, a, "/"); print a[1]}' \
+    | grep -Fxq "$APP_IP" || die "L'adresse ${APP_IP} n'est pas attribuée à une interface LAN du serveur."
+  python3 - "$APP_IP" "$LAN_CIDR" <<'PY' >/dev/null 2>&1 \
+    || die "L'adresse IP FinFlow doit appartenir au réseau LAN privé autorisé ($LAN_CIDR)."
+import ipaddress, sys
+ip = ipaddress.ip_address(sys.argv[1])
+net = ipaddress.ip_network(sys.argv[2])
+raise SystemExit(0 if ip in net and ip.is_private else 1)
+PY
 }
 
 detect_ubuntu() {
@@ -146,57 +191,76 @@ detect_ubuntu() {
   . /etc/os-release
   [[ "${ID:-}" == "ubuntu" ]] || die "Ce script cible Ubuntu (détecté: ${ID:-inconnu})."
   case "${VERSION_ID:-}" in
-    22.04|24.04) ok "Ubuntu ${VERSION_ID} détecté." ;;
-    *) warn "Ubuntu ${VERSION_ID:-?} — testé sur 22.04 / 24.04 LTS." ;;
+    22.04|24.04|26.04) ok "Ubuntu ${VERSION_ID} LTS détecté." ;;
+    *) warn "Ubuntu ${VERSION_ID:-?} — cibles LTS prévues : 22.04, 24.04 et 26.04." ;;
   esac
 }
 
 install_base_packages() {
   log "Mise à jour APT et paquets de base…"
-  finflow_prepare_apt
+  export DEBIAN_FRONTEND=noninteractive
   apt-get update -y
   apt-get upgrade -y
-  apt-get install -y \
+  local -a packages=(
     ca-certificates curl wget gnupg lsb-release \
     apt-transport-https software-properties-common \
-    git unzip jq htop net-tools openssl ufw fail2ban \
+    unzip jq htop net-tools openssl ufw fail2ban \
     dnsutils rsync openssh-server \
     nginx
-  ok "Paquets système installés (Certbot uniquement si HTTPS Let's Encrypt)."
+  )
+  [[ -n "${FINFLOW_LOCAL_SOURCE_DIR:-}" ]] || packages+=(git)
+  apt-get install -y "${packages[@]}"
+  ok "Paquets système installés."
 }
 
 install_docker() {
   if command -v docker >/dev/null 2>&1 && docker compose version >/dev/null 2>&1; then
-    ok "Docker déjà installé : $(docker --version)"
-  else
-    log "Installation Docker Engine + Compose plugin…"
-    finflow_install_docker
-    ok "Docker installé."
+    local compose_version
+    compose_version="$(docker compose version --short 2>/dev/null)"
+    compose_version="${compose_version#v}"
+    if dpkg --compare-versions "$compose_version" ge 2.24.4; then
+      systemctl enable --now docker
+      ok "Docker déjà installé : $(docker --version), Compose ${compose_version}"
+      return
+    fi
+    warn "Docker Compose ${compose_version} est trop ancien ; installation de la version requise (≥ 2.24.4)."
   fi
-  local logs
-  logs="$(finflow_docker_log_limits || true)"
-  case "$logs" in
-    restarted) ok "Rotation des logs Docker activée (20 Mo × 3)." ;;
-    deferred) warn "Rotation écrite dans /etc/docker/daemon.json. Redémarrez Docker quand la pile pourra s'arrêter." ;;
-    *) log "Rotation des logs Docker déjà configurée." ;;
-  esac
+  log "Installation Docker Engine + Compose plugin…"
+  install -m 0755 -d /etc/apt/keyrings
+  curl -fsSL https://download.docker.com/linux/ubuntu/gpg \
+    -o /etc/apt/keyrings/docker.asc
+  chmod a+r /etc/apt/keyrings/docker.asc
+  # shellcheck disable=SC1091
+  . /etc/os-release
+  local ubuntu_codename="${UBUNTU_CODENAME:-${VERSION_CODENAME:-}}"
+  [[ -n "$ubuntu_codename" ]] || die "Nom de version Ubuntu introuvable pour le dépôt Docker."
+  rm -f /etc/apt/sources.list.d/docker.list
+  cat > /etc/apt/sources.list.d/docker.sources <<EOF
+Types: deb
+URIs: https://download.docker.com/linux/ubuntu
+Suites: ${ubuntu_codename}
+Components: stable
+Architectures: $(dpkg --print-architecture)
+Signed-By: /etc/apt/keyrings/docker.asc
+EOF
+  apt-get update -y
+  apt-get install -y docker-ce docker-ce-cli containerd.io \
+    docker-buildx-plugin docker-compose-plugin
+  local compose_version
+  compose_version="$(docker compose version --short 2>/dev/null)"
+  compose_version="${compose_version#v}"
+  dpkg --compare-versions "$compose_version" ge 2.24.4 \
+    || die "Docker Compose ${compose_version:-inconnu} ne prend pas en charge !override (2.24.4 requis)."
+  systemctl enable --now docker
+  ok "Docker installé."
 }
 
 configure_ufw() {
-  log "Configuration UFW (SSH / 80 / 9000 MinIO${ENABLE_TLS:+ / 443})…"
-  ufw default deny incoming
-  ufw default allow outgoing
-  local ssh_port
-  ssh_port="$(finflow_ufw_allow_ssh)"
-  ok "UFW : SSH autorisé (port ${ssh_port})."
-  ufw allow 80/tcp
-  ufw allow 9000/tcp
-  if [[ "${ENABLE_TLS:-0}" -eq 1 ]]; then
-    ufw allow 443/tcp
-  fi
-  ufw --force enable
-  ufw status verbose || true
-  ok "Pare-feu UFW actif."
+  local ports="22 80 9000"
+  [[ "${ENABLE_TLS:-0}" -eq 1 ]] && ports="${ports} 443"
+  log "Restriction UFW et Docker au LAN ${LAN_CIDR}…"
+  bash "$INSTALL_DIR/deploy/lan-firewall.sh" apply "$LAN_CIDR" "$ports" \
+    "$INSTALL_DIR/deploy/lan-firewall.sh"
 }
 
 prepare_install_dir() {
@@ -204,24 +268,41 @@ prepare_install_dir() {
   local repo="$2"
   local branch="$3"
 
+  [[ ! -e "$dir/.env" ]] || die "Un .env existe déjà dans $dir. L'installateur refuse d'écraser les secrets ; utilisez ubuntu-update.sh."
   mkdir -p "$dir"
-  finflow_prepare_git_auth
-  if [[ -f "$dir/docker-compose.yml" && -f "$dir/docker-compose.prod.yml" ]]; then
-    log "Projet déjà présent dans $dir — git pull…"
-    finflow_git "$dir" remote set-url origin "$repo" || true
-    finflow_git "$dir" fetch --all --prune || true
-    finflow_git "$dir" checkout "$branch" || true
-    finflow_git "$dir" pull --ff-only origin "$branch" \
-      || warn "git pull échoué (dépôt privé sans jeton, ou copie locale)."
+  if [[ -n "${FINFLOW_LOCAL_SOURCE_DIR:-}" ]]; then
+    local source_dir="$(cd "$FINFLOW_LOCAL_SOURCE_DIR" && pwd)"
+    [[ -f "$source_dir/docker-compose.yml" && -f "$source_dir/docker-compose.ip.yml" ]] \
+      || die "Archive locale incomplète : docker-compose.yml ou docker-compose.ip.yml manquant."
+    [[ -z "$(ls -A "$dir" 2>/dev/null || true)" ]] \
+      || die "Le répertoire $dir n'est pas vide ; choisissez un répertoire neuf ou reprenez l'installation interrompue."
+    cp -a "$source_dir/." "$dir/"
+    log "Code copié depuis l'archive locale vers $dir (sans Git)."
+  elif [[ -f "$dir/docker-compose.yml" && -f "$dir/docker-compose.prod.yml" ]]; then
+    [[ -d "$dir/.git" ]] || die "Le projet présent dans $dir n'est pas un dépôt Git."
+    finflow_prepare_git_auth
+    log "Projet déjà présent dans $dir — synchronisation stricte de $branch…"
+    if finflow_git "$dir" remote get-url origin >/dev/null 2>&1; then
+      finflow_git "$dir" remote set-url origin "$repo"
+    else
+      finflow_git "$dir" remote add origin "$repo"
+    fi
+    finflow_git "$dir" fetch origin "$branch" --prune
+    if finflow_git "$dir" show-ref --verify --quiet "refs/heads/$branch"; then
+      finflow_git "$dir" checkout "$branch"
+    else
+      finflow_git "$dir" checkout --track -b "$branch" "origin/$branch"
+    fi
+    finflow_git "$dir" pull --ff-only origin "$branch"
   else
     if [[ -n "$(ls -A "$dir" 2>/dev/null || true)" ]]; then
       die "Le répertoire $dir n'est pas vide et ne contient pas FinFlow."
     fi
     log "Clone de $repo → $dir (branche $branch)…"
+    finflow_prepare_git_auth
     finflow_clone "$repo" "$dir" "$branch" \
       || die "git clone impossible. Si le dépôt est privé, relancez avec un jeton GitHub (Contents: Read)."
   fi
-  chmod +x "$dir"/deploy/*.sh "$dir"/deploy/backup/*.sh "$dir"/deploy/tls-ip/*.sh 2>/dev/null || true
 
   if [[ ! -f "$dir/docker-compose.ip.yml" ]]; then
     die "docker-compose.ip.yml manquant — tirez la dernière version du dépôt (git pull)."
@@ -233,6 +314,7 @@ write_env_file() {
   local dir="$1"
   local env_file="$dir/.env"
   local base_url="http://${APP_IP}"
+  [[ ! -e "$env_file" ]] || die "Refus d'écraser le fichier de secrets existant : $env_file"
 
   {
     echo "# Généré par deploy/ubuntu-install-ip.sh — $(date -Iseconds)"
@@ -248,6 +330,13 @@ write_env_file() {
     env_line DJANGO_CORS_ALLOWED_ORIGINS "$base_url"
     env_line FRONTEND_BASE_URL "$base_url"
     env_line FINFLOW_PUBLIC_IP "$APP_IP"
+    env_line POSTGRES_IMAGE "${POSTGRES_IMAGE:-postgres:16-alpine}"
+    env_line REDIS_IMAGE "${REDIS_IMAGE:-redis:7-alpine}"
+    env_line MINIO_IMAGE "$MINIO_IMAGE"
+    env_line MINIO_CLIENT_IMAGE "$MINIO_CLIENT_IMAGE"
+    env_line PYTHON_BASE_IMAGE "${PYTHON_BASE_IMAGE:-python:3.12-slim}"
+    env_line NODE_BUILD_IMAGE "${NODE_BUILD_IMAGE:-node:24-alpine}"
+    env_line NGINX_RUNTIME_IMAGE "${NGINX_RUNTIME_IMAGE:-nginx:1.30-alpine}"
     echo 'SEED_DEMO="0"'
     echo 'SMTP_SSL_VERIFY="1"'
     env_line FIELD_ENCRYPTION_KEY "$FIELD_ENCRYPTION_KEY"
@@ -273,6 +362,61 @@ write_env_file() {
 
   chmod 600 "$env_file"
   ok "Fichier .env écrit (${env_file})."
+}
+
+write_install_state() {
+  local dir="$1"
+  printf '%s\n' "$LAN_CIDR" > "$dir/.finflow-lan-cidr"
+  chmod 644 "$dir/.finflow-lan-cidr"
+  {
+    printf 'LAN_CIDR=%s\n' "$LAN_CIDR"
+    printf 'TLS_MODE=%s\n' "$TLS_MODE"
+  } > "$dir/.finflow-install-state"
+  chmod 600 "$dir/.finflow-install-state"
+}
+
+resume_install() {
+  local dir="${1:-$INSTALL_DIR_DEFAULT}" key value
+  [[ -f "$dir/.env" ]] || die "Aucun .env à reprendre dans $dir. Relancez l'installation normale."
+  [[ -f "$dir/.finflow-install-state" ]] || die "État de reprise absent : $dir/.finflow-install-state. L'installation est trop ancienne pour une reprise automatique."
+  [[ -f "$dir/deploy/lan-firewall.sh" ]] || die "Script LAN manquant dans $dir/deploy/lan-firewall.sh. Actualisez le dépôt avant reprise."
+  INSTALL_DIR="$dir"
+  while IFS='=' read -r key value; do
+    case "$key" in
+      LAN_CIDR) LAN_CIDR="$value" ;;
+      TLS_MODE) TLS_MODE="$value" ;;
+    esac
+  done < "$dir/.finflow-install-state"
+  APP_IP="$(python3 - "$dir/.env" <<'PY'
+import sys
+for line in open(sys.argv[1], encoding="utf-8"):
+    if line.startswith("FINFLOW_PUBLIC_IP="):
+        value = line.split("=", 1)[1].strip()
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in "'\"":
+            value = value[1:-1]
+        print(value)
+        break
+PY
+)"
+  [[ -n "$APP_IP" && -n "$LAN_CIDR" ]] || die "IP ou CIDR LAN absent du fichier de reprise."
+  validate_lan_settings
+  ENABLE_TLS=0
+  [[ "$TLS_MODE" == "selfsigned" ]] && ENABLE_TLS=1
+
+  log "Reprise de l'installation partielle dans $dir"
+  install_docker
+  systemctl enable --now nginx
+  systemctl enable --now fail2ban 2>/dev/null || true
+  configure_ufw
+  write_nginx_ip "$APP_IP"
+  write_helpers "$dir"
+  start_stack "$dir"
+  post_deploy_commands "$dir"
+  if [[ "$ENABLE_TLS" -eq 1 && ! -f "$dir/.finflow-tls-mode" ]]; then
+    bash "$dir/deploy/tls-ip/enable-ip-tls.sh" "$dir" --self-signed
+  fi
+  rm -f "$dir/.finflow-install-state"
+  print_summary
 }
 
 write_nginx_ip() {
@@ -313,7 +457,7 @@ start_stack() {
   cd "$dir"
   log "Build & démarrage Docker Compose (prod + IP)…"
   # shellcheck disable=SC2086
-  docker compose $COMPOSE_FILES pull || true
+  docker compose $COMPOSE_FILES pull
   # shellcheck disable=SC2086
   docker compose $COMPOSE_FILES up -d --build
   ok "Stack démarrée."
@@ -327,7 +471,8 @@ start_stack() {
     fi
     sleep 5
   done
-  warn "Health check encore en échec — vérifiez : docker compose $COMPOSE_FILES logs backend"
+  docker compose $COMPOSE_FILES logs --tail=100 backend db minio frontend || true
+  die "L'API n'est pas saine après le démarrage. Corrigez les logs avant de poursuivre."
 }
 
 write_helpers() {
@@ -371,21 +516,18 @@ post_deploy_commands() {
   log "Post-déploiement : migrations, rôles, bootstrap filiales…"
   # shellcheck disable=SC2086
   docker compose $COMPOSE_FILES exec -T backend \
-    python manage.py migrate --noinput \
-    && ok "Migrations OK." \
-    || warn "migrate à relancer."
+    python manage.py migrate --noinput
+  ok "Migrations OK."
 
   # shellcheck disable=SC2086
   docker compose $COMPOSE_FILES exec -T backend \
-    python manage.py sync_role_packs \
-    && ok "Packs de rôles synchronisés." \
-    || warn "sync_role_packs à relancer plus tard."
+    python manage.py sync_role_packs
+  ok "Packs de rôles synchronisés."
 
   # shellcheck disable=SC2086
   docker compose $COMPOSE_FILES exec -T backend \
-    python manage.py bootstrap_all_tenants \
-    && ok "Filiales bootstrapées (circuits ML / Dation / Formalisation)." \
-    || warn "bootstrap_all_tenants : aucune filiale encore, ou à relancer après création."
+    python manage.py bootstrap_all_tenants
+  ok "Filiales bootstrapées (circuits ML / Dation / Formalisation)."
 
   log "Vérification pile e-mail (cryptography, backend SMTP, worker)…"
   # shellcheck disable=SC2086
@@ -423,14 +565,8 @@ print_summary() {
   if [[ "${ENABLE_TLS:-0}" -eq 1 ]]; then
     scheme="https"
     title="déploiement IP / HTTPS terminé"
-    if [[ "${TLS_MODE}" == "le" ]]; then
-      extra_tls="  TLS          : Let's Encrypt (IP, ~6 jours) · HSTS 7 jours
-  Renouveler   : sudo certbot certificates
+    extra_tls="  TLS          : certificat auto-signé (avertissement navigateur) · HSTS off
 "
-    else
-      extra_tls="  TLS          : certificat auto-signé (avertissement navigateur) · HSTS off
-"
-    fi
   fi
   cat <<EOF
 
@@ -455,19 +591,19 @@ ${extra_tls}
     4. Sauvegardes auto : cron 02:30 → /var/backups/finflow/snapshots (hors projet).
        Épreuve : ${INSTALL_DIR}/scripts/restore.sh --target drill --snapshot <dir>
        Sinistre : … --target live --confirm=RESTORE
-    5. Mises à jour ultérieures :
-         sudo finflow-update
-         # ou : sudo bash ${INSTALL_DIR}/deploy/ubuntu-update.sh
+    5. Mises à jour ultérieures (copie propre, sans git pull dans /opt/finflow) :
+         sudo git clone https://github.com/Bouma-J/FinFlowV3.git /opt/finflow-update
+         sudo bash /opt/finflow-update/deploy/ubuntu-update.sh
+         # ensuite : sudo finflow-update
 
   Conservez précieusement le fichier ${INSTALL_DIR}/.env (secrets,
   dont FIELD_ENCRYPTION_KEY — ne pas régénérer après sauvegarde de mots de passe SMTP).
+  Copiez aussi /root/.finflow-backup-pass dans un coffre sécurisé hors serveur.
 
   HTTPS plus tard (instance déjà en HTTP) :
-    sudo bash ${INSTALL_DIR}/deploy/tls-ip/enable-ip-tls.sh ${INSTALL_DIR}
-    # IP privée : ajouter --self-signed
-    # IP publique : --lets-encrypt --email vous@exemple.tld
+    sudo bash ${INSTALL_DIR}/deploy/tls-ip/enable-ip-tls.sh ${INSTALL_DIR} --self-signed
 
-  Passage ultérieur en domaines + TLS :
+  Passage ultérieur à des noms DNS internes :
     sudo bash ${INSTALL_DIR}/deploy/ubuntu-install.sh
 
 EOF
@@ -476,29 +612,38 @@ EOF
 collect_inputs() {
   echo
   echo "========== Déploiement FIN_FLOW par IP =========="
-  echo "  Sans domaine DNS · HTTP ou HTTPS (certificat IP / auto-signé)"
+  echo "  Sans domaine DNS · IP privée · HTTP ou HTTPS auto-signé"
   echo
 
-  prompt "Répertoire d'installation" "$INSTALL_DIR_DEFAULT"
-  INSTALL_DIR="$REPLY"
-
-  prompt "URL du dépôt Git" "$REPO_URL_DEFAULT"
-  REPO_URL="$REPLY"
-
-  prompt "Branche Git" "main"
-  GIT_BRANCH="$REPLY"
-
-  finflow_prepare_git_auth
-  if [[ -f "$FINFLOW_GIT_TOKEN_FILE" ]]; then
-    ok "Jeton GitHub déjà enregistré (${FINFLOW_GIT_TOKEN_FILE})."
+  if [[ -n "${FINFLOW_LOCAL_INSTALL_DIR:-}" ]]; then
+    INSTALL_DIR="$FINFLOW_LOCAL_INSTALL_DIR"
+    echo "Répertoire d'installation : $INSTALL_DIR"
   else
-    prompt_secret "Jeton GitHub (laisser vide si le dépôt est public)" ""
-    if [[ -n "$REPLY" ]]; then
-      finflow_save_github_token "$REPLY"
-      unset REPLY
-      ok "Jeton enregistré (${FINFLOW_GIT_TOKEN_FILE}, mode 600)."
+    prompt "Répertoire d'installation" "$INSTALL_DIR_DEFAULT"
+    INSTALL_DIR="$REPLY"
+  fi
+
+  if [[ -n "${FINFLOW_LOCAL_SOURCE_DIR:-}" ]]; then
+    REPO_URL="archive locale"
+    GIT_BRANCH="sans Git"
+    echo "Source du code : archive locale (sans Git)"
+  else
+    prompt "URL du dépôt Git" "$REPO_URL_DEFAULT"
+    REPO_URL="$REPLY"
+    prompt "Branche Git" "${GIT_BRANCH:-main}"
+    GIT_BRANCH="$REPLY"
+    finflow_prepare_git_auth
+    if [[ -f "$FINFLOW_GIT_TOKEN_FILE" ]]; then
+      ok "Jeton GitHub déjà enregistré (${FINFLOW_GIT_TOKEN_FILE})."
     else
-      ok "Pas de jeton — clone public, sans authentification."
+      prompt_secret "Jeton GitHub (laisser vide si le dépôt est public)" ""
+      if [[ -n "$REPLY" ]]; then
+        finflow_save_github_token "$REPLY"
+        unset REPLY
+        ok "Jeton enregistré (${FINFLOW_GIT_TOKEN_FILE}, mode 600)."
+      else
+        ok "Pas de jeton — clone public, sans authentification."
+      fi
     fi
   fi
 
@@ -506,27 +651,45 @@ collect_inputs() {
   prompt "Adresse IP d'accès (IPv4)" "${DEFAULT_IP}"
   APP_IP="$REPLY"
   is_ipv4 "$APP_IP" || die "Adresse IPv4 invalide : ${APP_IP}"
+  is_private_ip "$APP_IP" || die "Le mode LAN exige une adresse privée RFC1918 (10/8, 172.16/12 ou 192.168/16)."
+  prompt "CIDR du réseau local autorisé" "$(detect_default_lan_cidr)"
+  LAN_CIDR="$REPLY"
+  validate_lan_settings
+
+  prompt "Image MinIO accessible depuis ce serveur" "${MINIO_IMAGE:-pgsty/silo:RELEASE.2026-10-26T00-00-00Z}"
+  MINIO_IMAGE="$REPLY"
+  valid_image_ref "$MINIO_IMAGE" || die "Référence d'image MinIO invalide."
+  prompt "Image du client MinIO (mcli, même image Silo par défaut)" "${MINIO_CLIENT_IMAGE:-pgsty/silo:RELEASE.2026-10-26T00-00-00Z}"
+  MINIO_CLIENT_IMAGE="$REPLY"
+  valid_image_ref "$MINIO_CLIENT_IMAGE" || die "Référence d'image minio-client invalide."
 
   GEN_PG="$(rand_password | tr -d '\n')"
-  prompt_secret "Mot de passe PostgreSQL (utilisateur finflow)" "$GEN_PG"
+  prompt_secret "Mot de passe PostgreSQL (lettres, chiffres, . _ - ~)" "$GEN_PG"
   POSTGRES_PASSWORD="$REPLY"
   [[ ${#POSTGRES_PASSWORD} -ge 12 ]] || die "Mot de passe PostgreSQL trop court (≥ 12)."
+  [[ "$POSTGRES_PASSWORD" =~ ^[A-Za-z0-9._~-]+$ ]] || die "Mot de passe PostgreSQL : utilisez uniquement lettres, chiffres, point, tiret, underscore ou tilde (URL PostgreSQL)."
 
   prompt "Utilisateur MinIO (root)" "finflow_minio_admin"
   MINIO_ROOT_USER="$REPLY"
+  [[ "$MINIO_ROOT_USER" =~ ^[A-Za-z0-9_-]{3,20}$ ]] || die "Utilisateur MinIO : 3 à 20 caractères alphanumériques, underscore ou tiret."
   GEN_MINIO="$(rand_password | tr -d '\n')"
-  prompt_secret "Mot de passe MinIO" "$GEN_MINIO"
+  prompt_secret "Mot de passe MinIO (lettres, chiffres, . _ - ~)" "$GEN_MINIO"
   MINIO_ROOT_PASSWORD="$REPLY"
   [[ ${#MINIO_ROOT_PASSWORD} -ge 12 ]] || die "Mot de passe MinIO trop court (≥ 12)."
+  [[ "$MINIO_ROOT_PASSWORD" =~ ^[A-Za-z0-9._~-]+$ ]] || die "Mot de passe MinIO : utilisez uniquement lettres, chiffres, point, tiret, underscore ou tilde."
 
   GEN_DJANGO="$(rand_secret)"
   prompt_secret "DJANGO_SECRET_KEY" "$GEN_DJANGO"
   DJANGO_SECRET_KEY="$REPLY"
+  [[ ${#DJANGO_SECRET_KEY} -ge 40 ]] || die "DJANGO_SECRET_KEY doit contenir au moins 40 caractères."
+  case "${DJANGO_SECRET_KEY,,}" in
+    *change-me*|*insecure*|secret|changeme) die "DJANGO_SECRET_KEY est une valeur interdite en production." ;;
+  esac
 
   GEN_FERNET="$(rand_fernet_key)"
   prompt_secret "FIELD_ENCRYPTION_KEY (chiffrement mots de passe SMTP filiale)" "$GEN_FERNET"
   FIELD_ENCRYPTION_KEY="$REPLY"
-  [[ -n "$FIELD_ENCRYPTION_KEY" ]] || die "FIELD_ENCRYPTION_KEY obligatoire."
+  validate_fernet_key "$FIELD_ENCRYPTION_KEY" || die "FIELD_ENCRYPTION_KEY doit être une clé Fernet valide (32 octets encodés en base64 URL-safe)."
 
   echo
   SMTP_GLOBAL_CONFIGURED=0
@@ -564,30 +727,19 @@ collect_inputs() {
   echo
   ENABLE_TLS=0
   TLS_MODE=""
-  LETSENCRYPT_EMAIL=""
   if is_private_ip "$APP_IP"; then
     if ask_yes_no "Activer HTTPS (certificat auto-signé, avertissement navigateur, sans HSTS) ?" "y"; then
       ENABLE_TLS=1
       TLS_MODE="selfsigned"
     fi
-  else
-    if ask_yes_no "Activer HTTPS (Let's Encrypt sur l'IP, HSTS 7 jours) ?" "y"; then
-      ENABLE_TLS=1
-      TLS_MODE="le"
-      prompt "E-mail Let's Encrypt (avis d'expiration)" ""
-      LETSENCRYPT_EMAIL="$REPLY"
-      [[ -n "$LETSENCRYPT_EMAIL" ]] || die "E-mail Let's Encrypt obligatoire."
-    fi
   fi
 
   echo
-  SETUP_UFW=0
-  ask_yes_no "Configurer UFW (SSH / 80 / 9000${ENABLE_TLS:+ / 443}) ?" "y" && SETUP_UFW=1
+  SETUP_UFW=1
 
   local url_scheme="http"
   local tls_label="HTTP (sans TLS)"
   [[ "$ENABLE_TLS" -eq 1 ]] && url_scheme="https"
-  [[ "$TLS_MODE" == "le" ]] && tls_label="HTTPS Let's Encrypt + HSTS 7j"
   [[ "$TLS_MODE" == "selfsigned" ]] && tls_label="HTTPS auto-signé (HSTS off)"
 
   echo
@@ -596,6 +748,7 @@ collect_inputs() {
   echo "  Install dir  : $INSTALL_DIR"
   echo "  Repo/branch  : $REPO_URL @ $GIT_BRANCH"
   echo "  IP d'accès   : $APP_IP"
+  echo "  LAN autorisé : $LAN_CIDR"
   echo "  URL app      : ${url_scheme}://${APP_IP}/"
   echo "  MinIO        : ${url_scheme}://${APP_IP}:9000/"
   echo "  DB user      : finflow"
@@ -609,42 +762,45 @@ collect_inputs() {
 
 main() {
   need_root
-  finflow_require_tty "sudo bash deploy/ubuntu-install-ip.sh"
   detect_ubuntu
 
+  if [[ "${1:-}" == "--resume" ]]; then
+    shift
+    resume_install "${1:-$INSTALL_DIR_DEFAULT}"
+    return
+  fi
+
+  finflow_require_tty "sudo bash deploy/ubuntu-install-ip.sh"
+
   echo
-  echo "FIN_FLOW — installation interactive par IP (Ubuntu Server)"
+  echo "FIN_FLOW — installation interactive par IP (HTTP ou HTTPS sans domaine)"
   echo "Répondez aux questions dans ce terminal. Entrée conserve la valeur entre crochets."
   echo "Variante domaines + TLS : deploy/ubuntu-install.sh"
   echo "Guide : documentation/13-guide-deploiement-ubuntu.md"
   echo
 
   collect_inputs
-  finflow_prepare_apt
+  [[ ! -e "$INSTALL_DIR/.env" ]] || die "Une installation existe déjà dans $INSTALL_DIR. Utilisez deploy/ubuntu-update.sh pour la mettre à jour."
   install_base_packages
   install_docker
   systemctl enable --now fail2ban || true
 
-  [[ "$SETUP_UFW" -eq 1 ]] && configure_ufw
-
   prepare_install_dir "$INSTALL_DIR" "$REPO_URL" "$GIT_BRANCH"
   write_env_file "$INSTALL_DIR"
+  write_install_state "$INSTALL_DIR"
   write_helpers "$INSTALL_DIR"
+  configure_ufw
   write_nginx_ip "$APP_IP"
   start_stack "$INSTALL_DIR"
   post_deploy_commands "$INSTALL_DIR"
 
   if [[ "${ENABLE_TLS:-0}" -eq 1 ]]; then
-    local tls_args=()
-    if [[ "$TLS_MODE" == "le" ]]; then
-      tls_args+=(--lets-encrypt --email "$LETSENCRYPT_EMAIL")
-    else
-      tls_args+=(--self-signed)
-    fi
+    local tls_args=(--self-signed)
     log "Activation HTTPS (${TLS_MODE})…"
     bash "$INSTALL_DIR/deploy/tls-ip/enable-ip-tls.sh" "$INSTALL_DIR" "${tls_args[@]}"
   fi
 
+  rm -f "$INSTALL_DIR/.finflow-install-state"
   print_summary
 }
 

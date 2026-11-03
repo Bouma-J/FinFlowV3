@@ -50,6 +50,7 @@ export const PERM_AFTER_SALES = [
 export const PERM_ADMIN_ALERTS = [
   "notifications.view_tenantnotificationsettings",
   "notifications.change_tenantnotificationsettings",
+  "tenants.change_tenant",
 ] as const;
 export const PERM_ADMIN_DELEGATIONS = [
   "accounts.view_delegation",
@@ -58,8 +59,6 @@ export const PERM_ADMIN_DELEGATIONS = [
 ] as const;
 export const PERM_ADMIN_CIRCUITS = [
   "workflow.view_workflowdefinition",
-  "workflow.add_workflowdefinition",
-  "workflow.change_workflowdefinition",
 ] as const;
 export const PERM_ADMIN_CONTRACTS = [
   "contracts.view_contracttemplate",
@@ -74,19 +73,13 @@ export const PERM_ADMIN_REFERENTIALS = [
 ] as const;
 export const PERM_ADMIN_USERS = [
   "accounts.view_user",
-  "accounts.change_user",
 ] as const;
-export const PERM_ADMIN_ROLES = [
-  "accounts.view_tenantrole",
-  "accounts.change_tenantrole",
-] as const;
+export const PERM_ADMIN_ROLES = ["accounts.view_tenantrole"] as const;
 export const PERM_ADMIN_AGENCIES = [
   "tenants.view_agency",
-  "tenants.change_agency",
 ] as const;
 export const PERM_ADMIN_PRODUCTS = [
   "catalog.view_creditproduct",
-  "catalog.change_creditproduct",
 ] as const;
 export const PERM_ADMIN_CBS_REF = [
   "catalog.view_currency",
@@ -98,14 +91,17 @@ export const PERM_ADMIN_CBS_REF = [
 ] as const;
 export const PERM_ADMIN_CONNECTORS = [
   "corebanking.view_corebankingconnector",
-  "corebanking.change_corebankingconnector",
 ] as const;
 export const PERM_ADMIN_POLICY = [
   "credits.view_creditinstructionpolicy",
   "credits.change_creditinstructionpolicy",
 ] as const;
+export const PERM_ADMIN_CONFIGURATION = ["configuration.view_configurationprofile"] as const;
 export const PERM_ADMIN_COLLECTION_TRANCHES = [
-  "collections.change_collectiontranche",
+  "collections.view_collectiontranche",
+] as const;
+export const PERM_ADMIN_COLLECTION_ESCALATION_RULES = [
+  "collections.view_collectionescalationrule",
 ] as const;
 export const PERM_ADMIN_AUDIT = ["audit.view_auditlog"] as const;
 
@@ -118,20 +114,21 @@ export const CONTROLE_PERMANENT_ROLES = [
 export function isFinflowAdmin(user: {
   is_superuser?: boolean;
   is_group_level?: boolean;
+  is_staff?: boolean;
   roles?: string[];
+  capabilities?: string[];
 } | null | undefined): boolean {
   if (!user) return false;
-  if (user.is_superuser || user.is_group_level) return true;
-  return Boolean(user.roles?.includes(FILIALE_ADMIN_ROLE));
+  if (user.is_superuser || (user.is_group_level && user.is_staff)) return true;
+  return Boolean(user.capabilities?.includes("tenant_admin"));
 }
 
 export function isControlePermanent(user: {
   roles?: string[];
+  capabilities?: string[];
 } | null | undefined): boolean {
   return Boolean(
-    user?.roles?.some((role) =>
-      (CONTROLE_PERMANENT_ROLES as readonly string[]).includes(role),
-    ),
+    user?.capabilities?.includes("internal_control"),
   );
 }
 

@@ -8,7 +8,7 @@ FIN_FLOW est une plateforme **SaaS multi-filiales** destinée aux institutions d
 2. Instruction du dossier (conditions, frais, analyse financière, garanties, cautions)
 3. Circuit d’approbation paramétrable
 4. Génération de contrats
-5. Décaissement (capital = montant accordé ; frais prélevés côté CBS)
+5. Mise en place (capital = montant accordé ; frais prélevés côté CBS)
 6. Suivi d’échéancier, recouvrement (PAR), main levée / dation
 7. Reporting filiale et consolidation **Groupe**
 
@@ -50,7 +50,7 @@ FIN_FLOW est une plateforme **SaaS multi-filiales** destinée aux institutions d
 
 ## 6. Principes métier verrouillés
 
-- **Montant décaissé** = montant accordé (`amount_approved`) ; le CBS prélève les frais.
+- **Montant mis en place** = montant accordé (`amount_approved`) ; le CBS prélève les frais.
 - **Épargne obligatoire** affichée, **exclue** des ratios institution (DSCR, score, échéance institution).
 - **Mécanismes** d’échéancier : CONSTANT, DEGRESSIVE, IN_FINE, BULLET.
 - Analyse financière **de référence** obligatoire avant soumission ; risque circuit dérivé de cette analyse.

@@ -30,10 +30,10 @@ Avant d’appeler le CBS, renseigner les **références croisées** :
 
 | Objet | Champ | Usage |
 |-------|-------|--------|
-| Client | `cbs_client_id` | Matricule client CBS (dation, encours, décaissement `codeAdherent`) |
-| Client | `cbs_account_number` | Compte / `numManuel` pour décaissement |
+| Client | `cbs_client_id` | Matricule client CBS (dation, encours, mise en place `codeAdherent`) |
+| Client | `cbs_account_number` | Compte / `numManuel` pour mise en place |
 | Agence | `cbs_point_of_service_id` | `idPointService` Perfect |
-| Produit | `cbs_product_code` (/ `cbs_repayment_product_code`) | `idProduitCrd` (override `idProduitRemb`) |
+| Produit de crédit | `cbs_product_code`, saisi manuellement dans **Administration → Catalogue → Produits** | `idProduitCrd` |
 | Utilisateur | `cbs_id` (sinon `employee_id`) | `idGestionnaire` |
 | Périodicité | `LoanPeriodicity.cbs_code` | `idPeriodicite` |
 | Méthode remboursement | `RepaymentMethod.cbs_code` | `idProduitRemb` |
@@ -192,13 +192,13 @@ FIN_FLOW parle au CBS via un **contrat métier interne**. L’adaptateur traduit
 | `GET_LOAN_STATUS` | `{ loan_ref, currency? }` | `{ settled, outstanding, currency, raw, external_reference }` | Main levée, contrôle solde |
 | `GET_CLIENT_OUTSTANDING` | `{ cbs_client_id, currency? }` | `{ total_outstanding, currency, breakdown[], raw, … }` | Dation (preview + initiation) |
 | `GET_CLIENT_SITUATION` | `{ codeAdherent? / numManuel? / numPieceIdentite? }` | `{ raw, … }` (situation adhérent Perfect) | Import client CBS |
-| `SUBMIT_CREDIT` | corps Perfect `crd/simple` | `{ num_demande, ref_demande, num_contrat, limit_credit, montant, raw, … }` | Décaissement dossier |
+| `SUBMIT_CREDIT` | corps Perfect `crd/simple` | `{ num_demande, ref_demande, num_contrat, limit_credit, montant, raw, … }` | Mise en place dossier |
 
 Constantes : `OP_*` dans `services.py`.
 
-### 5.1 Décaissement — `SUBMIT_CREDIT` (Perfect `POST …/crd/simple`)
+### 5.1 Mise en place — `SUBMIT_CREDIT` (Perfect `POST …/crd/simple`)
 
-Après validation du dossier, l’action **Décaisser / Valider le décaissement** appelle le CBS **avant** de créer le prêt local.
+Après validation du dossier, l’action **Mettre en place / Valider la mise en place** appelle le CBS **avant** de créer le prêt local.
 
 | Élément | Détail |
 |---------|--------|
@@ -221,8 +221,8 @@ Après validation du dossier, l’action **Décaisser / Valider le décaissement
 | `nombreEcheance` | durée × périodicité |
 | `idObjetFinancement` | `purpose_type` mappé (ex. `CONSUMPTION` → `CONSOMMATION`) |
 | `idGestionnaire` | `mapping_rules.disbursement.defaults.idGestionnaire` |
-| `idProduitCrd` | `product.cbs_product_code` (sinon `product.code`) |
-| `idProduitRemb` | `product.cbs_repayment_product_code` ou défaut connecteur |
+| `idProduitCrd` | `product.cbs_product_code`, saisi manuellement dans le produit local (aucun endpoint de catalogue produit crédit n’est disponible dans le CBS testé) |
+| `idProduitRemb` | `RepaymentMethod.cbs_code` du mécanisme choisi dans le dossier (mapping à revoir séparément) |
 | `montantDemande` | montant de référence (accordé) |
 | `codeDevise` | devise dossier |
 
@@ -231,7 +231,7 @@ Après validation du dossier, l’action **Décaisser / Valider le décaissement
 - `LOCAL` — simulation (démo / UAT) via `SimulatedAdapter` ; aucun HTTP Perfect
 - `CBS` — appel REST réel (`RestAdapter._crd_simple`)
 
-Échec CBS (`responseCode` ≥ 400, ex. limite insuffisante) → le décaissement est **bloqué** (pas de prêt local).
+Échec CBS (`responseCode` ≥ 400, ex. limite insuffisante) → la mise en place est **bloqué** (pas de prêt local).
 
 Références CBS stockées sur `Loan` : `cbs_external_id`, `cbs_demande_number`, `cbs_demande_ref`, `cbs_contract_number`, `cbs_disbursement_status`, `core_banking_reference`.
 
@@ -290,7 +290,7 @@ Si `mapping_rules.force_simulate` est vrai, ou si l’URL est vide, `get_adapter
 | Préfixe `UNSOLDE-` / `UNSETTLED-` | Convention recette : ref prêt forcée « ouverte » |
 | `client_outstanding_default` | Encours client par défaut |
 | `client_outstanding_by_id` | Override par matricule |
-| `credit_submit_fail` | Simule un refus de décaissement |
+| `credit_submit_fail` | Simule un refus de mise en place |
 | `credit_fail_external_ids` | Liste d’`externalId` refusés |
 
 Exemple recette main levée **refusée** : utiliser une référence prêt `UNSOLDE-TEST-01`.
@@ -365,12 +365,12 @@ Le journal et l’idempotence restent identiques quelle que soit la transport.
 | Preview **dation** | `preview_dation_cbs` → `get_client_outstanding` | Affiche créance CBS |
 | Initiation **dation** | `assert_client_outstanding_for_dation` | Encours **> 0** (seuil paramétrable) |
 | Retry ML / dation bloquée | Actions `retry_cbs` | Relance le contrôle |
-| **Décaissement** dossier | `submit_credit_to_cbs` → `SUBMIT_CREDIT` / `crd/simple` | Succès CBS requis (sauf `skip_cbs`) |
+| **Mise en place** dossier | `submit_credit_to_cbs` → `SUBMIT_CREDIT` / `crd/simple` | Succès CBS requis (sauf `skip_cbs`) |
 
 Fichier métier garanties : `backend/apps/guarantees/process_services.py`.  
-Décaissement : `backend/apps/corebanking/disbursement.py` + `disburse_application`.
+Mise en place : `backend/apps/corebanking/disbursement.py` + `disburse_application`.
 
-**Décaissement** : FIN_FLOW pousse la demande Perfect, puis enregistre le prêt local au **montant accordé** ; les frais sont affichés dans FIN_FLOW mais **prélevés par le CBS**.
+**Mise en place** : FIN_FLOW pousse la demande Perfect, puis enregistre le prêt local au **montant accordé** ; les frais sont affichés dans FIN_FLOW mais **prélevés par le CBS**.
 
 ---
 
@@ -397,7 +397,7 @@ Consultation :
 send_operation(connector, operation, payload, idempotency_key="disburse:UUID")
 ```
 
-Si une clé a déjà un log `SUCCESS` pour ce connecteur → **pas de nouvel envoi** (anti double décaissement).
+Si une clé a déjà un log `SUCCESS` pour ce connecteur → **pas de nouvel envoi** (anti doubla mise en place).
 
 Contrainte DB : unicité `(connector, idempotency_key)` lorsque la clé est non vide.
 
@@ -463,7 +463,7 @@ docker compose logs -f backend worker beat | findstr /i "Core Banking CBS"
 
 ## 13. Références croisées
 
-- Cahier des charges §3.7 — Décaissement et intégration Core Banking : [`../charge.txt`](../charge.txt)
+- Cahier des charges §3.7 — Mise en place et intégration Core Banking : [`../charge.txt`](../charge.txt)
 - API générale : [`06-api-et-integrations.md`](06-api-et-integrations.md)
 - Admin / sécurité : [`08-administration-securite.md`](08-administration-securite.md)
 - Exploitation (Celery retry) : [`10-exploitation-supervision.md`](10-exploitation-supervision.md)

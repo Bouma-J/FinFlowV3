@@ -2,17 +2,10 @@
 from django.db.models import Q
 from rest_framework.exceptions import PermissionDenied
 
-from apps.accounts.services import (
-    ASSISTANT_JURIDIQUE_ROLE_NAME,
-    ASSISTANT_RECOUVREMENT_ROLE_NAME,
-    CHARGE_AFFAIRE_ROLE_NAME,
-    CHEF_AGENCE_ROLE_NAME,
-    DIRECTEUR_GENERAL_ROLE_NAME,
-    FILIALE_ADMIN_ROLE_NAME,
-    RESP_ADMIN_FINANCIER_ROLE_NAME,
-    RESP_EXPLOITATION_ROLE_NAME,
-    RESP_JURIDIQUE_ROLE_NAME,
-    RESP_RECOUVREMENT_ROLE_NAME,
+from apps.accounts.capabilities import (
+    AGENCY_MANAGER, COLLECTION_BROAD_VIEW, COLLECTION_MANAGER,
+    COLLECTION_OFFICER, LEGAL_OFFICER, RELATIONSHIP_MANAGER, TENANT_ADMIN,
+    user_capabilities, users_with_capability,
 )
 from apps.common.access import DataScope, get_user_agency_ids
 
@@ -25,36 +18,21 @@ _DENY_OPERATE = (
 _DENY_EDIT_OWN = "Vous ne pouvez modifier que les éléments que vous avez créés."
 _DENY_ADMIN = "Réservé aux administrateurs filiale et groupe."
 
-_COLLECTION_ROLES = frozenset({
-    RESP_RECOUVREMENT_ROLE_NAME,
-    ASSISTANT_RECOUVREMENT_ROLE_NAME,
-})
-_LEGAL_ROLES = frozenset({
-    RESP_JURIDIQUE_ROLE_NAME,
-    ASSISTANT_JURIDIQUE_ROLE_NAME,
-})
-# Consultation filiale (hors CA / chef d'agence seuls).
-_BROAD_VIEW_ROLES = frozenset({
-    RESP_EXPLOITATION_ROLE_NAME,
-    RESP_RECOUVREMENT_ROLE_NAME,
-    ASSISTANT_RECOUVREMENT_ROLE_NAME,
-    RESP_JURIDIQUE_ROLE_NAME,
-    ASSISTANT_JURIDIQUE_ROLE_NAME,
-    DIRECTEUR_GENERAL_ROLE_NAME,
-    RESP_ADMIN_FINANCIER_ROLE_NAME,
-})
+_COLLECTION_ROLES = frozenset({COLLECTION_OFFICER})
+_LEGAL_ROLES = frozenset({LEGAL_OFFICER})
+_BROAD_VIEW_ROLES = frozenset({COLLECTION_BROAD_VIEW})
 
 
 def uses_special_collection_scope(user) -> bool:
     """True si le périmètre recouvrement remplace data_scope OWN/AGENCY."""
     if is_finflow_admin(user):
         return True
-    names = user_role_names(user)
+    names = user_capabilities(user)
     return bool(
         names
         & (
             _BROAD_VIEW_ROLES
-            | {CHARGE_AFFAIRE_ROLE_NAME, CHEF_AGENCE_ROLE_NAME}
+            | {RELATIONSHIP_MANAGER, AGENCY_MANAGER}
         )
     )
 
@@ -81,17 +59,17 @@ def user_display_name(user) -> str | None:
 
 def is_finflow_admin(user) -> bool:
     """Administrateur filiale, administrateur groupe, ou superutilisateur."""
-    if not user or not getattr(user, "is_authenticated", False):
+    if not user or not getattr(user, "is_authenticated", False) or not user.is_active:
         return False
     if user.is_superuser:
         return True
-    if getattr(user, "is_group_level", False):
+    if getattr(user, "is_group_level", False) and user.is_staff:
         return True
-    return FILIALE_ADMIN_ROLE_NAME in user_role_names(user)
+    return TENANT_ADMIN in user_capabilities(user)
 
 
 def is_collection_officer(user) -> bool:
-    return bool(user_role_names(user) & _COLLECTION_ROLES)
+    return bool(user_capabilities(user) & _COLLECTION_ROLES)
 
 
 def require_finflow_admin(user) -> None:
@@ -113,9 +91,9 @@ def mine_collection_cases(qs, user):
     """Portefeuille personnel : CA = ses dossiers ; sinon agent affecté."""
     if not user or not getattr(user, "is_authenticated", False):
         return qs.none()
-    names = user_role_names(user)
+    names = user_capabilities(user)
     q = Q(assigned_to=user)
-    if CHARGE_AFFAIRE_ROLE_NAME in names and not is_finflow_admin(user):
+    if RELATIONSHIP_MANAGER in names and not is_finflow_admin(user):
         q |= officers_own_cases_q(user)
     return qs.filter(q)
 
@@ -151,18 +129,20 @@ def can_operate_collection_case(user, case: CollectionCase) -> bool:
     """Écriture opérationnelle (hors dialogue) sur le dossier."""
     if not user or not getattr(user, "is_authenticated", False):
         return False
+    if not user.is_active or (not user.is_group_level and user.tenant_id != case.tenant_id):
+        return False
     if is_finflow_admin(user):
         return True
     if case.stage == CollectionCase.Stage.CLOSED:
         return False
-    names = user_role_names(user)
+    names = user_capabilities(user)
     kind = case_owner_kind(case)
     if kind == CollectionTranche.OwnerKind.GESTIONNAIRE:
-        if RESP_EXPLOITATION_ROLE_NAME in names:
+        if COLLECTION_MANAGER in names:
             return True
-        if CHEF_AGENCE_ROLE_NAME in names and is_agency_case(user, case):
+        if AGENCY_MANAGER in names and is_agency_case(user, case):
             return True
-        if CHARGE_AFFAIRE_ROLE_NAME in names and is_officers_case(user, case):
+        if RELATIONSHIP_MANAGER in names and is_officers_case(user, case):
             return True
         return False
     if kind == CollectionTranche.OwnerKind.COLLECTION:
@@ -231,18 +211,18 @@ def users_for_tranche_owner(tenant_id, owner_kind, case=None):
         names = _LEGAL_ROLES
     else:
         names = frozenset({
-            CHARGE_AFFAIRE_ROLE_NAME,
-            CHEF_AGENCE_ROLE_NAME,
-            RESP_EXPLOITATION_ROLE_NAME,
+            RELATIONSHIP_MANAGER,
+            AGENCY_MANAGER,
+            COLLECTION_MANAGER,
         })
     qs = (
-        User.objects.filter(is_active=True, groups__tenant_role__name__in=names)
+        users_with_capability(User.objects.filter(is_active=True), *names)
         .filter(Q(tenant_id=tenant_id) | Q(is_group_level=True))
         .exclude(email="")
         .distinct()
     )
     if kind != CollectionTranche.OwnerKind.GESTIONNAIRE:
-        return list(qs)
+        return [user for user in qs if user_capabilities(user) & names]
 
     app = getattr(getattr(case, "loan", None), "application", None) if case else None
     officer_ids = set()
@@ -254,14 +234,14 @@ def users_for_tranche_owner(tenant_id, owner_kind, case=None):
     agency_id = getattr(app, "agency_id", None) if app is not None else None
     selected = []
     for user in qs:
-        roles = user_role_names(user)
-        if RESP_EXPLOITATION_ROLE_NAME in roles:
+        roles = user_capabilities(user)
+        if COLLECTION_MANAGER in roles:
             selected.append(user)
             continue
-        if CHARGE_AFFAIRE_ROLE_NAME in roles and user.id in officer_ids:
+        if RELATIONSHIP_MANAGER in roles and user.id in officer_ids:
             selected.append(user)
             continue
-        if CHEF_AGENCE_ROLE_NAME in roles and agency_id:
+        if AGENCY_MANAGER in roles and agency_id:
             if agency_id in get_user_agency_ids(user):
                 selected.append(user)
     return selected
@@ -273,15 +253,15 @@ def filter_visible_collection_cases(qs, user):
         return qs.none()
     if is_finflow_admin(user):
         return qs
-    names = user_role_names(user)
+    names = user_capabilities(user)
     if names & _BROAD_VIEW_ROLES:
         return qs
-    if CHEF_AGENCE_ROLE_NAME in names:
+    if AGENCY_MANAGER in names:
         agency_ids = get_user_agency_ids(user)
         if not agency_ids:
             return qs.none()
         return qs.filter(loan__application__agency_id__in=agency_ids)
-    if CHARGE_AFFAIRE_ROLE_NAME in names:
+    if RELATIONSHIP_MANAGER in names:
         return qs.filter(officers_own_cases_q(user))
     return qs
 
@@ -335,7 +315,7 @@ def scoped_loan_decisions(qs, user):
                 | Q(loan__application__submitted_by=user)
             )
         elif uses_special_collection_scope(user) or (
-            user_role_names(user) & _BROAD_VIEW_ROLES
+            user_capabilities(user) & _BROAD_VIEW_ROLES
         ):
             q |= orphan
     return qs.filter(q)

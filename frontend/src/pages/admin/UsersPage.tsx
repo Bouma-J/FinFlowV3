@@ -3,8 +3,9 @@ import { KeyRound, Plus, Shield, UsersRound, X } from "lucide-react";
 import { useEffect, useState, type FormEvent } from "react";
 
 import { api } from "@/api/client";
-import type { AdminUser, Agency, CbsCatalogItem, DataScope, Paginated, Role, Tenant } from "@/api/types";
+import type { AdminUser, Agency, CbsCatalogItem, DataScope, Paginated, RoleOption, Tenant } from "@/api/types";
 import { useAuth } from "@/auth/AuthContext";
+import { hasPerm } from "@/auth/permissions";
 import { Card, PageHeader, PaginationBar, QueryStatus, TenantScopeNotice } from "@/components/ui";
 import { apiErrorMessage } from "@/utils/apiError";
 
@@ -42,6 +43,9 @@ export function AdminUsersPage() {
   const { user, activeTenant } = useAuth();
   const needsTenant = Boolean(user?.is_group_level && !activeTenant);
   const canProvisionFilialeAdmin = Boolean(user?.is_group_level && activeTenant);
+  const canCreateUser = hasPerm(user, "accounts.add_user");
+  const canChangeUser = hasPerm(user, "accounts.change_user");
+  const canOpenCreateForm = canCreateUser || canProvisionFilialeAdmin;
 
   const [showForm, setShowForm] = useState(false);
   const [form, setForm] = useState({ ...EMPTY });
@@ -71,7 +75,7 @@ export function AdminUsersPage() {
 
   const roles = useQuery({
     queryKey: ["admin-roles", activeTenant, user?.tenant],
-    queryFn: async () => (await api.get<Paginated<Role>>("/roles/")).data,
+    queryFn: async () => (await api.get<Paginated<RoleOption>>("/roles/options/")).data,
     enabled: !needsTenant,
   });
 
@@ -240,6 +244,10 @@ export function AdminUsersPage() {
   function submit(e: FormEvent) {
     e.preventDefault();
     setSuccess(null);
+    if (!canCreateUser && !(canProvisionFilialeAdmin && form.as_filiale_admin)) {
+      setError("Vous n'avez pas le droit de créer cet utilisateur.");
+      return;
+    }
     if (form.password_delivery === "email" && !form.email.trim()) {
       setError("L'adresse e-mail est obligatoire pour l'envoi du mot de passe.");
       return;
@@ -347,7 +355,7 @@ export function AdminUsersPage() {
         icon={UsersRound}
         title="Utilisateurs"
         subtitle={`Gestion des comptes — ${scopeLabelPage}`}
-        actions={
+        actions={canOpenCreateForm ? (
           <button
             className="btn btn-primary"
             onClick={() => {
@@ -359,7 +367,7 @@ export function AdminUsersPage() {
             {showForm ? <X /> : <Plus />}
             {showForm ? "Fermer" : "Nouvel utilisateur"}
           </button>
-        }
+        ) : undefined}
       />
 
       {success && <div className="form-success" style={{ marginBottom: 12 }}>{success}</div>}
@@ -685,7 +693,13 @@ export function AdminUsersPage() {
           )}
 
           {error && <div className="form-error">{error}</div>}
-          <button className="btn btn-primary" disabled={createMutation.isPending}>
+          <button
+            className="btn btn-primary"
+            disabled={
+              createMutation.isPending ||
+              (!canCreateUser && !(canProvisionFilialeAdmin && form.as_filiale_admin))
+            }
+          >
             {form.as_filiale_admin
               ? "Créer l'administrateur filiale"
               : "Créer l'utilisateur"}
@@ -893,8 +907,8 @@ export function AdminUsersPage() {
             {(users.data?.results ?? []).map((u) => (
               <tr
                 key={u.id}
-                className="row-clickable"
-                onClick={() => setEditing(u)}
+                className={canChangeUser ? "row-clickable" : undefined}
+                onClick={canChangeUser ? () => setEditing(u) : undefined}
               >
                 <td>{u.username}</td>
                 <td className="small">{u.email || <span className="muted">—</span>}</td>
@@ -927,44 +941,54 @@ export function AdminUsersPage() {
                   )}
                 </td>
                 <td>
-                  <button
-                    className={`badge badge-${u.is_active ? "success" : "muted"} badge-btn`}
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      patchMutation.mutate({
-                        id: u.id,
-                        data: { is_active: !u.is_active },
-                      });
-                    }}
-                    title="Activer / désactiver"
-                  >
-                    {u.is_active ? "Actif" : "Inactif"}
-                  </button>
+                  {canChangeUser ? (
+                    <button
+                      className={`badge badge-${u.is_active ? "success" : "muted"} badge-btn`}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        patchMutation.mutate({
+                          id: u.id,
+                          data: { is_active: !u.is_active },
+                        });
+                      }}
+                      title="Activer / désactiver"
+                    >
+                      {u.is_active ? "Actif" : "Inactif"}
+                    </button>
+                  ) : (
+                    <span className={`badge badge-${u.is_active ? "success" : "muted"}`}>
+                      {u.is_active ? "Actif" : "Inactif"}
+                    </span>
+                  )}
                 </td>
                 <td>
                   <div className="row-actions" onClick={(e) => e.stopPropagation()}>
-                    <button
-                      className="btn btn-ghost btn-sm"
-                      onClick={() => setEditing(u)}
-                    >
-                      Modifier
-                    </button>
-                    <button
-                      className="btn btn-ghost btn-sm"
-                      title="Régénérer le mot de passe"
-                      disabled={resetPwdMutation.isPending}
-                      onClick={() => {
-                        setError(null);
-                        setSuccess(null);
-                        setResetError(null);
-                        setResetDelivery(u.email ? "email" : "manual");
-                        setResetPassword("");
-                        setResetPasswordConfirm("");
-                        setResetTarget(u);
-                      }}
-                    >
-                      <KeyRound size={14} /> Mot de passe
-                    </button>
+                    {canChangeUser && (
+                      <>
+                        <button
+                          className="btn btn-ghost btn-sm"
+                          onClick={() => setEditing(u)}
+                        >
+                          Modifier
+                        </button>
+                        <button
+                          className="btn btn-ghost btn-sm"
+                          title="Régénérer le mot de passe"
+                          disabled={resetPwdMutation.isPending}
+                          onClick={() => {
+                            setError(null);
+                            setSuccess(null);
+                            setResetError(null);
+                            setResetDelivery(u.email ? "email" : "manual");
+                            setResetPassword("");
+                            setResetPasswordConfirm("");
+                            setResetTarget(u);
+                          }}
+                        >
+                          <KeyRound size={14} /> Mot de passe
+                        </button>
+                      </>
+                    )}
                   </div>
                 </td>
               </tr>

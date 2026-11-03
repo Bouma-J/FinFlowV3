@@ -1,15 +1,34 @@
 from django.contrib.auth.models import Group, Permission
+from django.db import transaction
 from rest_framework import serializers
 
 from apps.common.tenancy import get_current_tenant_id
 from apps.tenants.models import Agency
 
 from .models import DataScope, Delegation, TenantRole, User
+from .capabilities import CAPABILITIES
 from .services import (
     create_tenant_role,
     validate_groups_for_tenant,
     validate_sod_role_assignment,
 )
+
+
+def validate_account_administration(attrs, instance, context):
+    """Un gestionnaire filiale ne peut créer ni déplacer un compte hors filiale."""
+    request = context.get("request")
+    actor = getattr(request, "user", None)
+    if not actor or actor.is_superuser or actor.is_group_level:
+        return
+    tenant = attrs.get("tenant", getattr(instance, "tenant", None))
+    if attrs.get("is_group_level", getattr(instance, "is_group_level", False)):
+        raise serializers.ValidationError({
+            "is_group_level": "Seul le niveau Groupe peut gérer des comptes Groupe."
+        })
+    if not actor.tenant_id or (tenant and tenant.pk != actor.tenant_id):
+        raise serializers.ValidationError({
+            "tenant": "Vous ne pouvez gérer que les utilisateurs de votre filiale."
+        })
 
 
 class PermissionSerializer(serializers.ModelSerializer):
@@ -61,18 +80,54 @@ class TenantRoleSerializer(serializers.ModelSerializer):
         source="group.permissions", many=True, read_only=True
     )
     user_count = serializers.SerializerMethodField()
+    capabilities = serializers.ListField(child=serializers.ChoiceField(choices=CAPABILITIES), max_length=len(CAPABILITIES), required=False)
+
+    def validate_capabilities(self, values):
+        if len(values) != len(set(values)):
+            raise serializers.ValidationError("Une fonction ne peut figurer qu'une seule fois.")
+        return values
 
     class Meta:
         model = TenantRole
         fields = [
             "id", "tenant", "name", "permissions", "permissions_detail",
-            "user_count", "created_at",
+            "user_count", "created_at", "capabilities", "pack_code",
         ]
-        read_only_fields = ["id", "tenant", "created_at"]
+        read_only_fields = ["id", "tenant", "created_at", "pack_code"]
+
+    def to_representation(self, instance):
+        from .capabilities import group_capabilities
+        # capabilities n'est pas un champ du modèle ; sa source est le groupe.
+        instance.capabilities = sorted(group_capabilities(instance.group))
+        return super().to_representation(instance)
+
+    def _permissions(self, group_data, capabilities, existing=None):
+        from .capabilities import group_capabilities, validate_capability_combination
+        from .services import capability_permissions
+
+        codes = set(capabilities) if capabilities is not None else group_capabilities(existing)
+        try:
+            validate_capability_combination(codes)
+            if existing is not None:
+                # Changer un rôle ne doit pas contourner la vérification faite
+                # lors de l'affectation des rôles à chacun de ses utilisateurs.
+                for user in existing.user_set.select_for_update().order_by("pk"):
+                    combined = set(codes)
+                    for other in user.groups.exclude(pk=existing.pk):
+                        combined.update(group_capabilities(other))
+                    validate_capability_combination(combined)
+        except ValueError as exc:
+            raise serializers.ValidationError({"capabilities": str(exc)}) from exc
+        base = group_data.get("permissions")
+        if base is None:
+            base = list(existing.permissions.all()) if existing else []
+        base = [p for p in base if not (p.content_type.app_label == "accounts" and p.codename.startswith("business_"))]
+        return [*base, *capability_permissions(codes)]
 
     def get_user_count(self, obj):
         return obj.group.user_set.count()
 
+    @transaction.atomic
     def create(self, validated_data):
         tenant_id = get_current_tenant_id()
         if tenant_id is None:
@@ -84,7 +139,7 @@ class TenantRoleSerializer(serializers.ModelSerializer):
 
         tenant = Tenant.objects.get(pk=tenant_id)
         group_data = validated_data.pop("group", {})
-        permissions = group_data.get("permissions", [])
+        permissions = self._permissions(group_data, validated_data.pop("capabilities", None))
         name = validated_data["name"]
         if TenantRole.objects.filter(tenant=tenant, name=name).exists():
             raise serializers.ValidationError(
@@ -92,14 +147,33 @@ class TenantRoleSerializer(serializers.ModelSerializer):
             )
         return create_tenant_role(tenant, name, permissions)
 
+    @transaction.atomic
     def update(self, instance, validated_data):
+        instance = TenantRole.objects.select_for_update().select_related("group").get(pk=instance.pk)
+        capabilities = validated_data.pop("capabilities", None)
+        group_data = validated_data.get("group", {})
+        permissions = self._permissions(group_data, capabilities, instance.group)
         if "name" in validated_data:
+            if TenantRole.objects.filter(tenant=instance.tenant, name=validated_data["name"]).exclude(pk=instance.pk).exists():
+                raise serializers.ValidationError({"name": "Un rôle avec ce nom existe déjà pour cette filiale."})
             instance.name = validated_data["name"]
             instance.save(update_fields=["name"])
-        group_data = validated_data.get("group", {})
-        if "permissions" in group_data:
-            instance.group.permissions.set(group_data["permissions"])
+        if "permissions" in group_data or capabilities is not None:
+            instance.group.permissions.set(permissions)
         return instance
+
+
+class TenantRoleOptionSerializer(serializers.ModelSerializer):
+    """Compact list representation used by role selectors and summaries."""
+
+    id = serializers.IntegerField(source="group.id", read_only=True)
+    tenant = serializers.UUIDField(source="tenant_id", read_only=True)
+    permission_count = serializers.IntegerField(read_only=True)
+    user_count = serializers.IntegerField(read_only=True)
+
+    class Meta:
+        model = TenantRole
+        fields = ["id", "tenant", "name", "permission_count", "user_count", "pack_code"]
 
 
 class UserGroupSerializer(serializers.ModelSerializer):
@@ -177,6 +251,7 @@ class UserSerializer(serializers.ModelSerializer):
             self.fields["is_staff"].read_only = False
 
     def validate(self, attrs):
+        validate_account_administration(attrs, self.instance, self.context)
         request = self.context.get("request")
         actor = getattr(request, "user", None) if request else None
         if "is_staff" in attrs:
@@ -217,12 +292,16 @@ class UserSerializer(serializers.ModelSerializer):
         tenant = attrs.get("tenant", getattr(self.instance, "tenant", None))
         agency = attrs.get("agency", getattr(self.instance, "agency", None))
         agencies = attrs.get("agencies")
+        if agencies is None and self.instance is not None:
+            agencies = list(self.instance.agencies.all())
         data_scope = attrs.get(
             "data_scope",
             getattr(self.instance, "data_scope", DataScope.AGENCY),
         )
 
         if not is_group:
+            if tenant is None:
+                raise serializers.ValidationError({"tenant": "La filiale est obligatoire."})
             # Admin filiale (TENANT) : agence non obligatoire.
             if agency is None and data_scope != DataScope.TENANT:
                 raise serializers.ValidationError({
@@ -238,6 +317,22 @@ class UserSerializer(serializers.ModelSerializer):
                         raise serializers.ValidationError({
                             "agency_ids": "Toutes les agences doivent appartenir à la filiale."
                         })
+        elif tenant is not None:
+            raise serializers.ValidationError({
+                "tenant": "Un utilisateur Groupe ne doit pas être rattaché à une filiale."
+            })
+        elif agency is not None or agencies:
+            raise serializers.ValidationError({"agency": "Un utilisateur Groupe ne doit pas être rattaché à une agence."})
+        # Un changement de filiale doit aussi revalider les rôles existants.
+        groups = attrs.get("groups")
+        if groups is None and self.instance is not None:
+            groups = list(self.instance.groups.all())
+        if tenant is not None and groups:
+            try:
+                validate_groups_for_tenant(tenant.pk, groups)
+                validate_sod_role_assignment(groups)
+            except ValueError as exc:
+                raise serializers.ValidationError({"group_ids": str(exc)})
         return attrs
 
     def create(self, validated_data):
@@ -328,6 +423,7 @@ class UserCreateSerializer(serializers.ModelSerializer):
     def validate(self, attrs):
         from .password_services import validate_password_delivery
 
+        validate_account_administration(attrs, None, self.context)
         as_admin = attrs.pop("as_filiale_admin", False)
         request = self.context.get("request")
         actor = getattr(request, "user", None) if request else None
@@ -404,7 +500,7 @@ class UserCreateSerializer(serializers.ModelSerializer):
                 else:
                     attrs["agencies"] = [agency]
             groups = attrs.get("groups", [])
-            if groups and not as_admin:
+            if groups:
                 try:
                     validate_groups_for_tenant(attrs["tenant"].id, groups)
                     validate_sod_role_assignment(groups)
@@ -415,6 +511,8 @@ class UserCreateSerializer(serializers.ModelSerializer):
                 "tenant": "Un utilisateur Groupe ne doit pas être rattaché à une filiale."
             })
         else:
+            if attrs.get("agency") is not None or attrs.get("agencies"):
+                raise serializers.ValidationError({"agency": "Un utilisateur Groupe ne doit pas être rattaché à une agence."})
             attrs["data_scope"] = DataScope.TENANT
         return attrs
 
@@ -691,6 +789,7 @@ class MeSerializer(serializers.ModelSerializer):
     roles = serializers.SerializerMethodField()
     tenant_branding = serializers.SerializerMethodField()
     features = serializers.SerializerMethodField()
+    capabilities = serializers.SerializerMethodField()
     agencies_detail = AgencySummarySerializer(
         source="agencies", many=True, read_only=True
     )
@@ -702,11 +801,15 @@ class MeSerializer(serializers.ModelSerializer):
             "tenant", "agency", "agencies_detail", "data_scope",
             "is_group_level", "is_staff", "is_superuser", "mfa_enabled",
             "must_change_password", "roles", "permissions", "tenant_branding",
-            "features",
+            "features", "capabilities",
         ]
 
     def get_permissions(self, obj):
         return sorted(obj.get_all_permissions())
+
+    def get_capabilities(self, obj):
+        from .capabilities import user_capabilities
+        return sorted(user_capabilities(obj))
 
     def get_roles(self, obj):
         names = []
@@ -735,6 +838,8 @@ class MeSerializer(serializers.ModelSerializer):
             "brand_primary": tenant.brand_primary,
             "brand_secondary": tenant.brand_secondary,
             "brand_accent": tenant.brand_accent,
+            "brand_sidebar": tenant.brand_sidebar,
+            "brand_sidebar_text": tenant.brand_sidebar_text,
         }
 
 
@@ -756,9 +861,11 @@ class DelegationSerializer(serializers.ModelSerializer):
             "end_date",
             "is_active",
             "is_currently_valid",
+            "max_amount", "product", "agency", "step_kind", "approval_required", "approved_by", "approved_at",
             "created_at",
         ]
         read_only_fields = [
+            "approval_required", "approved_by", "approved_at",
             "id",
             "created_at",
             "delegator_display",
@@ -801,6 +908,18 @@ class DelegationSerializer(serializers.ModelSerializer):
             raise serializers.ValidationError(
                 {"end_date": "La date de fin doit être postérieure ou égale au début."}
             )
+        for field in ("product", "agency"):
+            value = attrs.get(field, getattr(self.instance, field, None))
+            if value and delegator and value.tenant_id != delegator.tenant_id:
+                raise serializers.ValidationError({field: "Le périmètre doit appartenir à la filiale du délégant."})
+        if delegate and delegator and delegate.tenant_id != delegator.tenant_id:
+            raise serializers.ValidationError({"delegate": "La délégation doit rester dans la même filiale."})
+        tenant_id = get_current_tenant_id()
+        if tenant_id and delegator and str(delegator.tenant_id) != str(tenant_id):
+            raise serializers.ValidationError({"delegator": "Le délégant doit appartenir à la filiale sélectionnée."})
+        maximum = attrs.get("max_amount")
+        if maximum is not None and maximum < 0:
+            raise serializers.ValidationError({"max_amount": "Le plafond ne peut être négatif."})
         return attrs
 
 

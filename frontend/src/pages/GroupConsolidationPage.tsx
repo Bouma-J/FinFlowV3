@@ -103,7 +103,7 @@ export function GroupConsolidationPage() {
           value={formatMoney(s.amount_approved)}
         />
         <StatCard
-          label="Décaissé"
+          label="Mis en place"
           value={formatMoney(s.disbursed_amount)}
         />
         <StatCard

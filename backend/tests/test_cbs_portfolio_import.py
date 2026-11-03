@@ -175,7 +175,7 @@ def test_rest_adapter_crd_impayes_maps_rows(tenant_a):
     assert result["credits"][0]["loan_ref"] == "REF-IMP-1"
     assert result["credits"][0]["days_overdue"] == 40
     args, kwargs = post.call_args
-    assert args[0].endswith("gateway-perfect/crd/impayes")
+    assert kwargs["url"].endswith("gateway-perfect/crd/impayes")
     assert kwargs["headers"]["Authorization"] == "Bearer TOK"
 
 

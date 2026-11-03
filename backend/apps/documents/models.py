@@ -62,6 +62,10 @@ class Document(SoftDeleteModel, TenantScopedModel):
     size_bytes = models.PositiveBigIntegerField("taille (octets)", default=0)
     sha256 = models.CharField("empreinte SHA-256", max_length=64, blank=True)
     version = models.PositiveIntegerField("version", default=1)
+    verification_status = models.CharField(max_length=12, default="PENDING", choices=[("PENDING", "À vérifier"), ("VERIFIED", "Vérifié"), ("REJECTED", "Rejeté")])
+    verified_by = models.ForeignKey("accounts.User", null=True, blank=True, on_delete=models.SET_NULL, related_name="verified_documents")
+    verified_at = models.DateTimeField(null=True, blank=True)
+    verification_comment = models.TextField(blank=True)
 
     issue_date = models.DateField("date d'émission", null=True, blank=True)
     expiry_date = models.DateField("date d'expiration", null=True, blank=True)

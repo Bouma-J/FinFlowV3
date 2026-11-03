@@ -57,6 +57,8 @@ def _contract(app, engagement, *, status=GeneratedContract.Status.GENERATED):
         status=status,
     )
     gc.file.save("caution.docx", ContentFile(b"PK fake docx"), save=False)
+    if status == GeneratedContract.Status.SIGNED:
+        gc.signed_file.save("caution-signee.pdf", ContentFile(b"%PDF signed"), save=False)
     gc.save()
     return gc
 
@@ -96,19 +98,22 @@ def test_readiness_includes_surety_contracts_check(tenant_a, client_a, product_a
         check = next(c for c in result["checks"] if c["key"] == "surety_contracts")
         assert check["ok"] is False
         assert check["blocking"] is False
-        assert "Avant décaissement" in check["message"]
+        assert "Avant mise en place" in check["message"]
         assert result["policy"]["require_surety_signed_contracts"] is True
 
 
 def test_disbursement_blocked_without_signed_surety(
     tenant_a, client_a, product_a, monkeypatch
 ):
+    from tests.setup_helpers import configure_local_cbs
+
     with tenant_context(tenant_a.id):
         CreditInstructionPolicy.objects.create(
             tenant=tenant_a,
             require_surety_signed_contracts=True,
         )
         app = _app(tenant_a, client_a, product_a, ref="CR-SURETY-BLOCK")
+        configure_local_cbs(app)
         eng = _engagement(tenant_a, app)
         _contract(app, eng, status=GeneratedContract.Status.GENERATED)
         monkeypatch.setattr(
@@ -120,19 +125,23 @@ def test_disbursement_blocked_without_signed_surety(
             lambda _a: False,
         )
         with pytest.raises(WorkflowError) as exc:
-            _assert_disbursement_prerequisites(app)
+            _assert_disbursement_prerequisites(app, check_review=False)
         assert "cautionnement" in str(exc.value).lower()
 
 
 def test_disbursement_allowed_when_policy_off(
     tenant_a, client_a, product_a, monkeypatch
 ):
+    from tests.setup_helpers import configure_local_cbs
+
     with tenant_context(tenant_a.id):
         CreditInstructionPolicy.objects.create(
             tenant=tenant_a,
             require_surety_signed_contracts=False,
+            require_surety_contracts=False,
         )
         app = _app(tenant_a, client_a, product_a, ref="CR-SURETY-OFF")
+        configure_local_cbs(app)
         _engagement(tenant_a, app)
         monkeypatch.setattr(
             "apps.contracts.services.missing_required_contracts",
@@ -142,7 +151,7 @@ def test_disbursement_allowed_when_policy_off(
             "apps.workflow.services.has_pending_conditions",
             lambda _a: False,
         )
-        _assert_disbursement_prerequisites(app)
+        _assert_disbursement_prerequisites(app, check_review=False)
 
 
 def test_policy_endpoint_exposes_surety_flag(tenant_a):

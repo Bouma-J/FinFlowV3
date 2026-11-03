@@ -6,6 +6,8 @@ export const DEFAULT_THEME = {
   brand_primary: "#0f9488",
   brand_secondary: "#0d7a72",
   brand_accent: "#d4a017",
+  brand_sidebar: "#084f4a",
+  brand_sidebar_text: "#ffffff",
 };
 
 export const LOGIN_TENANT_CODE_KEY = "finflow.login-tenant-code";
@@ -14,6 +16,8 @@ type BrandColors = {
   brand_primary?: string | null;
   brand_secondary?: string | null;
   brand_accent?: string | null;
+  brand_sidebar?: string | null;
+  brand_sidebar_text?: string | null;
 };
 
 function hexToRgb(hex: string) {
@@ -47,6 +51,8 @@ export function applyTenantTheme(branding?: BrandColors | null) {
   const primary = branding?.brand_primary || DEFAULT_THEME.brand_primary;
   const secondary = branding?.brand_secondary || DEFAULT_THEME.brand_secondary;
   const accent = branding?.brand_accent || DEFAULT_THEME.brand_accent;
+  const sidebar = branding?.brand_sidebar || DEFAULT_THEME.brand_sidebar;
+  const sidebarText = branding?.brand_sidebar_text || DEFAULT_THEME.brand_sidebar_text;
 
   root.style.setProperty("--brand", primary);
   root.style.setProperty("--brand-dark", secondary);
@@ -87,15 +93,15 @@ export function applyTenantTheme(branding?: BrandColors | null) {
     `linear-gradient(160deg, ${mixHex(secondary, "black", 42)}, ${mixHex(secondary, "black", 58)})`,
   );
 
-  root.style.setProperty("--sidebar-bg-start", mixHex(secondary, "black", 35));
-  root.style.setProperty("--sidebar-bg-end", mixHex(secondary, "black", 55));
-  root.style.setProperty("--sidebar-text", mixHex(primary, "white", 72));
-  root.style.setProperty("--sidebar-text-muted", mixHex(primary, "white", 45));
-  root.style.setProperty("--sidebar-section", mixHex(primary, "white", 30));
-  root.style.setProperty("--sidebar-hover-bg", "rgba(255, 255, 255, 0.07)");
+  root.style.setProperty("--sidebar-bg-start", sidebar);
+  root.style.setProperty("--sidebar-bg-end", mixHex(sidebar, "black", 31));
+  root.style.setProperty("--sidebar-text", sidebarText);
+  root.style.setProperty("--sidebar-text-muted", sidebarText);
+  root.style.setProperty("--sidebar-section", sidebarText);
+  root.style.setProperty("--sidebar-hover-bg", rgba(sidebarText, 0.08));
   root.style.setProperty("--sidebar-active-bg", rgba(accent, 0.18));
   root.style.setProperty("--sidebar-active-bar", accent);
-  root.style.setProperty("--sidebar-brand-accent", accent);
+  root.style.setProperty("--sidebar-brand-accent", sidebarText);
   root.style.setProperty("--topbar-accent", rgba(primary, 0.12));
 }
 
@@ -105,6 +111,23 @@ export function resolveLogoUrl(
   if (!branding?.logo_url) return defaultLogo;
   const sep = branding.logo_url.includes("?") ? "&" : "?";
   return `${branding.logo_url}${sep}v=${branding.id}`;
+}
+
+/** Identité de l'onglet, synchronisée avec la filiale affichée dans l'application. */
+export function applyBrowserBranding(
+  branding?: Pick<TenantBranding, "id" | "name" | "logo_url"> | null,
+) {
+  document.title = branding?.name?.trim() || "FIN_FLOW — Thuin Tech";
+  let favicon = document.head.querySelector<HTMLLinkElement>('link[rel="icon"]');
+  if (!favicon) {
+    favicon = document.createElement("link");
+    favicon.rel = "icon";
+    document.head.appendChild(favicon);
+  }
+  // Le logo d'une filiale peut être en PNG ou WebP, contrairement au JPEG par défaut.
+  favicon.removeAttribute("type");
+  const logoUrl = resolveLogoUrl(branding);
+  if (favicon.getAttribute("href") !== logoUrl) favicon.href = logoUrl;
 }
 
 export function rememberLoginTenantCode(code: string | null | undefined) {

@@ -101,6 +101,7 @@ export function ClientAutocomplete({
         <input
           value={query}
           required={required && !value}
+          aria-required={required || undefined}
           placeholder="Matricule Core Banking, nom, dénomination ou référence…"
           onChange={(e) => {
             setQuery(e.target.value);

@@ -116,19 +116,19 @@ Set-Content frontend\certs\ca-bundle.crt "$pem`n" -Encoding ascii
 
 Hors proxy d'entreprise, cette étape est inutile : créez simplement les fichiers `certs/ca-bundle.crt` vides (ou avec les racines publiques) — les Dockerfiles restent fonctionnels.
 
-> Note : `npm install` en local sur cette machine nécessite aussi `--use-system-ca` (Node 20+) ; définissez `NODE_OPTIONS=--use-system-ca` avant de lancer npm.
+> Note : utilisez Node 24 LTS. Sur cette machine, `npm ci` nécessite aussi `--use-system-ca` ; définissez `NODE_OPTIONS=--use-system-ca` avant de lancer npm.
 
-## Déploiement Ubuntu Server
+## Déploiement Ubuntu
 
-Ubuntu Server 22.04 ou 24.04 LTS. L'installation pose ses questions dans le terminal SSH (domaine, mots de passe, TLS). Tant que le dépôt est public, le jeton GitHub se laisse vide.
+Après avoir cloné le dépôt, lancer l'installation serveur dans un terminal :
 
 ```bash
-git clone https://github.com/Bouma-J/FinFlowV3.git
-cd FinFlowV3
 sudo bash deploy/ubuntu-install.sh
 ```
 
-Mise à jour d’une instance déjà en production :
+Le dépôt public se clone sans jeton. S'il redevient privé, le script demande un jeton GitHub et le range hors du projet.
+
+Mise à jour d’une instance déjà en production, depuis une copie séparée :
 
 ```bash
 sudo git clone https://github.com/Bouma-J/FinFlowV3.git /opt/finflow-update
@@ -187,11 +187,22 @@ L'interface est servie sur `http://localhost:5173`. Fonctionnalités couvertes :
 
 Build de production : `npm run build` (sortie dans `frontend/dist/`, servie par Nginx dans l'image Docker).
 
+Les écrans sont chargés à la demande par route et affichent un état de chargement pendant le téléchargement. Pour conserver un démarrage léger, ajouter les nouvelles pages à `frontend/src/App.tsx` avec un import dynamique.
+
+Parcours frontend automatisés : `npm run test:e2e` depuis `frontend/`. Les réponses API sont simulées pour isoler l'interface des données locales et des appels CBS. Sur Windows, le test utilise Edge s'il est installé ; ailleurs, installez d'abord le navigateur Playwright avec `npx playwright install chromium`.
+
+Smoke test isolé avec l'API réelle : `npm run test:e2e:api:isolated` depuis `frontend/`. Cette commande crée une SQLite temporaire, exécute les migrations et `seed_demo`, démarre Django et Vite sur des ports locaux libres, puis supprime la base et les artefacts même si le test échoue. Elle utilise une clé de recette temporaire, un backend e-mail mémoire et le connecteur CBS simulé. Le parcours vérifie les écrans métier et les routes de consultation, sans modifier de dossier métier ni envoyer d'opération CBS. Pour utiliser un environnement déjà démarré, `npm run test:e2e:api` accepte `FINFLOW_API_BASE_URL` et `FINFLOW_SMOKE_PASSWORD` (nom par défaut : `fil01_admin`). Le parcours des routes d'administration utilise aussi `FINFLOW_GROUP_SMOKE_USERNAME` et `FINFLOW_GROUP_SMOKE_PASSWORD` ; la commande isolée les configure sur `group_admin` et le mot de passe de démonstration.
+
 ## Données de démonstration
 La commande `seed_demo` crée :
 - Administrateur **Groupe** : `group_admin` / `FinFlow2026!`
 - Administrateur **Filiale** : `fil01_admin` / `FinFlow2026!`
-- Une filiale, une agence, un produit, un circuit d'approbation à 2 niveaux, un connecteur CBS et un client.
+- Une filiale, deux agences, un catalogue de produits, des circuits et un connecteur local de démonstration.
+- Avec le comportement par défaut, des dossiers à plusieurs statuts, des analyses, cautions, garanties, prêts, échéanciers et dossiers de recouvrement pour tester les parcours liés.
+
+Utilisez `seed_demo --no-rich` pour un socle minimal limité aux premiers écrans. Ce mode n'ajoute volontairement pas de codes CBS de démonstration : en mode connecteur local, l'objet CBS reste facultatif ; en mode CBS réel, le référentiel exact doit être chargé avant la création d'un dossier.
+
+Pour les listes de recette, utilisez `seed_demo --volume --count 20` (le volume est limité à 20–120 lignes par module). Cette variante ajoute aussi des documents GED et des échéanciers aux prêts générés. Le seed peut être relancé sans dupliquer les données opérationnelles.
 
 Ces identifiants sont **uniquement destinés à la démo / UAT**, jamais à la production.
 

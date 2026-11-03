@@ -57,9 +57,9 @@
   /* Barre de menu — surchargées par useTenantBranding */
   --sidebar-bg-start: #0e3b37;
   --sidebar-bg-end: #0a2a27;
-  --sidebar-text: #cfe3df;
-  --sidebar-text-muted: #a8c2bd;
-  --sidebar-section: #6f918b;
+  --sidebar-text: #ffffff;
+  --sidebar-text-muted: #eef6f4;
+  --sidebar-section: #c5ddd8;
   --sidebar-hover-bg: rgba(255, 255, 255, 0.07);
   --sidebar-active-bg: rgba(245, 166, 35, 0.18);
   --sidebar-active-bar: var(--gold-500);
@@ -191,21 +191,26 @@ h3 {
   position: fixed;
   inset: 0 auto 0 0;
   padding: 18px 14px;
-  overflow-y: auto;
+  overflow: hidden;
   z-index: 20;
   transition: background 0.35s ease;
 }
 
 .brand {
   display: flex;
+  flex-direction: column;
+  flex-shrink: 0;
   align-items: center;
-  gap: 12px;
+  position: relative;
+  gap: 10px;
   padding: 6px 8px 20px;
 }
 
 .brand-logo {
-  width: 42px;
-  height: 42px;
+  width: 100%;
+  max-width: 220px;
+  height: 112px;
+  flex-shrink: 0;
   border-radius: 12px;
   object-fit: contain;
   background: #fff;
@@ -232,13 +237,17 @@ h3 {
 }
 
 .brand-name {
+  min-width: 0;
+  width: 100%;
+  text-align: center;
   font-family: "Sora", sans-serif;
   font-weight: 800;
   font-size: 19px;
-  color: #fff;
+  color: var(--sidebar-text);
   letter-spacing: 0.3px;
 }
 .brand-name small {
+  overflow-wrap: anywhere;
   display: block;
   font-family: "Inter", sans-serif;
   font-size: 10px;
@@ -251,6 +260,12 @@ h3 {
 .nav {
   display: flex;
   flex-direction: column;
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  overscroll-behavior-y: contain;
+  scrollbar-width: thin;
   gap: 3px;
 }
 
@@ -261,13 +276,13 @@ h3 {
   padding: 11px 12px;
   border-radius: var(--radius-sm);
   color: var(--sidebar-text-muted);
-  font-weight: 500;
+  font-weight: 600;
   position: relative;
   transition: background 0.18s ease, color 0.18s ease, transform 0.18s ease;
 }
 .nav-link:hover {
   background: var(--sidebar-hover-bg);
-  color: #fff;
+  color: var(--sidebar-text);
   transform: translateX(2px);
 }
 .nav-link.active {
@@ -276,7 +291,7 @@ h3 {
     var(--sidebar-active-bg),
     rgba(255, 255, 255, 0.02)
   );
-  color: #fff;
+  color: var(--sidebar-text);
 }
 .nav-link.active::before {
   content: "";
@@ -302,7 +317,7 @@ h3 {
 
 .nav-section {
   margin: 18px 12px 8px;
-  font-size: 10px;
+  font-size: 11px;
   text-transform: uppercase;
   letter-spacing: 1.5px;
   color: var(--sidebar-section);
@@ -333,12 +348,12 @@ h3 {
 .nav-group-toggle:hover,
 .nav-group.has-active > .nav-group-toggle {
   background: var(--sidebar-hover-bg);
-  color: #fff;
+  color: var(--sidebar-text);
 }
 .nav-group-chevron {
   margin-left: auto;
   flex-shrink: 0;
-  opacity: 0.7;
+  opacity: 0.9;
   transition: transform 0.18s ease;
 }
 .nav-group.open .nav-group-chevron {
@@ -385,6 +400,10 @@ h3 {
   justify-content: center;
   padding: 6px 0 20px;
 }
+.app-shell.sidebar-collapsed .brand-logo {
+  width: 56px;
+  height: 56px;
+}
 .app-shell.sidebar-collapsed .brand-name,
 .app-shell.sidebar-collapsed .nav-label,
 .app-shell.sidebar-collapsed .nav-section,
@@ -400,9 +419,12 @@ h3 {
 }
 .app-shell.sidebar-collapsed .nav-group-items {
   display: none;
-  position: absolute;
-  left: calc(100% + 8px);
-  top: 0;
+  position: fixed;
+  left: var(--nav-flyout-left, var(--sidebar-collapsed-w));
+  top: var(--nav-flyout-top, 80px);
+  max-height: calc(100dvh - 16px);
+  overflow-y: auto;
+  visibility: var(--nav-flyout-visibility, visible);
   min-width: 220px;
   padding: 8px;
   border-radius: 12px;
@@ -411,7 +433,6 @@ h3 {
   z-index: 30;
 }
 .app-shell.sidebar-collapsed .nav-group:hover .nav-group-items,
-.app-shell.sidebar-collapsed .nav-group.open .nav-group-items,
 .app-shell.sidebar-collapsed .nav-group:focus-within .nav-group-items {
   display: flex;
 }
@@ -5010,6 +5031,19 @@ code {
   margin: 44px auto;
 }
 
+.route-loading {
+  display: grid;
+  justify-items: center;
+  gap: 0.25rem;
+  min-height: 20rem;
+  align-content: center;
+  color: var(--text-muted);
+}
+
+.route-loading .spinner {
+  margin: 0 auto 0.75rem;
+}
+
 /* Skeletons */
 .skeleton {
   background: linear-gradient(90deg, #eceae4 25%, #f4f2ec 37%, #eceae4 63%);
@@ -5036,13 +5070,19 @@ code {
   height: 36px;
   border: none;
   border-radius: 10px;
-  background: rgba(255, 255, 255, 0.1);
-  color: #fff;
+  background: var(--sidebar-hover-bg);
+  color: var(--sidebar-text);
   cursor: pointer;
   flex-shrink: 0;
 }
 .sidebar-close-mobile:hover {
-  background: rgba(255, 255, 255, 0.18);
+  background: var(--sidebar-active-bg);
+}
+.brand .sidebar-close-mobile {
+  position: absolute;
+  top: 4px;
+  right: 0;
+  margin-left: 0;
 }
 .tenant-switcher-wrap {
   min-width: 0;
@@ -5076,8 +5116,12 @@ code {
     padding: 18px 14px;
   }
   .app-shell.sidebar-collapsed .brand {
-    justify-content: flex-start;
+    justify-content: center;
     padding: 6px 8px 20px;
+  }
+  .app-shell.sidebar-collapsed .brand-logo {
+    width: 100%;
+    height: 112px;
   }
   .app-shell.sidebar-collapsed .brand-name,
   .app-shell.sidebar-collapsed .nav-label,
@@ -5091,6 +5135,9 @@ code {
   }
   .app-shell.sidebar-collapsed .nav-group-items {
     position: static;
+    max-height: none;
+    overflow: visible;
+    visibility: visible;
     min-width: 0;
     padding: 0 0 4px 10px;
     background: transparent;
@@ -5899,7 +5946,6 @@ code {
   background: linear-gradient(
     90deg,
     var(--preview-primary, #0f9488),
-    var(--preview-secondary, #0d7a72) 55%,
     var(--preview-accent, #d4a017)
   );
 }
@@ -5913,6 +5959,22 @@ code {
 .tenant-brand-preview-body strong {
   font-size: 14px;
   color: var(--preview-primary, #0f9488);
+}
+.tenant-brand-preview-menu {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 10px;
+  padding: 12px;
+  border-radius: 8px;
+  background: linear-gradient(185deg, var(--preview-sidebar, #084f4a), color-mix(in srgb, var(--preview-sidebar, #084f4a) 69%, #000));
+  color: var(--preview-sidebar-text, #fff);
+  font-size: 13px;
+  font-weight: 600;
+}
+.tenant-brand-preview-active {
+  border-left: 3px solid var(--preview-accent, #d4a017);
+  padding: 6px 8px;
 }
 .tenant-brand-preview-swatches {
   display: flex;

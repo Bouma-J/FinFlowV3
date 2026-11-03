@@ -89,7 +89,7 @@ def test_committee_pv_required_on_approve(
             duration_months=12,
             currency="XOF",
             status=CreditApplication.Status.IN_APPROVAL,
-            created_by=user,
+            created_by=submitter,
             submitted_by=submitter,
         )
 

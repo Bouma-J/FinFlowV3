@@ -64,7 +64,7 @@ def build_collateral_summary(application, thresholds=None) -> dict:
     from apps.sureties.models import SuretyEngagement
 
     if thresholds is None:
-        thresholds = AnalysisThreshold.for_tenant(application.tenant_id)
+        thresholds = AnalysisThreshold.for_application(application)
 
     amount = reference_amount(application)
     amount_dec = _dec(amount) if amount else Decimal("0")
@@ -217,7 +217,7 @@ def build_collateral_summary(application, thresholds=None) -> dict:
     }
 
 
-def guarantee_coverage_retained(analysis) -> Decimal | None:
+def guarantee_coverage_retained(analysis, thresholds=None) -> Decimal | None:
     """Couverture % basée sur valeurs retenues (ACTIVE + haircuts)."""
     app = analysis.application
     if app is None:
@@ -225,7 +225,7 @@ def guarantee_coverage_retained(analysis) -> Decimal | None:
     from apps.credits.models import AnalysisThreshold
 
     summary = build_collateral_summary(
-        app, AnalysisThreshold.for_tenant(app.tenant_id)
+        app, thresholds if thresholds is not None else AnalysisThreshold.for_application(app, individual_profile=analysis.individual_profile)
     )
     raw = summary.get("guarantee_coverage_pct")
     if raw is None:

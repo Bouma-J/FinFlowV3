@@ -1,6 +1,7 @@
 from django.contrib.contenttypes.models import ContentType
 from django.db import transaction
 from django.db.models.deletion import ProtectedError
+from django.utils import timezone
 from rest_framework import status, viewsets
 from rest_framework.decorators import action
 from rest_framework.exceptions import PermissionDenied, ValidationError
@@ -9,7 +10,7 @@ from rest_framework.response import Response
 
 from apps.audit.models import AuditLog
 from apps.common.list_filters import apply_gestionnaire, query_param
-from apps.common.permissions import HasModelPermission, MustChangePasswordGate
+from apps.common.permissions import HasModelPermission, MustChangePasswordGate, is_configuration_administrator
 from apps.common.scoped import get_for_tenant
 from apps.common.tenancy import get_current_tenant_id
 from apps.common.viewsets import (
@@ -60,16 +61,23 @@ class CreditApplicationViewSet(AgencyScopedViewSet):
     permission_classes = [IsAuthenticated, MustChangePasswordGate, HasModelPermission]
     enforce_model_permissions = True
     action_perms = {
+        "simulate": ["credits.view_creditapplication"],
         "submit": ["credits.change_creditapplication"],
         "cancel_submission": ["credits.change_creditapplication"],
         "request_disburse": ["credits.initiate_disburse_creditapplication"],
         # Initiateur ou valideur (contrôle OR dans l'action).
         "cancel_disburse_request": [],
         "disburse": ["credits.disburse_creditapplication"],
-        "simulate": ["credits.view_creditapplication"],
+        "setup_review": ["credits.view_creditapplication"],
+        "authorize_setup": ["credits.authorize_setup_creditapplication"],
+        "revoke_setup_authorization": ["credits.authorize_setup_creditapplication"],
+        "request_setup_complements": ["credits.review_setup_creditapplication"],
+        "reexamine": ["credits.change_creditapplication"],
         "timeline": ["credits.view_creditapplication"],
         "collateral_summary": ["credits.view_creditapplication"],
         "readiness": ["credits.view_creditapplication"],
+        "configuration": ["credits.view_creditapplication"],
+        "configuration_context": ["credits.view_creditapplication"],
         "cancel": ["credits.change_creditapplication"],
         "renewable_guarantees": ["credits.view_creditapplication"],
         "renew_guarantee": [
@@ -77,6 +85,7 @@ class CreditApplicationViewSet(AgencyScopedViewSet):
             "guarantees.add_guarantee",
         ],
         "cbs_situation": ["credits.view_creditapplication"],
+        "exposure": ["credits.view_creditapplication", "credits.view_creditexposureobservation"],
     }
     filterset_fields = [
         "status", "client", "product", "agency", "currency", "risk_level",
@@ -233,6 +242,72 @@ class CreditApplicationViewSet(AgencyScopedViewSet):
         application = self.get_object()
         return Response(build_readiness(application))
 
+    @action(detail=True, methods=["get"])
+    def exposure(self, request, pk=None):
+        from apps.clients.models import Client
+        from apps.common.access import apply_data_scope
+        from .exposure import exposure_assessment
+        application = self.get_object()
+        result = exposure_assessment(application)
+        visible = {str(pk) for pk in apply_data_scope(
+            Client.all_tenants.filter(tenant_id=application.tenant_id), request.user,
+        ).values_list("pk", flat=True)}
+        restricted = any(row["client"] not in visible for row in result["members"])
+        result["members"] = [row for row in result["members"] if row["client"] in visible]
+        result["restricted"] = restricted
+        if restricted:
+            result["group_total"] = None
+            result["note"] += " Certaines relations sont hors de votre périmètre ; le total du groupe et leurs détails sont réservés aux utilisateurs habilités. Les contrôles serveur portent sur l'ensemble du groupe."
+        return Response(result)
+
+    @action(detail=True, methods=["get"])
+    def configuration(self, request, pk=None):
+        from apps.configuration.catalog import ANALYSIS_FIELDS
+        from apps.configuration.services import application_configuration
+        from apps.corebanking.disbursement import requires_financing_object
+
+        profile = request.query_params.get("individual_profile")
+        if profile is not None and profile not in {"", "SALARIE", "INDEPENDANT", "MIXTE"}:
+            raise ValidationError("Profil particulier invalide.")
+        application = self.get_object()
+        result = application_configuration(application, individual_profile=profile)
+        result["financing_object_required"] = requires_financing_object(
+            application.tenant_id
+        )
+        result["required_labels"] = {key: str(ANALYSIS_FIELDS[key].verbose_name)
+                                     for key in result["analysis"]["required_fields"]}
+        return Response(result)
+
+    @action(detail=False, methods=["get"], url_path="configuration-context")
+    def configuration_context(self, request):
+        from django.core.exceptions import ValidationError as DjangoValidationError
+        from apps.catalog.models import CreditProduct
+        from apps.common.access import user_has_agency_access
+        from apps.configuration.services import resolve_context
+        from apps.corebanking.disbursement import requires_financing_object
+        from apps.tenants.models import Agency
+
+        tenant_id = get_current_tenant_id()
+        if not tenant_id:
+            raise ValidationError("Sélectionnez une filiale.")
+        context = {key: request.query_params.get(key, "") or ""
+                   for key in ("product", "agency", "client_type", "individual_profile")}
+        if context["client_type"] not in {"", "INDIVIDUAL", "CORPORATE", "PROFESSIONAL"} or context["individual_profile"] not in {"", "SALARIE", "INDEPENDANT", "MIXTE"}:
+            raise ValidationError("Profil de clientèle invalide.")
+        if context["individual_profile"] and context["client_type"] != "INDIVIDUAL":
+            raise ValidationError("Le profil particulier nécessite une personne physique.")
+        for key, model in (("product", CreditProduct), ("agency", Agency)):
+            if context[key]:
+                try:
+                    get_for_tenant(model, context[key])
+                except (DjangoValidationError, ValueError) as exc:
+                    raise ValidationError({key: "Référence invalide."}) from exc
+        if context["agency"] and not user_has_agency_access(request.user, context["agency"]):
+            raise PermissionDenied("Cette agence n'est pas dans votre périmètre.")
+        result = resolve_context(tenant_id, context)
+        result["financing_object_required"] = requires_financing_object(tenant_id)
+        return Response(result)
+
     @action(detail=True, methods=["post"])
     def cancel(self, request, pk=None):
         """Annulation formelle du dossier (statut CANCELLED), si politique active."""
@@ -308,7 +383,7 @@ class CreditApplicationViewSet(AgencyScopedViewSet):
 
     @action(detail=True, methods=["post"], url_path="request-disburse")
     def request_disburse(self, request, pk=None):
-        """Initie une demande de décaissement (validation opérations requise)."""
+        """Initie une demande de mise en place (validation opérations requise)."""
         application = self.get_object()
         try:
             request_disbursement(application, user=request.user)
@@ -318,7 +393,7 @@ class CreditApplicationViewSet(AgencyScopedViewSet):
 
     @action(detail=True, methods=["post"], url_path="cancel-disburse-request")
     def cancel_disburse_request(self, request, pk=None):
-        """Annule une demande de décaissement en attente."""
+        """Annule une demande de mise en place en attente."""
         user = request.user
         if not (
             user.is_superuser
@@ -326,18 +401,18 @@ class CreditApplicationViewSet(AgencyScopedViewSet):
             or user.has_perm("credits.disburse_creditapplication")
         ):
             raise PermissionDenied(
-                "Droit insuffisant pour annuler une demande de décaissement."
+                "Droit insuffisant pour annuler une demande de mise en place."
             )
         application = self.get_object()
         try:
-            cancel_disbursement_request(application)
+            cancel_disbursement_request(application, user=request.user)
         except WorkflowError as exc:
             raise ValidationError(str(exc))
         return Response(self.get_serializer(application).data)
 
     @action(detail=True, methods=["post"])
     def disburse(self, request, pk=None):
-        """Valide / exécute le décaissement (push CBS Perfect + prêt local).
+        """Valide / exécute la mise en place (push CBS Perfect + prêt local).
 
         Réservé aux utilisateurs disposant du droit
         ``credits.disburse_creditapplication`` (Responsable des opérations,
@@ -345,22 +420,133 @@ class CreditApplicationViewSet(AgencyScopedViewSet):
 
         Body optionnel :
         - ``core_banking_reference`` : surcharge manuelle de la réf. CBS
-        - ``skip_cbs`` : true (superuser) pour forcer le mode local sans Perfect
         """
         application = self.get_object()
         cbs_ref = (request.data.get("core_banking_reference") or "").strip()
-        skip_cbs = bool(request.data.get("skip_cbs")) and (
-            request.user.is_superuser
-            or getattr(request.user, "is_group_level", False)
-        )
+        if request.data.get("skip_cbs"):
+            raise ValidationError("La mise en place exige un retour positif du CBS ; le contournement est interdit.")
         try:
-            loan = disburse_application(application, skip_cbs=skip_cbs)
+            loan = disburse_application(application, user=request.user)
         except WorkflowError as exc:
             raise ValidationError(str(exc))
         if cbs_ref:
             loan.core_banking_reference = cbs_ref
             loan.save(update_fields=["core_banking_reference"])
         return Response(LoanSerializer(loan).data)
+
+    @action(detail=True, methods=["get", "post"], url_path="setup-review")
+    def setup_review(self, request, pk=None):
+        from django.db import transaction
+        from .governance import snapshot, fingerprint, setup_checks, evidence_fingerprint
+        from .setup_authorization import invalidate_authorization, policy_fingerprint, setup_state
+
+        from apps.accounts.capabilities import CREDIT_ADMIN, user_has_capability
+        if request.method == "POST" and not (
+            request.user.has_perm("credits.review_setup_creditapplication")
+            and user_has_capability(request.user, CREDIT_ADMIN)
+        ):
+            raise PermissionDenied("Le contrôle final est réservé aux utilisateurs habilités de l'administration crédit.")
+
+        with transaction.atomic():
+            application = self.get_object()
+            application = CreditApplication.objects.select_for_update().get(pk=application.pk)
+            if request.method == "POST":
+                if application.status not in ("APPROVED", "CONTRACT_GENERATED", "DISBURSEMENT_PENDING"):
+                    raise ValidationError("Le dossier doit être approuvé avant le contrôle final.")
+                from datetime import date
+                number = str(request.data.get("insurance_policy_number") or "").strip()
+                expiry = request.data.get("insurance_expiry_date")
+                if len(number) > 100:
+                    raise ValidationError("Le numéro de police est limité à 100 caractères.")
+                if number:
+                    application.insurance_policy_number = number
+                if expiry:
+                    try:
+                        application.insurance_expiry_date = date.fromisoformat(str(expiry))
+                    except ValueError:
+                        raise ValidationError("La date de fin de couverture est invalide.")
+            failures = setup_checks(application)
+            from .services import _assert_disbursement_prerequisites
+            try:
+                _assert_disbursement_prerequisites(application, check_review=False)
+            except WorkflowError as exc:
+                failures.append(str(exc))
+            if request.method == "POST":
+                if application.status not in ("APPROVED", "CONTRACT_GENERATED", "DISBURSEMENT_PENDING"):
+                    raise ValidationError("Le dossier doit être approuvé avant le contrôle final.")
+                if failures:
+                    raise ValidationError(failures)
+                checks = request.data.get("checks") or {}
+                if not isinstance(checks, dict) or not all(checks.get(key) is True for key in ("kyc", "contribution", "collateral", "terms", "insurance")):
+                    raise ValidationError("Confirmez les contrôles KYC, apport, sûretés, conditions et assurance (ou leur absence d'applicabilité).")
+                comment = str(request.data.get("comment") or "").strip()
+                if not comment:
+                    raise ValidationError("Décrivez les vérifications finales et leurs justificatifs.")
+                application.save(update_fields=["insurance_policy_number", "insurance_expiry_date", "updated_at"])
+                invalidate_authorization(application, "Nouveau contrôle final du dossier.", user=request.user)
+                application.setup_review = {"status": "VALIDATED", "reviewed_by": str(request.user.pk), "reviewed_by_display": str(request.user), "reviewed_at": timezone.now().isoformat(), "checks": checks, "comment": comment, "fingerprint": fingerprint(application), "evidence_fingerprint": evidence_fingerprint(application), "policy_fingerprint": policy_fingerprint(application), "snapshot": snapshot(application)}
+                from apps.catalog.cbs_mapping import cbs_mapping_snapshot
+                application.setup_review["cbs_mapping"] = cbs_mapping_snapshot(application)
+                application.save(update_fields=["setup_review", "setup_authorization", "updated_at"])
+                from apps.audit.events import log_workflow_event
+
+                log_workflow_event(application, "SETUP_REVIEWED", user=request.user, detail=comment)
+            state = setup_state(application, request.user)
+            state["can_transmit"] = state["can_transmit"] and not failures
+            return Response({"failures": failures, "review": application.setup_review, "approval": application.approval_snapshot, "approved_at": application.decision_date, "approval_captured_at": (application.approval_snapshot or {}).get("captured_at"), **state})
+
+    @action(detail=True, methods=["post"], url_path="authorize-setup")
+    def authorize_setup(self, request, pk=None):
+        from .setup_authorization import authorize_setup
+
+        try:
+            application = authorize_setup(self.get_object(), request.user, str(request.data.get("comment") or ""))
+        except WorkflowError as exc:
+            raise ValidationError(str(exc))
+        return Response(self.get_serializer(application).data)
+
+    @action(detail=True, methods=["post"], url_path="request-setup-complements")
+    def request_setup_complements(self, request, pk=None):
+        from .setup_authorization import request_setup_complements
+
+        try:
+            application = request_setup_complements(self.get_object(), request.user, str(request.data.get("comment") or ""))
+        except WorkflowError as exc:
+            raise ValidationError(str(exc))
+        return Response(self.get_serializer(application).data)
+
+    @action(detail=True, methods=["post"], url_path="revoke-setup-authorization")
+    def revoke_setup_authorization(self, request, pk=None):
+        from .setup_authorization import revoke_setup
+
+        try:
+            application = revoke_setup(self.get_object(), request.user, str(request.data.get("reason") or ""))
+        except WorkflowError as exc:
+            raise ValidationError(str(exc))
+        return Response(self.get_serializer(application).data)
+
+    @action(detail=True, methods=["post"])
+    def reexamine(self, request, pk=None):
+        with transaction.atomic():
+            application = self.get_object()
+            application = CreditApplication.objects.select_for_update().get(pk=application.pk)
+            if application.status not in ("APPROVED", "CONTRACT_GENERATED"):
+                raise ValidationError("Seul un accord non encore mis en place peut être réexaminé. Annulez d'abord toute demande en attente.")
+            reason = str(request.data.get("reason") or "").strip()
+            if not reason:
+                raise ValidationError("Un motif de réexamen est obligatoire.")
+            from apps.audit.events import log_workflow_event
+            log_workflow_event(application, "REEXAMINATION", detail=reason, user=request.user)
+            application.generated_contracts.exclude(status="CANCELLED").update(status="CANCELLED")
+            application.status = "RETURNED"
+            application.amount_approved = None
+            application.decision_date = None
+            application.setup_review = {}
+            application.setup_authorization = {}
+            application.configuration_snapshot = {}
+            application.approval_fingerprint = ""
+            application.save()
+            return Response(self.get_serializer(application).data)
 
     @action(detail=True, methods=["post"], url_path="cbs-situation")
     def cbs_situation(self, request, pk=None):
@@ -394,7 +580,7 @@ class CreditApplicationViewSet(AgencyScopedViewSet):
                 {
                     "detail": (
                         "Aucune référence de crédit n'est enregistrée sur ce "
-                        "dossier. Un décaissement est requis avant de "
+                        "dossier. Un mise en place est requis avant de "
                         "consulter la situation."
                     )
                 }
@@ -501,22 +687,39 @@ class CreditApplicationViewSet(AgencyScopedViewSet):
         payload = SimulationSerializer(data=request.data)
         payload.is_valid(raise_exception=True)
         data = payload.validated_data
-        schedule = compute_amortization_schedule(
-            data["amount"], data["annual_rate"], data["months"],
-            periodicity=data.get("periodicity", "MONTHLY"),
-            start_date=data.get("simulation_date"),
-            first_due_date=data.get("first_due_date"),
-            savings_rate=data.get("savings_rate") or 0,
-            mechanism=data.get("mechanism") or "DEGRESSIVE",
-            tenant_id=getattr(request.user, "tenant_id", None)
-            or request.headers.get("X-Tenant-Id"),
-        )
+        from decimal import Decimal
+        from .pricing import simulation_pricing
+        pricing = simulation_pricing(data, request.user)
+        try:
+            schedule = compute_amortization_schedule(
+                data["amount"], pricing["rates"]["interest_rate"], data["months"],
+                periodicity=data.get("periodicity", "MONTHLY"),
+                start_date=data.get("simulation_date"),
+                first_due_date=data.get("first_due_date"),
+                savings_rate=pricing["rates"]["mandatory_savings_rate"],
+                mechanism=data.get("mechanism") or "DEGRESSIVE",
+                tenant_id=getattr(request.user, "tenant_id", None)
+                or request.headers.get("X-Tenant-Id"),
+                conventions=pricing["simulation_conventions"],
+            )
+        except (ValueError, ArithmeticError) as exc:
+            raise ValidationError({"simulation": str(exc)}) from exc
         total = sum(row["total"] for row in schedule)
         total_savings = sum(row["savings"] for row in schedule)
         total_institution = sum(row["institution_due"] for row in schedule)
         total_interest = total_institution - data["amount"]
         first = schedule[0] if schedule else None
         return Response({
+            "pricing_quote": pricing,
+            "simulation_conventions": pricing["simulation_conventions"],
+            "total_fees": pricing["fees"]["total"] or "0",
+            "total_cost_excluding_savings": total_interest + Decimal(pricing["fees"]["total"] or "0"),
+            "total_client_outflow": total + Decimal(pricing["fees"]["total"] or "0"),
+            "parameters": {"amount": data["amount"], "annual_rate": pricing["rates"]["interest_rate"],
+                           "savings_rate": pricing["rates"]["mandatory_savings_rate"], "months": data["months"],
+                           "periodicity": data["periodicity"], "mechanism": data["mechanism"],
+                           "simulation_date": data.get("simulation_date") or timezone.localdate(),
+                           "first_due_date": data.get("first_due_date"), "currency": pricing["currency"]},
             "installment": first["institution_due"] if first else 0,
             "monthly_payment": first["institution_due"] if first else 0,
             "client_total_first": first["total"] if first else 0,
@@ -667,7 +870,7 @@ class FinancialAnalysisViewSet(TenantScopedViewSet):
         ):
             raise PermissionDenied(
                 "Vous n'êtes pas autorisé à ajouter une analyse sur ce dossier "
-                "(dossier décaissé ou fenêtre de contribution fermée)."
+                "(dossier mis en place ou fenêtre de contribution fermée)."
             )
         serializer.save(
             created_by=self.request.user,
@@ -689,7 +892,7 @@ class FinancialAnalysisViewSet(TenantScopedViewSet):
         if instance.application.status in ANALYSIS_LOCKED_STATUSES:
             raise PermissionDenied(
                 "Cette analyse ne peut plus être modifiée : le dossier est "
-                "décaissé ou clôturé."
+                "mis en place ou clôturé."
             )
         if not can_mutate_contribution(instance.application, self.request.user):
             raise PermissionDenied(
@@ -716,10 +919,22 @@ class AnalysisThresholdViewSet(TenantScopedViewSet):
         "current": [],  # droits gérés dans l'action
     }
 
+    def perform_destroy(self, instance):
+        from apps.configuration.governance import assert_legacy_configuration_write_allowed
+        assert_legacy_configuration_write_allowed()
+
+    def _resolved(self, tenant_id):
+        from apps.configuration.services import resolve_context
+        th = AnalysisThreshold.for_tenant(tenant_id)
+        values = resolve_context(tenant_id, {})["thresholds"]
+        for key, value in values.items():
+            setattr(th, key, AnalysisThreshold._meta.get_field(key).to_python(value))
+        return th
+
     def _can_manage(self, user) -> bool:
-        return bool(
+        return is_configuration_administrator(user) and bool(
             user.is_superuser
-            or getattr(user, "is_group_level", False)
+            or (getattr(user, "is_group_level", False) and user.is_staff)
             or user.has_perm("credits.change_analysisthreshold")
         )
 
@@ -727,7 +942,7 @@ class AnalysisThresholdViewSet(TenantScopedViewSet):
     def effective(self, request):
         """Renvoie les seuils applicables (ceux de la filiale ou les défauts)."""
         tenant_id = get_current_tenant_id()
-        th = AnalysisThreshold.for_tenant(tenant_id)
+        th = self._resolved(tenant_id)
         return Response(AnalysisThresholdSerializer(th).data)
 
     @action(detail=False, methods=["get", "patch"])
@@ -746,10 +961,7 @@ class AnalysisThresholdViewSet(TenantScopedViewSet):
                 },
                 status=400,
             )
-        th = AnalysisThreshold.for_tenant(tenant_id)
-        if th.pk is None:
-            th.tenant_id = tenant_id
-            th.save()
+        th = self._resolved(tenant_id)
 
         if request.method == "GET":
             if not (
@@ -786,9 +998,9 @@ class CreditInstructionPolicyViewSet(TenantContextMixin, viewsets.ViewSet):
         return tenant_id
 
     def _can_manage(self, user) -> bool:
-        return bool(
+        return is_configuration_administrator(user) and bool(
             user.is_superuser
-            or getattr(user, "is_group_level", False)
+            or (getattr(user, "is_group_level", False) and user.is_staff)
             or user.has_perm("credits.change_creditinstructionpolicy")
         )
 
@@ -805,10 +1017,10 @@ class CreditInstructionPolicyViewSet(TenantContextMixin, viewsets.ViewSet):
                 },
                 status=400,
             )
+        from apps.configuration.services import resolve_context
         policy = CreditInstructionPolicy.for_tenant(tenant_id)
-        if policy.pk is None:
-            policy.tenant_id = tenant_id
-            policy.save()
+        for key, value in resolve_context(tenant_id, {})["policy"].items():
+            setattr(policy, key, CreditInstructionPolicy._meta.get_field(key).to_python(value))
 
         if request.method == "GET":
             if not (

@@ -125,7 +125,7 @@ def test_rest_adapter_crd_situation_maps_settled(tenant_a):
     assert result["outstanding"] == "0"
     assert result["num_contrat"] == "CONTRAT-CRED-123"
     args, kwargs = post.call_args
-    assert args[0].endswith("gateway-perfect/crd/situation")
+    assert kwargs["url"].endswith("gateway-perfect/crd/situation")
     assert kwargs["json"]["refDemande"] == "REF-DEM-2023-00556"
     assert kwargs["json"]["codeAdherent"] == "A0012345"
     assert kwargs["headers"]["Authorization"] == "Bearer TOK"

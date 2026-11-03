@@ -11,6 +11,7 @@ DATABASES = {
 
 PASSWORD_HASHERS = ["django.contrib.auth.hashers.MD5PasswordHasher"]
 CELERY_TASK_ALWAYS_EAGER = True
+ALLOW_SIMULATED_CBS_SETUP = True
 EMAIL_BACKEND = "django.core.mail.backends.locmem.EmailBackend"
 # Tests : docs montées pour les tests qui en ont besoin ; le test P3 vérifie le gate
 ENABLE_API_DOCS = False

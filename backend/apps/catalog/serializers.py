@@ -1,6 +1,7 @@
 from rest_framework import serializers
 
 from .models import (
+    CbsProductReference,
     CbsManager,
     CbsProfession,
     ChecklistItem,
@@ -25,7 +26,9 @@ class ProductCategorySerializer(serializers.ModelSerializer):
 
 
 class CreditProductSerializer(serializers.ModelSerializer):
-    category_label = serializers.CharField(source="category.label", read_only=True)
+    category_label = serializers.CharField(
+        source="category.label", read_only=True, allow_null=True
+    )
 
     class Meta:
         model = CreditProduct
@@ -35,9 +38,15 @@ class CreditProductSerializer(serializers.ModelSerializer):
             "duration_min_months", "duration_max_months", "interest_rate",
             "processing_fee_rate", "requires_guarantee",
             "cbs_product_code", "cbs_repayment_product_code",
+            "cbs_credit_product", "cbs_repayment_product",
             "is_active",
         ]
-        read_only_fields = ["id"]
+        read_only_fields = [
+            "id",
+            "cbs_repayment_product_code",
+            "cbs_credit_product",
+            "cbs_repayment_product",
+        ]
 
     def validate(self, attrs):
         amount_min = attrs.get("amount_min")
@@ -47,6 +56,45 @@ class CreditProductSerializer(serializers.ModelSerializer):
                 "Le montant minimum ne peut excéder le montant maximum."
             )
         return attrs
+
+    def validate_cbs_product_code(self, value):
+        return value.strip()
+
+class CbsProductReferenceSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = CbsProductReference
+        fields = ["id", "connector", "kind", "cbs_code", "label", "currency", "source_reference", "is_active", "verification_status", "verified_at", "verified_by", "updated_at"]
+        read_only_fields = ["id", "verification_status", "verified_at", "verified_by", "updated_at"]
+
+    def validate(self, attrs):
+        from apps.common.tenancy import get_current_tenant_id
+        from .models import Currency
+
+        tid = get_current_tenant_id()
+        connector = attrs.get("connector", getattr(self.instance, "connector", None))
+        if not connector or str(connector.tenant_id) != str(tid):
+            raise serializers.ValidationError({"connector": "Le connecteur doit appartenir à la filiale sélectionnée."})
+        currency = attrs.get("currency", getattr(self.instance, "currency", ""))
+        if currency and not Currency.all_tenants.filter(tenant_id=tid, code=currency, is_active=True).exists():
+            raise serializers.ValidationError({"currency": "Sélectionnez une devise active de cette filiale."})
+        for field in ("cbs_code", "label", "source_reference"):
+            value = attrs.get(field, getattr(self.instance, field, ""))
+            if not value.strip():
+                raise serializers.ValidationError({field: "Ce champ est obligatoire."})
+        kind = attrs.get("kind", getattr(self.instance, "kind", None))
+        cbs_code = attrs.get("cbs_code", getattr(self.instance, "cbs_code", ""))
+        duplicates = CbsProductReference.all_tenants.filter(tenant_id=tid, connector=connector, kind=kind, cbs_code=cbs_code)
+        if self.instance:
+            duplicates = duplicates.exclude(pk=self.instance.pk)
+        if duplicates.exists():
+            raise serializers.ValidationError({"cbs_code": "Cet identifiant existe déjà pour ce connecteur et ce type de produit."})
+        return attrs
+
+    def update(self, instance, validated_data):
+        protected = ("connector", "kind", "cbs_code", "currency", "source_reference", "is_active")
+        if any(k in validated_data and validated_data[k] != getattr(instance, k) for k in protected):
+            validated_data.update(verification_status="PENDING", verified_at=None, verified_by=None)
+        return super().update(instance, validated_data)
 
 
 class RejectReasonSerializer(serializers.ModelSerializer):

@@ -38,6 +38,7 @@ if env_file.exists():
 
 SECRET_KEY = env("DJANGO_SECRET_KEY", default="insecure-dev-key-change-me")
 DEBUG = env("DJANGO_DEBUG")
+ALLOW_SIMULATED_CBS_SETUP = False
 
 # OpenAPI / Swagger : on en DEBUG ; forcer via ENABLE_API_DOCS=1 en prod si besoin
 ENABLE_API_DOCS = env.bool("ENABLE_API_DOCS", default=DEBUG)
@@ -85,6 +86,7 @@ LOCAL_APPS = [
     "apps.audit",
     "apps.reporting",
     "apps.notifications",
+    "apps.configuration",
 ]
 
 INSTALLED_APPS = DJANGO_APPS + THIRD_PARTY_APPS + LOCAL_APPS
@@ -177,7 +179,7 @@ USE_TZ = True
 STATIC_URL = "static/"
 STATIC_ROOT = BASE_DIR / "staticfiles"
 MEDIA_URL = "media/"
-MEDIA_ROOT = BASE_DIR / "media"
+MEDIA_ROOT = Path(env("MEDIA_ROOT", default=str(BASE_DIR / "media")))
 
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 
@@ -208,7 +210,9 @@ REST_FRAMEWORK = {
     ),
     "DEFAULT_THROTTLE_RATES": {
         "user": "5000/day",
-        "user_burst": "120/min",
+        # Les écrans métier chargent plusieurs synthèses par dossier ; garder
+        # une marge pour une navigation rapide sans supprimer l'anti-rafale.
+        "user_burst": env("API_USER_BURST_RATE", default="300/min"),
         "anon": "200/hour",
         "login": "12/min",
     },

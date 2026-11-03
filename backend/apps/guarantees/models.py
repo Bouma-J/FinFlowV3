@@ -299,7 +299,7 @@ class Guarantee(TenantScopedModel, AuthoredModel):
     last_valuation_date = models.DateField(null=True, blank=True)
 
     # Traçabilité constitution juridique (complétée à la clôture formalisation).
-    # La formalisation est parallèle : elle ne bloque pas le décaissement.
+    # La formalisation est parallèle : elle ne bloque pas la mise en place.
     registration_number = models.CharField(
         "n° d'enregistrement / publicité", max_length=100, blank=True
     )
@@ -1030,7 +1030,7 @@ class GuaranteeFormalizationRequest(TenantScopedModel, AuthoredModel):
     """
     Constitution / formalisation juridique d'une garantie.
 
-    Processus parallèle au crédit : ne bloque pas le décaissement.
+    Processus parallèle au crédit : ne bloque pas la mise en place.
     Le collatéral reste utilisable (garantie ACTIVE) pendant la formalisation.
 
     Deux axes :

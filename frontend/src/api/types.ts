@@ -13,6 +13,8 @@ export interface TenantBranding {
   brand_primary: string;
   brand_secondary: string;
   brand_accent: string;
+  brand_sidebar: string;
+  brand_sidebar_text: string;
 }
 
 export type DataScope = "OWN" | "AGENCY" | "TENANT";
@@ -39,6 +41,7 @@ export interface CurrentUser {
   mfa_enabled: boolean;
   must_change_password: boolean;
   roles: string[];
+  capabilities: string[];
   permissions: string[];
   tenant_branding: TenantBranding | null;
   /** Feature flags serveur (ex. SMS désactivé tant que provider absent). */
@@ -78,13 +81,27 @@ export interface TenantOfficer {
   ordering?: number;
 }
 
-export interface Role {
+export interface RoleOption {
   id: number;
   name: string;
   tenant?: string;
+  permission_count?: number;
+  user_count?: number;
+  pack_code?: string;
+}
+
+export interface Role extends RoleOption {
   permissions: number[];
   permissions_detail: Permission[];
   user_count: number;
+  capabilities: string[];
+  pack_code: string;
+}
+
+export interface BusinessCapability {
+  code: string;
+  label: string;
+  permission: string;
 }
 
 export interface AdminUser {
@@ -104,10 +121,17 @@ export interface AdminUser {
   employee_id: string;
   cbs_id?: string;
   phone: string;
-  groups: Role[];
+  groups: RoleOption[];
 }
 
 export interface Delegation {
+  max_amount?: string | null;
+  product?: string | null;
+  agency?: string | null;
+  step_kind?: string;
+  approval_required?: boolean;
+  approved_by?: string | null;
+  approved_at?: string | null;
   id: string;
   delegator: string;
   delegator_display: string;
@@ -157,6 +181,7 @@ export interface AfterSalesHub {
 }
 
 export interface WorkflowStep {
+  committee_quorum?: number;
   id: string;
   definition: string;
   name: string;
@@ -169,6 +194,27 @@ export interface WorkflowStep {
   min_risk_level: number | null;
   sla_hours: number | null;
   allow_return: boolean;
+  sla_mode: "CALENDAR" | "BUSINESS";
+  committee_enabled: boolean;
+  committee_majority: "SIMPLE" | "QUALIFIED" | "UNANIMOUS";
+  committee_majority_numerator: number;
+  committee_majority_denominator: number;
+  committee_abstentions: "INCLUDE" | "EXCLUDE";
+  committee_record_required: boolean;
+  committee_pv_required: boolean;
+}
+
+export interface BusinessCalendar {
+  id: string;
+  code: string;
+  name: string;
+  timezone: string;
+  working_days: number[];
+  opening_time: string;
+  closing_time: string;
+  holidays: string[];
+  is_active: boolean;
+  updated_at: string;
 }
 
 export interface DecisionGaps {
@@ -184,6 +230,8 @@ export interface WorkflowDefinition {
   version: number;
   is_active: boolean;
   is_used: boolean;
+  execution_mode: "LEGACY_ORDER" | "EXPLICIT_MODE";
+  business_calendar: string | null;
   /** Tranches de montant sans étape décisionnelle, `null` si le circuit est sain. */
   decision_gaps: DecisionGaps | null;
   /** Critères de sélection du circuit (optionnels, combinables). */
@@ -273,6 +321,19 @@ export interface NotificationSettings {
 }
 
 export interface CreditInstructionPolicy {
+  require_credit_contracts: boolean;
+  require_credit_signed_contracts: boolean;
+  require_surety_contracts: boolean;
+  require_setup_request: boolean;
+  require_setup_four_eyes: boolean;
+  risk_mode: "RECOMMENDATION" | "SCORE" | "CONSERVATIVE";
+  approval_validity_days: number;
+  max_analysis_age_days: number;
+  require_final_review: boolean;
+  setup_execution_role: "CREDIT_ADMIN" | "OPERATIONS";
+  require_setup_authorizer_separation: boolean;
+  recheck_kyc_on_setup: boolean;
+  require_verified_documents: boolean;
   id: string;
   collateral_coverage_mode: "ALERT" | "BLOCK_SUBMIT" | "BLOCK_APPROVE";
   require_field_visit: boolean;
@@ -299,7 +360,37 @@ export interface CreditReadinessCheck {
   message: string;
 }
 
+export interface CreditSetupState {
+  failures: string[];
+  authorization_failures: string[];
+  authorization_valid: boolean;
+  review_current: boolean;
+  can_transmit: boolean;
+  execution_role: "CREDIT_ADMIN" | "OPERATIONS";
+  execution_role_display: string;
+  review: {
+    status?: "VALIDATED" | "TO_COMPLETE";
+    reviewed_at?: string; reviewed_by_display?: string; comment?: string;
+    complement_request?: { requested_by_display?: string; requested_at?: string; comment?: string };
+  };
+  authorization: {
+    status?: "AUTHORIZED" | "REVOKED";
+    authorized_by?: string;
+    authorized_by_display?: string;
+    authorized_at?: string;
+    comment?: string;
+    revocation_reason?: string;
+  };
+  approval: {
+    captured_at?: string;
+    application?: Record<string, unknown>;
+    documents?: { id: string; name: string; version: number; verification_status: string }[];
+    contracts?: { id: string; template_name: string; status: string }[];
+  };
+}
+
 export interface CreditReadiness {
+  cbs_mapping_ready?: boolean;
   ready: boolean;
   show_checklist: boolean;
   checks: CreditReadinessCheck[];
@@ -581,6 +672,10 @@ export interface GuaranteeFormalizationRequest {
 }
 
 export interface GedDocument {
+  verification_status?: "PENDING" | "VERIFIED" | "REJECTED";
+  verified_by?: string | null;
+  verified_at?: string | null;
+  verification_comment?: string;
   id: string;
   category: string;
   category_label: string;
@@ -623,6 +718,8 @@ export interface Tenant {
   brand_primary: string;
   brand_secondary: string;
   brand_accent: string;
+  brand_sidebar: string;
+  brand_sidebar_text: string;
   officers?: TenantOfficer[];
   created_at?: string;
   updated_at?: string;
@@ -635,6 +732,7 @@ export interface ClientPhone {
 }
 
 export interface Client {
+  custom_fields?: Record<string, unknown>;
   id: string;
   reference: string;
   client_type: "INDIVIDUAL" | "PROFESSIONAL" | "CORPORATE";
@@ -833,8 +931,8 @@ export interface CreditProduct {
   code: string;
   label: string;
   description?: string;
-  category: string;
-  category_label: string;
+  category?: string | null;
+  category_label?: string | null;
   client_type?: "INDIVIDUAL" | "PROFESSIONAL" | "CORPORATE" | "ALL";
   currency: string;
   amount_min: string;
@@ -846,7 +944,24 @@ export interface CreditProduct {
   requires_guarantee?: boolean;
   cbs_product_code?: string;
   cbs_repayment_product_code?: string;
+  cbs_credit_product?: string | null;
+  cbs_repayment_product?: string | null;
   is_active: boolean;
+}
+
+export interface CbsProductReference {
+  id: string;
+  connector: string;
+  kind: "CREDIT" | "REPAYMENT";
+  cbs_code: string;
+  label: string;
+  currency: string;
+  source_reference: string;
+  is_active: boolean;
+  verification_status: "PENDING" | "VERIFIED";
+  verified_at: string | null;
+  verified_by: string | null;
+  updated_at: string;
 }
 
 export interface StockPhoto {
@@ -878,6 +993,10 @@ export interface CreditApplicationFee {
 }
 
 export interface FeesBreakdownLine {
+  source?: "TARIFF" | "MANUAL";
+  tax_amount?: string;
+  base_excluding_tax?: string;
+  tax_rate?: string;
   id: string | null;
   label: string;
   mode: "PERCENT" | "AMOUNT" | string;
@@ -887,11 +1006,20 @@ export interface FeesBreakdownLine {
 }
 
 export interface FeesBreakdown {
+  total_taxes?: string;
   base_amount: string | null;
   lines: FeesBreakdownLine[];
   total: string | null;
   /** Indicatif : base − total frais (prélèvement effectué par le CBS). */
   net_after_fees?: string | null;
+}
+
+export interface PricingQuote {
+  simulation_conventions?: import("./simulation").SimulationConventions;
+  engine: "LEGACY" | "CONFIGURED"; currency: string; band: string | null;
+  rates: { interest_rate: string; fees_rate: string; mandatory_savings_rate: string };
+  defaults: { interest_rate: string; fees_rate: string; mandatory_savings_rate: string };
+  failures: string[]; fees: FeesBreakdown; configuration_fingerprint: string;
 }
 
 export interface CreditApplication {
@@ -913,6 +1041,7 @@ export interface CreditApplication {
   mandatory_savings_rate: string | null;
   extra_fees?: CreditApplicationFee[];
   fees_breakdown?: FeesBreakdown | null;
+  pricing_quote?: PricingQuote;
   periodicity: string;
   periodicity_label?: string;
   duration_months: number;
@@ -921,11 +1050,16 @@ export interface CreditApplication {
   repayment_mechanism: string;
   repayment_mechanism_label?: string;
   purpose_type: string;
+  financing_object?: string | null;
   purpose: string;
   request_letter_scan: string | null;
   currency: string;
   currency_label?: string;
   cbs_refs?: {
+    financing_object?: { id?: string; code?: string; label?: string; cbs_code?: string };
+    credit_product?: { id?: string; cbs_code?: string; label?: string; source_reference?: string };
+    repayment_product?: { id?: string; cbs_code?: string; label?: string; source_reference?: string };
+    errors?: Array<{ field: string; message: string }>;
     periodicity?: { code?: string; label?: string; cbs_code?: string };
     repayment_method?: { code?: string; label?: string; cbs_code?: string };
     currency?: { code?: string; label?: string; cbs_code?: string };
@@ -965,6 +1099,8 @@ export interface CreditApplication {
   // Assurance
   has_credit_insurance: boolean;
   insurance_company: string;
+  insurance_policy_number?: string;
+  insurance_expiry_date?: string | null;
   insurance_premium: string | null;
   // Conditions particulières
   special_conditions: string;
@@ -987,6 +1123,7 @@ export interface CreditApplication {
   disbursed_at?: string | null;
   disbursement_requested_at?: string | null;
   disbursement_requested_by?: string | null;
+  setup_authorization?: CreditSetupState["authorization"];
   cbs_demande_number?: string;
   cbs_demande_ref?: string;
   cbs_contract_number?: string;
@@ -1027,6 +1164,8 @@ export interface FinancialAnalysisFlags {
   capacity_ok?: boolean | null;
   members_ok?: boolean | null;
   solidarity_ok?: boolean | null;
+  contributors_ok?: boolean | null;
+  capacity_stress_ok?: boolean | null;
 }
 
 export interface AnalysisScoreComponent {
@@ -1034,20 +1173,41 @@ export interface AnalysisScoreComponent {
   label: string;
   score: number | null;
   weight: number;
+  raw_value?: string | null;
+  bad?: string;
+  good?: string;
+  direction?: "HIGH" | "LOW";
 }
 
 export interface AnalysisScoreBreakdown {
+  engine?: "LEGACY" | "CUSTOM";
+  risk_cutoffs?: string[];
+  missing_data?: "RENORMALIZE" | "ZERO" | "BLOCK_SUBMIT";
+  missing_metrics?: string[];
+  effective_weight?: number;
   total: number | null;
   components: AnalysisScoreComponent[];
 }
 
 export type AnalysisMetrics = {
   flags: Record<string, boolean | null>;
-} & Record<string, number | null | Record<string, boolean | null> | undefined>;
+} & Record<string, unknown>;
 
 export type AnalysisThresholds = Record<string, number>;
 
+export type AnalysisDetails = Record<string, string | Record<string, string>[] | undefined>;
+
 export interface FinancialAnalysis {
+  calculation_context?: {
+    calculated_at: string; amount: number | null; amount_label: string; currency: string;
+    periodicity: string; duration_months: number; mechanism: string; frozen: boolean;
+    legacy?: boolean; captured_at?: string | null; application_status?: string;
+    sources: { name: string; version: number }[]; rates: Record<string, string>;
+  };
+  recorded_indicators?: { updated_at: string } & Record<string, unknown>;
+  custom_field_definitions?: import("@/api/configuration").CustomFieldDefinition[];
+  custom_fields?: Record<string, unknown>;
+  analysis_details?: AnalysisDetails;
   id: string;
   application: string;
   author_role: string;
@@ -1061,6 +1221,16 @@ export interface FinancialAnalysis {
   individual_profile?: "" | "SALARIE" | "INDEPENDANT" | "MIXTE";
   reference_period: string;
   analysis_date: string | null;
+  // Cadre et fiabilité de l'analyse
+  information_quality: string;
+  financial_statement_date: string | null;
+  bank_statement_months: number | null;
+  financial_documents_verified: boolean;
+  field_visit_confirmed: boolean;
+  stock_count_verified: boolean;
+  cash_position_verified: boolean;
+  verification_comment: string;
+  primary_repayment_source: string;
   // Endettement consolidé & centrale des risques
   active_loans_count: number;
   credit_bureau_checked: boolean;
@@ -1079,6 +1249,18 @@ export interface FinancialAnalysis {
   salary_deductions: string;
   employment_seniority_months: number | null;
   informal_income_weight: string | null;
+  employment_type: string;
+  employer_name: string;
+  employer_sector: string;
+  salary_paid_through_bank: boolean;
+  salary_verified: boolean;
+  variable_income: string;
+  pension_income: string;
+  other_monthly_obligations: string;
+  personal_savings: string;
+  personal_real_estate_value: string;
+  personal_vehicle_value: string;
+  personal_productive_assets: string;
   // Entreprise — court terme & N-1
   short_term_debt: string;
   turnover_prev: string;
@@ -1165,6 +1347,7 @@ export interface FinancialAnalysis {
   op_other: string;
   depreciation: string;
   financial_charges: string;
+  other_operating_income: string;
   // Entreprise — bilan
   stock_value: string;
   receivables: string;
@@ -1172,6 +1355,17 @@ export interface FinancialAnalysis {
   fixed_assets: string;
   supplier_debt: string;
   ongoing_credit_balance: string;
+  cash_in_hand: string;
+  bank_balance: string;
+  other_current_assets: string;
+  land_building_value: string;
+  equipment_value: string;
+  vehicle_value: string;
+  other_fixed_assets: string;
+  tax_social_debt: string;
+  other_current_debt: string;
+  long_term_debt: string;
+  shareholder_debt: string;
   // Commun — endettement existant
   existing_debt_institution: string;
   existing_debt_initial_amount: string;
@@ -1186,6 +1380,17 @@ export interface FinancialAnalysis {
   activity_turnover?: string;
   activity_expenses?: string;
   activity_comment?: string;
+  activity_name?: string;
+  activity_business_age_months?: number | null;
+  activity_sales_days?: number | null;
+  activity_purchases?: string;
+  activity_stock_value?: string;
+  activity_receivables?: string;
+  activity_cash_available?: string;
+  activity_fixed_assets?: string;
+  activity_supplier_debt?: string;
+  activity_is_formal?: boolean;
+  activity_records_available?: boolean;
   members_count?: number | null;
   active_contributing_members?: number | null;
   solidarity_commitment?: boolean;
@@ -1196,6 +1401,10 @@ export interface FinancialAnalysis {
   group_activity_turnover?: string;
   group_activity_expenses?: string;
   group_comment?: string;
+  group_age_months?: number | null;
+  members_with_arrears?: number | null;
+  group_records_verified?: boolean;
+  collective_savings_locked?: boolean;
   // Indicateurs calculés
   new_installment: string | null;
   repayment_capacity: string | null;
@@ -1444,6 +1653,15 @@ export interface ApprovalTaskApplication {
 }
 
 export interface ApprovalTask {
+  is_committee?: boolean;
+  committee_quorum?: number;
+  committee_majority?: "SIMPLE" | "QUALIFIED" | "UNANIMOUS";
+  committee_majority_numerator?: number;
+  committee_majority_denominator?: number;
+  committee_abstentions?: "INCLUDE" | "EXCLUDE";
+  committee_record_required?: boolean;
+  committee_pv_required?: boolean;
+  sla_mode?: "CALENDAR" | "BUSINESS";
   id: string;
   instance: string;
   step: string;
@@ -1889,6 +2107,7 @@ export interface DashboardData {
 export interface SimulationScheduleRow {
   number: number;
   due_date: string;
+  nominal_due_date?: string;
   principal: string | number;
   interest: string | number;
   savings: string | number;
@@ -1897,8 +2116,14 @@ export interface SimulationScheduleRow {
   balance: string | number;
 }
 
-/** Réponse de POST /credit-applications/simulate/ (engine ACT/365, convention CBS). */
+/** Réponse du moteur partagé de simulation et d'échéanciers. */
 export interface SimulationResult {
+  simulation_conventions?: import("./simulation").SimulationConventions;
+  pricing_quote?: PricingQuote;
+  total_fees?: string | number;
+  total_cost_excluding_savings?: string | number;
+  total_client_outflow?: string | number;
+  parameters?: { amount: string | number; annual_rate: string; savings_rate: string; months: number; periodicity: string; mechanism: string; simulation_date: string; first_due_date: string | null; currency: string };
   installment: string | number;
   monthly_payment: string | number;
   client_total_first: string | number;

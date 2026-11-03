@@ -2,9 +2,12 @@
 Modèles d'organisation : filiales (tenants) et agences.
 """
 from django.db import models
+from django.core.validators import RegexValidator
 
 from apps.common.files import safe_filename
 from apps.common.models import BaseModel
+
+HEX_COLOR = RegexValidator(r"\A#[0-9a-fA-F]{6}\Z", "Indiquez une couleur hexadécimale au format #RRGGBB.")
 
 
 def tenant_logo_upload(instance, filename):
@@ -38,15 +41,26 @@ class Tenant(BaseModel):
     )
     brand_primary = models.CharField(
         "couleur principale", max_length=7, default="#0f9488",
+        validators=[HEX_COLOR],
         help_text="Couleur principale (hex, ex. #0f9488).",
     )
     brand_secondary = models.CharField(
         "couleur secondaire", max_length=7, default="#0d7a72",
+        validators=[HEX_COLOR],
         help_text="Couleur secondaire / foncée (hex).",
     )
     brand_accent = models.CharField(
         "couleur d'accent", max_length=7, default="#d4a017",
+        validators=[HEX_COLOR],
         help_text="Couleur d'accent (hex).",
+    )
+    brand_sidebar = models.CharField(
+        "couleur barre latérale", max_length=7, default="#084f4a", validators=[HEX_COLOR],
+        help_text="Couleur de fond du menu latéral (hex).",
+    )
+    brand_sidebar_text = models.CharField(
+        "couleur texte de la barre", max_length=7, default="#ffffff", validators=[HEX_COLOR],
+        help_text="Couleur des textes et icônes du menu latéral (hex).",
     )
 
     # Quotas GED (long terme — volume documentaire)

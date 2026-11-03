@@ -1,4 +1,4 @@
-import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   Building2,
   Contact,
@@ -14,11 +14,17 @@ import {
   UserRound,
   Users,
 } from "lucide-react";
-import { useState, type FormEvent } from "react";
+import { createContext, useContext, useState, type FormEvent } from "react";
 
 import { api } from "@/api/client";
-import type { Client } from "@/api/types";
+import type { Client, CreditApplication, Paginated } from "@/api/types";
 import { Card } from "@/components/ui";
+import { CustomFields } from "@/components/CustomFields";
+import { useAuth } from "@/auth/AuthContext";
+import type { ClientReferences, EffectiveConfiguration } from "@/api/configuration";
+import { hasPerm } from "@/auth/permissions";
+
+const ClientReferencesContext = createContext<ClientReferences | undefined>(undefined);
 
 type ClientType = "INDIVIDUAL" | "PROFESSIONAL" | "CORPORATE";
 
@@ -109,6 +115,7 @@ export function ClientForm({
   onCancel: () => void;
 }) {
   const qc = useQueryClient();
+  const { user, activeTenant } = useAuth();
   const isEdit = Boolean(initial);
   const [type, setType] = useState<ClientType>(
     initial?.client_type ?? "INDIVIDUAL",
@@ -121,6 +128,12 @@ export function ClientForm({
     initial?.phones?.map((p) => p.number) ?? [],
   );
   const [error, setError] = useState<string | null>(null);
+  const [customFields, setCustomFields] = useState<Record<string, unknown>>((initial as Client & { custom_fields?: Record<string, unknown> })?.custom_fields || {});
+  const [configurationApplication, setConfigurationApplication] = useState("");
+  const dossiers = useQuery({ queryKey: ["client-form-dossiers", activeTenant || user?.tenant, initial?.id], enabled: !!initial && hasPerm(user, "credits.view_creditapplication"),
+    queryFn: async () => { const result: CreditApplication[] = []; let page = 1; while (true) { const response = await api.get<Paginated<CreditApplication>>("/credit-applications/", { params: { client: initial?.id, page, page_size: 200 } }); result.push(...response.data.results.filter((item) => item.client === initial?.id)); if (!response.data.next) return result; page++; } } });
+  const configuration = useQuery({ queryKey: ["client-form-configuration", activeTenant || user?.tenant, type, initial?.agency, configurationApplication],
+    queryFn: async () => (await api.get<EffectiveConfiguration>("/clients/form-configuration/", { params: { client_type: type, agency: initial?.agency || undefined, application: configurationApplication || undefined, client: initial?.id } })).data });
 
   const isCorporate = type === "CORPORATE" || type === "PROFESSIONAL";
   const isMarried = text.marital_status === "MARRIED";
@@ -150,6 +163,8 @@ export function ClientForm({
       }
       const phones = extraPhones.map((p) => p.trim()).filter(Boolean);
       fd.append("additional_phones", JSON.stringify(phones));
+      fd.append("custom_fields", JSON.stringify(customFields));
+      if (configurationApplication) fd.append("configuration_application", configurationApplication);
 
       if (isEdit && initial) {
         return (await api.patch(`/clients/${initial.id}/`, fd)).data;
@@ -202,7 +217,9 @@ export function ClientForm({
   };
 
   return (
+    <ClientReferencesContext.Provider value={configuration.data?.references}>
     <form className="stack" onSubmit={submit}>
+      {!!dossiers.data?.length && <Card title="Contexte des exigences"><label className="field"><span>Règles de la fiche client ou d'un dossier accessible</span><select value={configurationApplication} onChange={(event) => setConfigurationApplication(event.target.value)}><option value="">Fiche client — sans produit</option>{dossiers.data.map((item) => <option key={item.id} value={item.id}>{item.reference}</option>)}</select></label><p className="muted">Un dossier soumis utilise ses règles conservées. Les données client restent communes à ses dossiers.</p></Card>}
       <Card
         title={
           <>
@@ -241,13 +258,21 @@ export function ClientForm({
       ) : (
         <IndividualFields {...fieldProps} isMarried={isMarried} />
       )}
+      {configuration.data?.kyc && <Card title="Exigences KYC applicables"><p className="muted">Contexte de la fiche client sans produit. Les exigences d'un dossier peuvent être complétées selon son produit.</p>
+        <p>Informations requises : {configuration.data.kyc.required_fields.join(", ") || "Aucune exigence additionnelle"}.</p>
+        <p>Pièces requises : {configuration.data.kyc.required_documents.join(", ") || "Aucune exigence additionnelle"}.</p>
+        {configuration.data.kyc.check_expiry && <p>La pièce d'identité doit avoir une date d'expiration renseignée et non échue.</p>}
+        {!!configuration.data.kyc.validity_days && <p>Validité de la revue : {configuration.data.kyc.validity_days} jours.</p>}
+      </Card>}
+      {!!configuration.data?.forms?.client_fields.length && <Card title="Informations complémentaires"><CustomFields definitions={configuration.data.forms.client_fields} value={customFields} onChange={setCustomFields} /></Card>}
+      {configuration.isError && <p className="form-error">Impossible de charger la configuration de la fiche client. Rechargez le formulaire.</p>}
 
       {error && <div className="form-error">{error}</div>}
       <div className="page-actions">
         <button type="button" className="btn btn-ghost" onClick={onCancel}>
           Annuler
         </button>
-        <button className="btn btn-primary" disabled={mutation.isPending}>
+        <button className="btn btn-primary" disabled={mutation.isPending || configuration.isLoading || configuration.isError}>
           {mutation.isPending
             ? "Enregistrement…"
             : isEdit
@@ -256,6 +281,7 @@ export function ClientForm({
         </button>
       </div>
     </form>
+    </ClientReferencesContext.Provider>
   );
 }
 
@@ -285,6 +311,7 @@ function Text({
       <input
         type={type}
         value={value}
+        required={required}
         onChange={(e) => onChange(e.target.value)}
       />
     </label>
@@ -304,12 +331,17 @@ function Select({
   options: { value: string; label: string }[];
   placeholder?: string;
 }) {
+  const references = useContext(ClientReferencesContext);
+  const key = options === CIVILITY ? "civility" : options === MARITAL ? "marital_status" : options === ID_DOCS ? "id_document_type" : options === LEGAL_FORMS ? "legal_form" : null;
+  const configured = key && references ? references[key] : undefined;
+  const choices = configured ? configured.filter((entry) => entry.active || entry.code === value).map((entry) => ({ value: entry.code, label: entry.label + (entry.active ? "" : " (désactivé)") })) : options;
+  const retained = value && !choices.some((entry) => entry.value === value) ? [...choices, { value, label: `${value} (valeur historique)` }] : choices;
   return (
     <label className="field">
       <span>{label}</span>
       <select value={value} onChange={(e) => onChange(e.target.value)}>
         <option value="">{placeholder}</option>
-        {options.map((o) => (
+        {retained.map((o) => (
           <option key={o.value} value={o.value}>
             {o.label}
           </option>

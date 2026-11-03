@@ -50,9 +50,9 @@ Menu **Tâches** / panneau de décision sur le dossier :
 - Motif de rejet si configuré
 - Lever les conditions suspensives si présentes
 
-### Contrats & décaissement
+### Contrats & mise en place
 1. Générer les contrats (modèles admin).
-2. Après approbation et conditions OK : **Décaisser**.
+2. Après approbation et conditions OK : **Mettre en place**.
 3. Le capital du prêt = **montant accordé** ; les frais sont gérés par le CBS.
 
 ## 5. Garanties transverses
@@ -93,5 +93,5 @@ Les retards PAR sont recalculés automatiquement (batch nocturne). Un encaisseme
 
 - Toujours sélectionner la bonne filiale (Groupe).
 - Ne pas partager les comptes ; activer le MFA sur les profils sensibles.
-- Vérifier le **montant accordé** avant décaissement.
+- Vérifier le **montant accordé** avant mise en place.
 - Archiver / purger les documents lourds pour respecter le **quota GED**.

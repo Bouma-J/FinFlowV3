@@ -38,6 +38,8 @@ def test_sod_blocks_charge_affaire_and_committee(tenant_a):
 def test_formalization_gate_blocks_disbursement(
     tenant_a, product_a, client_a,
 ):
+    from tests.setup_helpers import configure_local_cbs
+
     with tenant_context(tenant_a.id):
         policy, _ = CreditInstructionPolicy.all_tenants.get_or_create(
             tenant=tenant_a,
@@ -57,6 +59,7 @@ def test_formalization_gate_blocks_disbursement(
             reference="REF-FORM-GATE",
             status=CreditApplication.Status.APPROVED,
         )
+        configure_local_cbs(app)
         Guarantee.objects.create(
             tenant=tenant_a,
             client=client_a,
@@ -84,7 +87,9 @@ def test_formalization_gate_blocks_disbursement(
                 "apps.contracts.services.missing_surety_signed_contracts",
                 return_value=[],
             ):
-                _assert_disbursement_prerequisites(app)
+                # Contrôle préalable à la revue : la formalisation doit être
+                # terminée avant que l'administrateur puisse valider sa revue.
+                _assert_disbursement_prerequisites(app, check_review=False)
 
 
 def test_dashboard_requires_view_dashboard_perm(tenant_a):

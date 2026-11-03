@@ -66,14 +66,14 @@ const STATUS_LABELS: Record<string, string> = {
   DRAFT: "Brouillon",
   SUBMITTED: "Soumis",
   IN_APPROVAL: "En approbation",
-  APPROVED: "ApprouvÃ©",
-  REJECTED: "RejetÃ©",
-  RETURNED: "RetournÃ©",
-  CONTRACT_GENERATED: "Contrat gÃ©nÃ©rÃ©",
-  DISBURSEMENT_PENDING: "DÃ©caissement en attente",
-  DISBURSED: "DÃ©caissÃ©",
-  CLOSED: "ClÃ´turÃ©",
-  CANCELLED: "AnnulÃ©",
+  APPROVED: "Approuvé",
+  REJECTED: "Rejeté",
+  RETURNED: "Retourné",
+  CONTRACT_GENERATED: "Contrat généré",
+  DISBURSEMENT_PENDING: "Transmission au CBS en attente",
+  DISBURSED: "Mis en place",
+  CLOSED: "Clôturé",
+  CANCELLED: "Annulé",
 };
 
 const STATUS_TONE: Record<string, string> = {
@@ -106,9 +106,9 @@ const PAR_LABELS: Record<string, string> = {
 
 const STAGE_LABELS: Record<string, string> = {
   AMICABLE: "Amiable",
-  PRECONTENTIOUS: "PrÃ©contentieux",
+  PRECONTENTIOUS: "Précontentieux",
   LITIGATION: "Contentieux",
-  CLOSED: "ClÃ´turÃ©",
+  CLOSED: "Clôturé",
 };
 
 const STAGE_TONE: Record<string, string> = {
@@ -200,7 +200,7 @@ function isPresetActive(filters: DashFilters, key: string): boolean {
 function greeting() {
   const h = new Date().getHours();
   if (h < 12) return "Bonjour";
-  if (h < 18) return "Bon aprÃ¨s-midi";
+  if (h < 18) return "Bon après-midi";
   return "Bonsoir";
 }
 
@@ -208,7 +208,7 @@ function TrendChart({ data }: { data: DashboardData["credits"]["monthly"] }) {
   const max = Math.max(1, ...data.map((d) => num(d.amount)));
   const totalCount = data.reduce((s, d) => s + d.count, 0);
   if (totalCount === 0)
-    return <EmptyState message="Aucune activitÃ© sur la pÃ©riode." />;
+    return <EmptyState message="Aucune activité sur la période." />;
 
   return (
     <div className="trend-chart">
@@ -221,7 +221,7 @@ function TrendChart({ data }: { data: DashboardData["credits"]["monthly"] }) {
               <div
                 className="trend-bar"
                 style={{ height: `${Math.max(h, 3)}%` }}
-                title={`${monthLabel(d.month)} Â· ${d.count} dossier(s) Â· ${formatMoney(
+                title={`${monthLabel(d.month)} · ${d.count} dossier(s) · ${formatMoney(
                   d.amount,
                 )}`}
               />
@@ -256,7 +256,7 @@ function DistBars({
             <span className="dist-label">{r.label}</span>
             <span className="dist-meta">
               {r.count}
-              {r.amount != null ? ` Â· ${compactMoney(r.amount)}` : ""}
+              {r.amount != null ? ` · ${compactMoney(r.amount)}` : ""}
             </span>
           </div>
           <div className="dist-track">
@@ -347,8 +347,8 @@ function FunnelStrip({
   const steps = [
     { label: "Soumis", value: funnel.submitted },
     { label: "En circuit", value: funnel.in_approval },
-    { label: "ApprouvÃ©s", value: funnel.approved },
-    { label: "DÃ©caissÃ©s", value: funnel.disbursed },
+    { label: "Approuvés", value: funnel.approved },
+    { label: "Mis en place", value: funnel.disbursed },
   ];
   const max = Math.max(1, ...steps.map((s) => s.value));
   return (
@@ -373,19 +373,19 @@ function FunnelStrip({
           <strong>
             {funnel.approval_rate_pct != null
               ? `${funnel.approval_rate_pct} %`
-              : "â€”"}
+              : "—"}
           </strong>
           <span className="muted">
             {" "}
-            Â· {funnel.rejected} rejetÃ©s Â· {funnel.returned} retournÃ©s
+            · {funnel.rejected} rejetés · {funnel.returned} retournés
           </span>
         </span>
         <span>
-          Taux de dÃ©caissement{" "}
+          Taux de mise en place{" "}
           <strong>
             {funnel.disbursement_rate_pct != null
               ? `${funnel.disbursement_rate_pct} %`
-              : "â€”"}
+              : "—"}
           </strong>
         </span>
       </div>
@@ -444,9 +444,9 @@ export function DashboardPage() {
       : null;
   const s = data?.credits.summary;
   const scopeLabel = isGroup && !activeTenant
-    ? "Vue consolidÃ©e Groupe"
+    ? "Vue consolidée Groupe"
     : tenantCode
-      ? `${tenantCode} Â· ${tenantName}`
+      ? `${tenantCode} · ${tenantName}`
       : tenantName || "Fin Flow";
 
   return (
@@ -456,8 +456,8 @@ export function DashboardPage() {
         title={`${greeting()}, ${user?.first_name || user?.username || ""}`.trim()}
         subtitle={
           isGroup && !activeTenant
-            ? `${scopeLabel} â€” synthÃ¨se multi-filiales`
-            : `${scopeLabel} â€” pipeline, dÃ©caissements et risque de votre pÃ©rimÃ¨tre`
+            ? `${scopeLabel} — synthèse multi-filiales`
+            : `${scopeLabel} — pipeline, mises en place et risque de votre périmètre`
         }
         actions={
           <div className="dash-header-actions">
@@ -479,20 +479,20 @@ export function DashboardPage() {
               <QuickAction
                 to="/apres-vente"
                 icon={Handshake}
-                label="AprÃ¨s-vente"
+                label="Après-vente"
               />
             )}
           </div>
         }
       />
 
-      <div className="dash-presets" aria-label="PÃ©riodes">
+      <div className="dash-presets" aria-label="Périodes">
         {(
           [
             ["7d", "7 jours"],
             ["30d", "30 jours"],
             ["month", "Mois en cours"],
-            ["year", "AnnÃ©e"],
+            ["year", "Année"],
           ] as const
         ).map(([key, label]) => (
           <button
@@ -506,16 +506,16 @@ export function DashboardPage() {
             {label}
           </button>
         ))}
-        {isFetching && <span className="dash-live">Mise Ã  jourâ€¦</span>}
+        {isFetching && <span className="dash-live">Mise à jour…</span>}
       </div>
 
       <ListFilters
         extra={
           scope === "OWN" && !isGroup ? (
             <p className="dash-scope-note">
-              PÃ©rimÃ¨tre Â« mes dossiers Â» : les indicateurs portent sur les
-              dossiers que vous avez crÃ©Ã©s. Lâ€™agence dâ€™un dossier est celle du
-              gestionnaire au moment de la crÃ©ation.
+              Périmètre « mes dossiers » : les indicateurs portent sur les
+              dossiers que vous avez créés. L’agence d’un dossier est celle du
+              gestionnaire au moment de la création.
             </p>
           ) : undefined
         }
@@ -581,8 +581,8 @@ export function DashboardPage() {
 
       {showOrgFilters && (
         <p className="dash-scope-note dash-agency-hint">
-          Lâ€™agence dâ€™un dossier est celle du gestionnaire qui le crÃ©e â€” pas une
-          agence choisie Ã  la main.
+          L’agence d’un dossier est celle du gestionnaire qui le crée — pas une
+          agence choisie à la main.
         </p>
       )}
 
@@ -598,9 +598,9 @@ export function DashboardPage() {
           {data.cbs && data.cbs.failed > 0 && (
             <div className="dash-cbs-banner" role="status">
               <ServerCrash size={16} />
-              {data.cbs.failed} Ã©chec{data.cbs.failed > 1 ? "s" : ""} CBS
+              {data.cbs.failed} échec{data.cbs.failed > 1 ? "s" : ""} CBS
               <span className="muted">
-                {data.cbs.pending} en attente Â· {data.cbs.retry} Ã  rejouer
+                {data.cbs.pending} en attente · {data.cbs.retry} à rejouer
               </span>
             </div>
           )}
@@ -625,7 +625,7 @@ export function DashboardPage() {
             >
               <StatCard
                 icon={ClipboardCheck}
-                label="Mes tÃ¢ches"
+                label="Mes tâches"
                 value={data.workflow?.my_pending_tasks ?? 0}
                 tone={
                   (data.workflow?.my_pending_tasks ?? 0) > 0
@@ -635,7 +635,7 @@ export function DashboardPage() {
                 hint={
                   (data.workflow?.my_overdue_tasks ?? 0) > 0
                     ? `${data.workflow?.my_overdue_tasks} en retard SLA`
-                    : "Ã€ valider"
+                    : "À valider"
                 }
                 action={kpiConsult({ user, anyOf: PERM_TASKS, to: "/taches" })}
               />
@@ -652,7 +652,7 @@ export function DashboardPage() {
               />
               <StatCard
                 icon={Filter}
-                label="RÃ©serves"
+                label="Réserves"
                 value={data.workflow?.conditions_pending ?? 0}
                 tone={
                   (data.workflow?.conditions_pending ?? 0) > 0
@@ -664,7 +664,7 @@ export function DashboardPage() {
               />
               <StatCard
                 icon={Clock}
-                label="TÃ¢ches pÃ©rimÃ¨tre"
+                label="Tâches périmètre"
                 value={data.workflow?.pending_tasks ?? 0}
                 hint={
                   (data.workflow?.overdue_tasks ?? 0) > 0
@@ -679,7 +679,7 @@ export function DashboardPage() {
             </KpiSection>
           )}
 
-          <KpiSection title="Pipeline crÃ©dit">
+          <KpiSection title="Pipeline crédit">
             <StatCard
               icon={FileText}
               label="Dossiers"
@@ -692,19 +692,19 @@ export function DashboardPage() {
               label="En approbation"
               value={s?.in_approval_count ?? 0}
               tone="warning"
-              hint={`${formatMoney(s?.amount_requested ?? null)} demandÃ©s`}
+              hint={`${formatMoney(s?.amount_requested ?? null)} demandés`}
               action={kpiConsult({ user, anyOf: PERM_CREDITS, to: "/dossiers?status=IN_APPROVAL" })}
             />
             <StatCard
               icon={RotateCcw}
-              label="RetournÃ©s"
+              label="Retournés"
               value={s?.returned_count ?? 0}
               tone={(s?.returned_count ?? 0) > 0 ? "warning" : "default"}
               action={kpiConsult({ user, anyOf: PERM_CREDITS, to: "/dossiers?status=RETURNED" })}
             />
             <StatCard
               icon={Banknote}
-              label="Ã€ dÃ©caisser"
+              label="À mettre en place"
               value={s?.disbursement_pending_count ?? 0}
               tone={
                 (s?.disbursement_pending_count ?? 0) > 0 ? "warning" : "default"
@@ -717,7 +717,7 @@ export function DashboardPage() {
           <KpiSection title="Portefeuille">
             <StatCard
               icon={Wallet}
-              label="DÃ©caissÃ©s"
+              label="Mis en place"
               value={s?.disbursed_count ?? 0}
               hint={formatMoney(s?.disbursed_amount ?? null)}
               action={kpiConsult({ user, anyOf: PERM_CREDITS, to: "/dossiers?status=DISBURSED" })}
@@ -726,19 +726,19 @@ export function DashboardPage() {
               icon={Banknote}
               label="Encours"
               value={compactMoney(data.portfolio.outstanding)}
-              hint={`${data.portfolio.active_loans} prÃªt(s) actif(s)`}
+              hint={`${data.portfolio.active_loans} prêt(s) actif(s)`}
               action={kpiConsult({ user, anyOf: PERM_CREDITS, to: "/prets" })}
             />
             <StatCard
               icon={AlertTriangle}
-              label="Ã‰chÃ©ances en retard"
+              label="Échéances en retard"
               value={data.portfolio.overdue_installments}
               tone={
                 data.portfolio.overdue_installments > 0 ? "danger" : "default"
               }
               hint={
                 parRatio !== null
-                  ? `PAR ${parRatio.toFixed(1)} % Â· ${formatMoney(overdue)}`
+                  ? `PAR ${parRatio.toFixed(1)} % · ${formatMoney(overdue)}`
                   : undefined
               }
               action={kpiConsult({ user, anyOf: PERM_COLLECTIONS, to: "/recouvrement" })}
@@ -761,7 +761,7 @@ export function DashboardPage() {
 
           {hasAnyPerm(user, PERM_COLLECTIONS) && (
             <KpiSection
-              title="Recouvrement opÃ©rationnel"
+              title="Recouvrement opérationnel"
               link={
                 <PermLink
                   user={user}
@@ -781,7 +781,7 @@ export function DashboardPage() {
                 tone={
                   (data.risk.followups_due ?? 0) > 0 ? "warning" : "default"
                 }
-                hint="Prochaine action â‰¤ aujourd'hui"
+                hint="Prochaine action ≤ aujourd'hui"
                 action={kpiConsult({ user, anyOf: PERM_COLLECTIONS, to: "/recouvrement", state: { followupDue: true } })}
               />
               <StatCard
@@ -804,7 +804,7 @@ export function DashboardPage() {
               />
               <StatCard
                 icon={AlertTriangle}
-                label="Encours Ã  risque"
+                label="Encours à risque"
                 value={compactMoney(data.risk.total_overdue)}
                 tone={num(data.risk.total_overdue) > 0 ? "danger" : "default"}
                 action={kpiConsult({ user, anyOf: PERM_COLLECTIONS, to: "/recouvrement" })}
@@ -821,7 +821,7 @@ export function DashboardPage() {
                 <StatCard
                   key="ml"
                   icon={Shield}
-                  label="Mains levÃ©es"
+                  label="Mains levées"
                   value={as.main_levee.open}
                   hint={`${as.main_levee.in_approval} en circuit`}
                   tone={as.main_levee.in_approval > 0 ? "warning" : "default"}
@@ -864,7 +864,7 @@ export function DashboardPage() {
             if (cards.length === 0) return null;
             return (
               <KpiSection
-                title="AprÃ¨s-vente"
+                title="Après-vente"
                 link={
                   <PermLink
                     user={user}
@@ -883,7 +883,7 @@ export function DashboardPage() {
           })()}
 
           {(data.quality || data.credits.funnel) && (
-            <KpiSection title="Conversion & qualitÃ©">
+            <KpiSection title="Conversion & qualité">
               {data.credits.funnel && (
                 <StatCard
                   icon={Percent}
@@ -891,22 +891,22 @@ export function DashboardPage() {
                   value={
                     data.credits.funnel.approval_rate_pct != null
                       ? `${data.credits.funnel.approval_rate_pct} %`
-                      : "â€”"
+                      : "—"
                   }
-                  hint={`${data.credits.funnel.approved} approuvÃ©s Â· ${data.credits.funnel.rejected} rejetÃ©s`}
+                  hint={`${data.credits.funnel.approved} approuvés · ${data.credits.funnel.rejected} rejetés`}
                   action={kpiConsult({ user, anyOf: PERM_CREDITS, to: "/dossiers" })}
                 />
               )}
               {data.credits.funnel && (
                 <StatCard
                   icon={Wallet}
-                  label="Taux de dÃ©caissement"
+                  label="Taux de mise en place"
                   value={
                     data.credits.funnel.disbursement_rate_pct != null
                       ? `${data.credits.funnel.disbursement_rate_pct} %`
-                      : "â€”"
+                      : "—"
                   }
-                  hint={`${data.credits.funnel.disbursed} / ${data.credits.funnel.approved} approuvÃ©s`}
+                  hint={`${data.credits.funnel.disbursed} / ${data.credits.funnel.approved} approuvés`}
                   action={kpiConsult({ user, anyOf: PERM_CREDITS, to: "/dossiers?status=DISBURSED" })}
                 />
               )}
@@ -922,8 +922,8 @@ export function DashboardPage() {
                   }
                   hint={
                     data.quality.kyc_rejected > 0
-                      ? `${data.quality.kyc_rejected} rejetÃ©(s)`
-                      : "Clients Ã  valider"
+                      ? `${data.quality.kyc_rejected} rejeté(s)`
+                      : "Clients à valider"
                   }
                   action={kpiConsult({ user, anyOf: PERM_CLIENTS, to: "/clients?kyc_status=PENDING" })}
                 />
@@ -953,7 +953,7 @@ export function DashboardPage() {
                 value={data.clients.total}
                 hint={
                   data.clients.new_period_label === "period"
-                    ? `+${data.clients.new_this_month} sur la pÃ©riode`
+                    ? `+${data.clients.new_this_month} sur la période`
                     : `+${data.clients.new_this_month} ce mois`
                 }
                 action={kpiConsult({ user, anyOf: PERM_CLIENTS, to: "/clients" })}
@@ -976,13 +976,13 @@ export function DashboardPage() {
                 icon={FileSignature}
                 label="Contrats"
                 value={data.contracts.total}
-                hint={`${data.contracts.signed} signÃ©s Â· ${data.contracts.generated} gÃ©nÃ©rÃ©s`}
+                hint={`${data.contracts.signed} signés · ${data.contracts.generated} générés`}
                 action={kpiConsult({ user, anyOf: PERM_CREDITS, to: "/dossiers?status=CONTRACT_GENERATED" })}
               />
             )}
             <StatCard
               icon={ClipboardCheck}
-              label="ApprouvÃ©s"
+              label="Approuvés"
               value={s?.approved_count ?? 0}
               tone="success"
               hint={formatMoney(s?.amount_approved ?? null)}
@@ -1007,7 +1007,7 @@ export function DashboardPage() {
               <section className="card">
                 <div className="card-title">
                   <Clock size={18} />
-                  ActivitÃ© rÃ©cente
+                  Activité récente
                   <PermLink
                     user={user}
                     anyOf={PERM_CREDITS}
@@ -1021,7 +1021,7 @@ export function DashboardPage() {
                 <div className="card-body no-pad">
                   {data.credits.recent.length === 0 ? (
                     <div className="pad">
-                      <EmptyState message="Aucun dossier rÃ©cent." />
+                      <EmptyState message="Aucun dossier récent." />
                     </div>
                   ) : (
                     <ul className="activity-list">
@@ -1039,12 +1039,12 @@ export function DashboardPage() {
                             <span className="activity-info">
                               <span className="activity-client">{r.client}</span>
                               <span className="activity-meta">
-                                {r.reference || "â€”"} Â· {r.product}
-                                {r.agency && r.agency !== "â€”"
-                                  ? ` Â· ${r.agency}`
+                                {r.reference || "—"} · {r.product}
+                                {r.agency && r.agency !== "—"
+                                  ? ` · ${r.agency}`
                                   : ""}
-                                {r.owner && r.owner !== "â€”"
-                                  ? ` Â· ${r.owner}`
+                                {r.owner && r.owner !== "—"
+                                  ? ` · ${r.owner}`
                                   : ""}
                               </span>
                             </span>
@@ -1069,7 +1069,7 @@ export function DashboardPage() {
               <section className="card">
                 <div className="card-title">
                   <FileText size={18} />
-                  Ã‰volution des dossiers
+                  Évolution des dossiers
                 </div>
                 <div className="card-body">
                   <TrendChart data={data.credits.monthly} />
@@ -1085,7 +1085,7 @@ export function DashboardPage() {
                 </div>
                 <div className="card-body">
                   <DistBars
-                    emptyMessage="Aucun dossier rattachÃ© Ã  une agence."
+                    emptyMessage="Aucun dossier rattaché à une agence."
                     rows={(data.credits.by_agency ?? []).map((a) => ({
                       label: a.agency,
                       count: a.count,
@@ -1122,7 +1122,7 @@ export function DashboardPage() {
                   <DistBars
                     emptyMessage="Aucun dossier par produit."
                     rows={data.credits.by_product.map((row) => ({
-                      label: row.product || "â€”",
+                      label: row.product || "—",
                       count: row.count,
                       amount: row.amount,
                     }))}
@@ -1134,7 +1134,7 @@ export function DashboardPage() {
                 <section className="card">
                   <div className="card-title">
                     <Users size={18} />
-                    ClientÃ¨le
+                    Clientèle
                   </div>
                   <div className="card-body">
                     <DistBars
@@ -1152,11 +1152,11 @@ export function DashboardPage() {
               <section className="card">
                 <div className="card-title">
                   <AlertTriangle size={18} />
-                  Portefeuille Ã  risque
+                  Portefeuille à risque
                 </div>
                 <div className="card-body">
                   <DistBars
-                    emptyMessage="Aucun encours Ã  risque."
+                    emptyMessage="Aucun encours à risque."
                     rows={data.risk.by_par_class.map((r) => ({
                       label: PAR_LABELS[r.par_class] ?? r.par_class,
                       count: r.count,

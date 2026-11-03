@@ -29,6 +29,8 @@ import {
 } from "react";
 
 import { api } from "@/api/client";
+import { allCbsReferences } from "@/api/cbs";
+import type { EffectiveConfiguration } from "@/api/configuration";
 import type {
   Agency,
   CbsCatalogItem,
@@ -88,7 +90,7 @@ const TEXT_KEYS = [
   "amount_requested", "amount_proposed", "interest_rate",
   "fees_rate", "mandatory_savings_rate",
   "periodicity", "duration_months", "first_due_date",
-  "repayment_mechanism", "purpose_type", "purpose",
+  "repayment_mechanism", "purpose_type", "financing_object", "purpose",
   "project_total_cost", "personal_contribution",
   "activity_start_date", "exact_address", "clientele",
   "tax_regime",
@@ -98,7 +100,7 @@ const TEXT_KEYS = [
   "employer_name", "contract_type", "dependents_count",
   "client_account_number", "relationship_start_date",
   "avg_monthly_credit_movements",
-  "insurance_company", "insurance_premium",
+  "insurance_company", "insurance_premium", "insurance_policy_number", "insurance_expiry_date",
   "special_conditions", "suspensive_conditions",
   "beneficial_owner", "funds_origin",
 ] as const;
@@ -117,7 +119,7 @@ type BoolState = Record<BoolKey, boolean>;
 const TEXT_ONLY_KEYS = new Set<string>([
   "purpose", "exact_address", "clientele",
   "employer_name", "client_account_number",
-  "insurance_company", "special_conditions",
+  "insurance_company", "insurance_policy_number", "special_conditions",
   "suspensive_conditions", "beneficial_owner", "funds_origin",
 ]);
 
@@ -140,19 +142,6 @@ const PURPOSE_TYPES = [
 ];
 
 /** Vision code → PurposeType FinFlow (aligné backend ref_sync._PURPOSE_HINTS) */
-const PURPOSE_FROM_CBS_CODE: Record<string, string> = {
-  IMMO: "REAL_ESTATE",
-  IMMOBILIER: "REAL_ESTATE",
-  CONSO: "CONSUMPTION",
-  CONSOMMATION: "CONSUMPTION",
-  AUTO: "EQUIPMENT",
-  EQUIPEMENT: "EQUIPMENT",
-  STOCK: "STOCK",
-  TRESORERIE: "TREASURY",
-  FONDS_ROULEMENT: "WORKING_CAPITAL",
-  AUTRE: "OTHER",
-};
-
 const PURPOSE_TYPES_CORPORATE = new Set(
   PURPOSE_TYPES.filter((p) => p.value !== "CONSUMPTION").map((p) => p.value),
 );
@@ -163,13 +152,6 @@ const PURPOSE_TYPES_INDIVIDUAL = new Set([
   "TREASURY",
   "OTHER",
 ]);
-
-function purposeTypeFromCbsObject(row: CbsCatalogItem): string {
-  const linked = (row.purpose_type || "").trim().toUpperCase();
-  if (linked) return linked;
-  const code = (row.code || "").trim().toUpperCase();
-  return PURPOSE_FROM_CBS_CODE[code] || "OTHER";
-}
 
 const CHECKLIST_COMMON = [
   "Pièce d'identité",
@@ -222,6 +204,7 @@ const FIELD_LABELS: Record<string, string> = {
   catchment_area: "Zone de chalandise",
   premises_status: "Statut d'occupation des locaux",
   purpose_type: "Objet du financement",
+  financing_object: "Objet de financement CBS",
   project_total_cost: "Coût total du projet",
   personal_contribution: "Apport personnel",
   employer_name: "Employeur",
@@ -290,6 +273,7 @@ function textFromApp(app: CreditApplication): TextState {
     const value = (app as unknown as Record<string, unknown>)[key];
     state[key] = value === null || value === undefined ? "" : String(value);
   }
+  state.financing_object = app.financing_object || app.cbs_refs?.financing_object?.id || "";
   return state;
 }
 
@@ -390,15 +374,17 @@ export function CreditApplicationForm({
       ).data,
   });
 
-  const { data: financingObjects } = useQuery({
+  const financingObjectsQuery = useQuery({
     queryKey: ["financing-objects", activeTenant],
-    queryFn: async () =>
-      (
-        await api.get<Paginated<CbsCatalogItem>>("/financing-objects/", {
-          params: { is_active: true, page_size: 200 },
-        })
-      ).data,
+    queryFn: () => allCbsReferences<CbsCatalogItem>("/financing-objects/", { is_active: true }),
   });
+  const financingObjects = financingObjectsQuery.data ?? [];
+  const financingObjectOptions = useMemo(
+    () => financingObjects
+      .filter((row) => row.cbs_code.trim())
+      .map((row) => ({ value: row.id, label: `${row.label} — ${row.cbs_code}` })),
+    [financingObjects],
+  );
 
   const periodicityOptions = useMemo(() => {
     const rows = periodicities?.results ?? [];
@@ -414,7 +400,7 @@ export function CreditApplicationForm({
     if (!rows.length) return MECHANISM_FALLBACK;
     return rows.map((r) => ({
       value: r.code,
-      label: r.cbs_code ? `${r.label} → ${r.cbs_code}` : r.label,
+      label: r.label,
     }));
   }, [repaymentMethods]);
 
@@ -435,11 +421,12 @@ export function CreditApplicationForm({
     return map;
   }, [periodicities]);
 
-  const { data: selectedClient } = useQuery({
+  const selectedClientQuery = useQuery({
     queryKey: ["client", client],
     enabled: !!client,
     queryFn: async () => (await api.get<Client>(`/clients/${client}/`)).data,
   });
+  const selectedClient = selectedClientQuery.data;
 
   const clientType = selectedClient?.client_type ?? initial?.client_type;
   const isCorporate = clientType === "CORPORATE";
@@ -447,38 +434,25 @@ export function CreditApplicationForm({
   const isLegalEntity = isCorporate || isGroupement;
   const isIndividual = clientType === "INDIVIDUAL";
   const showTypedSections = !!clientType;
+  const configuration = useQuery({
+    queryKey: ["credit-configuration-context", initial?.id, text.product, text.agency, clientType],
+    enabled: !!text.product && !!clientType,
+    queryFn: async () => {
+      const unchangedContext = initial?.id && text.product === initial.product && (text.agency || "") === (initial.agency || "") && client === initial.client;
+      return (await api.get<EffectiveConfiguration>(unchangedContext ? `/credit-applications/${initial.id}/configuration/` : "/credit-applications/configuration-context/", {
+        params: unchangedContext ? {} : { product: text.product, agency: text.agency, client_type: clientType },
+      })).data;
+    },
+  });
 
   const purposeOptions = useMemo(() => {
-    const rows = financingObjects?.results ?? [];
     const allowed = isLegalEntity
       ? PURPOSE_TYPES_CORPORATE
       : isIndividual
         ? PURPOSE_TYPES_INDIVIDUAL
         : null;
-    if (rows.length) {
-      const opts = rows
-        .map((r) => {
-          const value = purposeTypeFromCbsObject(r);
-          if (allowed && !allowed.has(value)) return null;
-          return {
-            value,
-            label: r.cbs_code
-              ? `${r.label} (${r.code} → ${r.cbs_code})`
-              : `${r.label} (${r.code})`,
-          };
-        })
-        .filter(Boolean) as { value: string; label: string }[];
-      // Déduplique par PurposeType (garde le premier = sort CBS)
-      const seen = new Set<string>();
-      return opts.filter((o) => {
-        if (seen.has(o.value)) return false;
-        seen.add(o.value);
-        return true;
-      });
-    }
-    // Fallback local uniquement si aucun objet CBS importé
     return PURPOSE_TYPES.filter((p) => !allowed || allowed.has(p.value));
-  }, [financingObjects, isLegalEntity, isIndividual]);
+  }, [isLegalEntity, isIndividual]);
 
   const canPickAgency =
     user?.is_group_level || user?.data_scope === "TENANT";
@@ -612,6 +586,7 @@ export function CreditApplicationForm({
         if (value) fd.append(key, value);
         else if (isEdit && TEXT_ONLY_KEYS.has(key)) fd.append(key, "");
       }
+      if (isEdit && !text.financing_object) fd.set("financing_object", "");
       for (const key of BOOL_KEYS) {
         fd.append(key, bools[key] ? "true" : "false");
       }
@@ -729,12 +704,44 @@ export function CreditApplicationForm({
       );
       return;
     }
+    if (client && !clientType) {
+      setError(selectedClientQuery.isError
+        ? "Impossible de charger le profil du client. Rechargez-le avant de créer le dossier."
+        : "Chargement du profil du client en cours. Réessayez dans un instant.");
+      return;
+    }
+    if (text.product && client && (
+      configuration.isLoading || configuration.isError || !configuration.data
+    )) {
+      setError(configuration.isError
+        ? "Impossible de charger les exigences du dossier. Réessayez avant l’enregistrement."
+        : "Chargement des exigences du dossier en cours. Réessayez dans un instant.");
+      return;
+    }
+    if (configuration.data?.financing_object_required) {
+      if (financingObjectsQuery.isLoading) {
+        setError("Chargement du référentiel des objets de financement en cours. Réessayez dans un instant.");
+        return;
+      }
+      if (financingObjectsQuery.isError) {
+        setError("Impossible de charger le référentiel des objets de financement. Réessayez avant l’enregistrement.");
+        return;
+      }
+      if (financingObjectOptions.length === 0) {
+        setError("Le connecteur est en mode CBS, mais aucun objet de financement CBS actif avec un code importé n’est disponible. L’administrateur doit charger le référentiel avant la création.");
+        return;
+      }
+      if (!text.financing_object) {
+        setError("Sélectionnez l’objet de financement CBS exact pour cette demande.");
+        return;
+      }
+    }
     setError(null);
     mutation.mutate();
   }
 
   return (
-    <form className="credit-form" onSubmit={submit}>
+    <form className="credit-form" onSubmit={submit} noValidate>
       <aside className="credit-form-nav">
         <div className="credit-form-nav-inner">
           <p className="credit-form-nav-title">Sections</p>
@@ -753,6 +760,11 @@ export function CreditApplicationForm({
       </aside>
 
       <div className="credit-form-main stack">
+        {configuration.data && <div className="card"><div className="card-body">
+          <strong>Exigences applicables à la demande</strong>
+          <p className="muted">{configuration.data.sources.map((source) => `${source.name} v${source.version}`).join(" → ") || "Politique de la filiale"}.
+            Le profil salarié, indépendant ou mixte précisera les exigences lors de l'analyse financière.</p>
+        </div></div>}
         <FormSection
           id="sec-conditions"
           icon={Banknote}
@@ -766,6 +778,7 @@ export function CreditApplicationForm({
             <ClientAutocomplete
               value={client}
               onChange={(id) => setClient(id)}
+              required
               initialLabel={
                 selectedClient ? clientOptionLabel(selectedClient) : undefined
               }
@@ -836,6 +849,10 @@ export function CreditApplicationForm({
             <Text label="Taux d'intérêt (%) — annuel" type="number" value={text.interest_rate} onChange={set("interest_rate")} />
             <Text label="Frais de dossier (%)" type="number" value={text.fees_rate} onChange={set("fees_rate")} />
             <Text label="Taux d'épargne obligatoire (%)" type="number" value={text.mandatory_savings_rate} onChange={set("mandatory_savings_rate")} />
+            {configuration.data?.pricing.tariff.engine === "CONFIGURED" && <p className="muted small" style={{ gridColumn: "1 / -1" }}>
+              Barème {configuration.data.pricing.tariff.currency} : les taux laissés vides sont déterminés par le produit et la tranche de montant / durée, puis fixés à la soumission. {configuration.data.pricing.tariff.charges.length} frais complémentaires configurés s'ajoutent automatiquement au détail des frais. Les taux non négociables et les plafonds sont contrôlés avant soumission.
+              {!configuration.data.pricing.tariff.allow_manual_fees && " Les frais manuels sont interdits ; retirez les lignes manuelles existantes avant de soumettre."}
+            </p>}
             <div className="field" style={{ gridColumn: "1 / -1" }}>
               <div
                 style={{
@@ -849,6 +866,7 @@ export function CreditApplicationForm({
                 <button
                   type="button"
                   className="btn btn-ghost btn-sm"
+                  disabled={extraFees.length >= 100 || (configuration.data?.pricing.tariff.engine === "CONFIGURED" && !configuration.data.pricing.tariff.allow_manual_fees)}
                   onClick={() =>
                     setExtraFees((prev) => [
                       ...prev,
@@ -867,8 +885,7 @@ export function CreditApplicationForm({
               </div>
               <p className="muted small" style={{ marginTop: 0 }}>
                 Le pourcentage s’applique sur le montant proposé / accordé.
-                Les frais sont déduits par le CBS lors du décaissement (Fin Flow
-                débourse le montant accordé).
+                Les prélèvements sont réalisés dans le CBS. Fin Flow transmet le montant accordé et présente le détail des frais.
               </p>
               {extraFees.length === 0 ? (
                 <p className="muted small">Aucun frais additionnel.</p>
@@ -955,11 +972,29 @@ export function CreditApplicationForm({
             </label>
             <Select label="Mécanisme de remboursement" value={text.repayment_mechanism} onChange={set("repayment_mechanism")} options={mechanismOptions} />
             <Select
-              label="Objet du financement"
+              label="Type de besoin"
               value={text.purpose_type}
               onChange={set("purpose_type")}
               options={purposeOptions}
             />
+            <Select
+              label="Objet de financement CBS exact"
+              required={configuration.data?.financing_object_required === true}
+              value={text.financing_object}
+              onChange={set("financing_object")}
+              options={financingObjectOptions}
+            />
+            {configuration.isError && <p className="form-error" role="alert">
+              Impossible de déterminer les exigences CBS du dossier.
+              <button type="button" className="btn btn-ghost btn-sm" onClick={() => configuration.refetch()}>Réessayer</button>
+            </p>}
+            {configuration.data?.financing_object_required && financingObjectsQuery.isLoading && <p className="muted" role="status">Chargement du référentiel CBS des objets de financement…</p>}
+            {configuration.data?.financing_object_required && financingObjectsQuery.isError && <p className="form-error" role="alert">
+              Référentiel des objets de financement impossible à charger.
+              <button type="button" className="btn btn-ghost btn-sm" onClick={() => financingObjectsQuery.refetch()}>Réessayer</button>
+            </p>}
+            {configuration.data?.financing_object_required && !financingObjectsQuery.isLoading && !financingObjectsQuery.isError && financingObjectOptions.length === 0 && <p className="form-error" role="alert">Le connecteur est en mode CBS, mais aucun objet de financement actif avec un code CBS importé n’est disponible. L’administrateur doit charger le référentiel.</p>}
+            {configuration.data && !configuration.data.financing_object_required && !financingObjectsQuery.isLoading && !financingObjectsQuery.isError && financingObjectOptions.length === 0 && <p className="muted" role="status">Aucun objet CBS n’est importé. Le champ est facultatif dans la configuration actuelle ; l’administrateur devra charger le référentiel avant toute activation du mode CBS réel.</p>}
           </div>
           <label className="field">
             <span>Détails de la demande</span>
@@ -1099,6 +1134,8 @@ export function CreditApplicationForm({
             <Check label="Assurance décès-invalidité (ADI)" checked={bools.has_credit_insurance} onChange={setBool("has_credit_insurance")} />
             <div className="form-grid two-col">
               <Text label="Compagnie d'assurance" value={text.insurance_company} onChange={set("insurance_company")} />
+              <Text label="Numéro de police" value={text.insurance_policy_number} onChange={set("insurance_policy_number")} />
+              <Text label="Fin de couverture" type="date" value={text.insurance_expiry_date} onChange={set("insurance_expiry_date")} />
               <Text label="Prime d'assurance" type="number" value={text.insurance_premium} onChange={set("insurance_premium")} />
             </div>
           </FormSection>
@@ -1126,14 +1163,14 @@ export function CreditApplicationForm({
             id="sec-special"
             icon={NotebookPen}
             title="Conditions particulières"
-            description="Clauses spécifiques et conditions préalables au décaissement."
+            description="Clauses spécifiques et conditions préalables à la mise en place."
           >
             <label className="field">
               <span>Conditions particulières</span>
               <textarea rows={2} value={text.special_conditions} onChange={(e) => set("special_conditions")(e.target.value)} />
             </label>
             <label className="field">
-              <span>Conditions suspensives (avant décaissement)</span>
+              <span>Conditions suspensives (avant mise en place)</span>
               <textarea rows={2} value={text.suspensive_conditions} onChange={(e) => set("suspensive_conditions")(e.target.value)} />
             </label>
           </FormSection>
@@ -1328,7 +1365,12 @@ function Text({
         {label}
         {required && <em className="req"> *</em>}
       </span>
-      <input type={type} value={value} onChange={(e) => onChange(e.target.value)} />
+      <input
+        type={type}
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        required={required}
+      />
     </label>
   );
 }
@@ -1375,7 +1417,7 @@ function Select({
         {label}
         {required && <em className="req"> *</em>}
       </span>
-      <select value={value} onChange={(e) => onChange(e.target.value)}>
+      <select required={required} value={value} onChange={(e) => onChange(e.target.value)}>
         {placeholder !== null && <option value="">{placeholder}</option>}
         {options.map((o) => (
           <option key={o.value} value={o.value}>

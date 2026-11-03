@@ -517,5 +517,19 @@ def import_client_from_cbs(*, tenant_id, user, data: dict) -> tuple[Client, dict
         agency=agency,
         kyc_status=kyc_status,
     )
+    from .compliance import client_configuration, cbs_reference_value, kyc_failures
+    candidate = Client(**fields)
+    configuration = client_configuration(candidate)
+    for key in ("civility", "marital_status"):
+        mapped = cbs_reference_value(configuration, key, preview.get(key) or "")
+        if mapped is not None:
+            fields[key] = mapped
+            setattr(candidate, key, mapped)
+        if fields.get(key) and fields[key] not in {entry["code"] for entry in configuration["references"][key] if entry["active"]}:
+            fields[key] = ""
+            setattr(candidate, key, "")
+    if candidate.kyc_status == Client.KycStatus.VALIDATED and kyc_failures(candidate, configuration=configuration):
+        fields["kyc_status"], fields["kyc_validated_at"] = Client.KycStatus.PENDING, None
+        preview["kyc_alert"] = True
     client = Client.objects.create(**fields)
     return client, preview

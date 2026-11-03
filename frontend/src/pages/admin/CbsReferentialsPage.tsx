@@ -10,6 +10,7 @@ import type {
   Paginated,
 } from "@/api/types";
 import { useAuth } from "@/auth/AuthContext";
+import { CbsProductsCatalog } from "./CbsProductsCatalog";
 import {
   Card,
   DEFAULT_PAGE_SIZE,
@@ -31,7 +32,8 @@ type TabKey =
   | "financing_sources"
   | "decision_motifs"
   | "professions"
-  | "repayment_methods";
+  | "repayment_methods"
+  | "products";
 
 const CBS_READONLY_TABS: TabKey[] = [
   "periodicities",
@@ -96,10 +98,11 @@ const TABS: { key: TabKey; label: string; endpoint: string; cbsOnly: boolean }[]
     },
     {
       key: "repayment_methods",
-      label: "Méthodes de remboursement",
+      label: "Mécanismes d’amortissement",
       endpoint: "/repayment-methods/",
       cbsOnly: false,
     },
+    { key: "products", label: "Produits crédit", endpoint: "/cbs-product-references/", cbsOnly: false },
   ];
 
 const EMPTY = {
@@ -171,7 +174,7 @@ export function AdminCbsReferentialsPage() {
         })
       ).data;
     },
-    enabled: !needsTenant,
+    enabled: !needsTenant && tab !== "products",
     staleTime: 0,
   });
 
@@ -257,7 +260,7 @@ export function AdminCbsReferentialsPage() {
       <PageHeader
         icon={BookMarked}
         title="Référentiels CBS"
-        subtitle="Source unique Perfect — import pour créer ou mettre à jour"
+        subtitle="Référentiels importés et correspondances des produits CBS"
         actions={
           <button
             type="button"
@@ -279,6 +282,8 @@ export function AdminCbsReferentialsPage() {
       />
 
       {error && <div className="form-error" style={{ marginBottom: 12 }}>{error}</div>}
+
+      {patch.isError && <p className="form-error">Modification du mécanisme impossible.</p>}
 
       {syncMsg && (
         <div style={{ marginBottom: 16 }}>
@@ -318,7 +323,8 @@ export function AdminCbsReferentialsPage() {
         ))}
       </div>
 
-      {!isCbsOnly && (
+      {tab === "products" && <CbsProductsCatalog creditOnly />}
+      {tab !== "products" && !isCbsOnly && (
         <Card title={`Ajouter — ${current.label}`}>
           <form
             className="inline-form"
@@ -346,15 +352,8 @@ export function AdminCbsReferentialsPage() {
                 />
               </label>
               <label className="field">
-                <span>Identifiant CBS *</span>
-                <input
-                  value={form.cbs_code}
-                  onChange={(e) =>
-                    setForm({ ...form, cbs_code: e.target.value })
-                  }
-                  placeholder="COMPTE-COURANT"
-                  required
-                />
+                <span>Identifiant CBS de remboursement *</span>
+                <input value={form.cbs_code} onChange={(e) => setForm({ ...form, cbs_code: e.target.value })} required />
               </label>
               <label className="field">
                 <span>Ordre</span>
@@ -377,7 +376,7 @@ export function AdminCbsReferentialsPage() {
         </Card>
       )}
 
-      <QueryStatus
+      {tab !== "products" && <QueryStatus
         isLoading={items.isLoading || (syncFromCbs.isPending && !items.data)}
         isError={items.isError}
         isEmpty={!items.data?.results.length}
@@ -413,7 +412,7 @@ export function AdminCbsReferentialsPage() {
                   <tr>
                     <th>Code</th>
                     <th>Libellé</th>
-                    <th>ID CBS</th>
+                    <th>{tab === "repayment_methods" ? "ID CBS remboursement" : "ID CBS"}</th>
                     {tab === "periodicities" && <th className="num">/ an</th>}
                     {tab === "financing_objects" && <th>PurposeType</th>}
                     <th>Actif</th>
@@ -443,24 +442,10 @@ export function AdminCbsReferentialsPage() {
                         <td>{row.code}</td>
                         <td>{row.label}</td>
                         <td>
-                          {!isCbsOnly ? (
-                            <input
-                              className="input-inline"
-                              defaultValue={row.cbs_code || ""}
-                              onBlur={(e) => {
-                                const next = e.target.value.trim();
-                                if (next !== (row.cbs_code || "")) {
-                                  patch.mutate({
-                                    id: row.id,
-                                    data: { cbs_code: next },
-                                  });
-                                }
-                              }}
-                              placeholder="—"
-                            />
-                          ) : (
-                            row.cbs_code || "—"
-                          )}
+                          {tab === "repayment_methods" ? (
+                            <input aria-label={`Identifiant CBS du mécanisme ${row.label}`} key={`${row.id}:${row.cbs_code}`} defaultValue={row.cbs_code || ""}
+                              onBlur={(e) => { const value = e.target.value.trim(); if (value !== (row.cbs_code || "")) patch.mutate({id: row.id, data: {cbs_code: value}}); }} />
+                          ) : row.cbs_code || "—"}
                         </td>
                         {tab === "periodicities" && (
                           <td className="num">
@@ -503,7 +488,7 @@ export function AdminCbsReferentialsPage() {
             onPageChange={setPage}
           />
         </>
-      </QueryStatus>
+      </QueryStatus>}
     </div>
   );
 }

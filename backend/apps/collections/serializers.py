@@ -1,3 +1,5 @@
+from decimal import Decimal
+
 from rest_framework import serializers
 
 from apps.common.storage_urls import file_download_url, presign_file_fields
@@ -993,7 +995,9 @@ class CollectionCaseSerializer(CollectionCaseListSerializer):
 class CaseRepaymentCreateSerializer(serializers.Serializer):
     """Encaissement saisi depuis la fiche dossier de recouvrement."""
 
-    amount = serializers.DecimalField(max_digits=18, decimal_places=2, min_value=0.01)
+    amount = serializers.DecimalField(
+        max_digits=18, decimal_places=2, min_value=Decimal("0.01")
+    )
     payment_date = serializers.DateField(required=False)
     reference = serializers.CharField(required=False, allow_blank=True, max_length=100)
 
@@ -1058,7 +1062,11 @@ class CaseRestructureSerializer(serializers.Serializer):
 
 class CaseWriteOffSerializer(serializers.Serializer):
     amount = serializers.DecimalField(
-        max_digits=18, decimal_places=2, required=False, allow_null=True, min_value=0.01
+        max_digits=18,
+        decimal_places=2,
+        required=False,
+        allow_null=True,
+        min_value=Decimal("0.01"),
     )
     write_off_date = serializers.DateField(required=False)
     reason = serializers.CharField(max_length=255)

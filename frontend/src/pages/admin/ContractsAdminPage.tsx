@@ -19,6 +19,7 @@ import type {
   VariableCatalog,
 } from "@/api/types";
 import { useAuth } from "@/auth/AuthContext";
+import { hasPerm } from "@/auth/permissions";
 import {
   FilterField,
   FilterSelect,
@@ -99,6 +100,9 @@ export function AdminContractsPage() {
   const { user, activeTenant } = useAuth();
   const qc = useQueryClient();
   const needsTenant = Boolean(user?.is_group_level && !activeTenant);
+  const canAdd = hasPerm(user, "contracts.add_contracttemplate");
+  const canChange = hasPerm(user, "contracts.change_contracttemplate");
+  const canDelete = hasPerm(user, "contracts.delete_contracttemplate");
 
   const [form, setForm] = useState({ ...emptyForm });
   const [file, setFile] = useState<File | null>(null);
@@ -146,7 +150,7 @@ export function AdminContractsPage() {
           params: { page_size: 200, is_active: true },
         })
       ).data,
-    enabled: !needsTenant,
+    enabled: !needsTenant && canAdd,
   });
 
   const variables = useQuery({
@@ -209,6 +213,7 @@ export function AdminContractsPage() {
 
   function submit(e: FormEvent) {
     e.preventDefault();
+    if (!canAdd) return;
     if (!file) {
       setError("Veuillez joindre le modèle (.docx ou .xlsx).");
       return;
@@ -238,9 +243,9 @@ export function AdminContractsPage() {
       <PageHeader
         icon={FileSignature}
         title="Modèles de contrats"
-        subtitle="Chaque filiale gère ses actes, variables et obligations avant décaissement."
+        subtitle="Chaque filiale gère ses actes, variables et obligations avant mise en place."
         actions={
-          <button
+          canAdd ? <button
             type="button"
             className="btn btn-primary"
             onClick={() => {
@@ -251,10 +256,11 @@ export function AdminContractsPage() {
             {showForm ? <X /> : <Plus />}
             {showForm ? "Fermer" : "Nouveau modèle"}
           </button>
+            : undefined
         }
       />
 
-      {showForm && (
+      {showForm && canAdd && (
         <form className="tenant-compose-form" onSubmit={submit}>
           <div className="tenant-compose-head">
             <h2>Nouveau modèle</h2>
@@ -349,7 +355,7 @@ export function AdminContractsPage() {
           <FormBlock
             icon={SlidersHorizontal}
             title="Règles d’application"
-            description="Bornes de montant et obligation avant décaissement."
+            description="Bornes de montant et obligation avant mise en place."
           >
             <div className="form-grid two-col">
               <label className="field">
@@ -380,7 +386,7 @@ export function AdminContractsPage() {
                     setForm({ ...form, is_required: e.target.checked })
                   }
                 />
-                <span>Obligatoire avant décaissement</span>
+                <span>Obligatoire avant mise en place</span>
               </label>
             </div>
           </FormBlock>
@@ -622,7 +628,7 @@ export function AdminContractsPage() {
                           Modèle
                         </a>
                       )}
-                      <button
+                      {canChange && <button
                         type="button"
                         className="btn btn-ghost btn-sm"
                         onClick={() => toggleActive.mutate(t)}
@@ -630,8 +636,8 @@ export function AdminContractsPage() {
                       >
                         <Power size={14} />
                         {t.is_active ? "Désactiver" : "Activer"}
-                      </button>
-                      <button
+                      </button>}
+                      {canDelete && <button
                         type="button"
                         className="btn btn-danger btn-sm"
                         onClick={() => {
@@ -645,7 +651,7 @@ export function AdminContractsPage() {
                         disabled={remove.isPending}
                       >
                         <Trash2 size={14} />
-                      </button>
+                      </button>}
                     </div>
                   </td>
                 </tr>

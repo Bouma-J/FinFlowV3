@@ -38,9 +38,9 @@ Matricule généré par filiale (ex. `PAR-2026-00001`, `ENT-2026-00001`).
 |-------|------|
 | `amount_requested` | Demande client |
 | `amount_proposed` | Proposition analyste |
-| `amount_approved` | Décision ; **source du décaissement** |
+| `amount_approved` | Décision ; **source de la mise en place** |
 
-Les frais (% et montants) sont calculés pour affichage / contrat. Au décaissement, Fin Flow envoie le **montant accordé** ; le **CBS prélève les frais**.
+Les frais (% et montants) sont calculés pour affichage / contrat. À la mise en place, Fin Flow envoie le **montant accordé** ; le **CBS prélève les frais**.
 
 ### Conditions
 - Taux, périodicité, durée, mécanisme (CONSTANT / DEGRESSIVE / IN_FINE / BULLET)
@@ -63,8 +63,8 @@ Règles clés :
 - Soumission : analyse financière **de référence** obligatoire ; `risk_level` dérivé.
 - Modification du dossier : brouillon / retourné, **créateur seul** (Analyste / Comité enrichissent via analyses & visites).
 - Analyses / visites : ajout et édition uniquement dans la fenêtre de contribution (initiateur ou tâche PENDING) ; gel ensuite.
-- Garanties / cautions : rattachement possible jusqu’à l’avant-décaissement (y compris après approbation, ex. juridique).
-- Décaissement : initiation (`initiate_disburse_*`) puis validation (`disburse_*`) ; conditions suspensives levées ; création prêt + échéancier.
+- Garanties / cautions : rattachement possible jusqu’à l’avant-mise en place (y compris après approbation, ex. juridique).
+- Mise en place : initiation (`initiate_disburse_*`) puis validation (`disburse_*`) ; conditions suspensives levées ; création prêt + échéancier.
 - **Politique d'instruction** (par filiale) : couverture garanties (alerte / blocage soumission / blocage approbation), visite obligatoire, analyse défavorable, checklist produit, KYC à la création ou soumission, bornes produit à l'enregistrement ou soumission, montant approuvé (instruction ou décision), readiness UI, annulation formelle `CANCELLED`, garanties pendant le circuit — écran **Administration → Politique crédit**.
 
 ### Analyse financière

@@ -1,4 +1,4 @@
-"""Logique métier : statut de contractualisation et blocage du décaissement."""
+"""Logique métier : statut de contractualisation et blocage de la mise en place."""
 from __future__ import annotations
 
 
@@ -35,12 +35,18 @@ def required_templates_for(application):
 def missing_required_contracts(application) -> list[str]:
     """Retourne les intitulés des contrats obligatoires non encore générés."""
     from .models import GeneratedContract
+    from apps.credits.instruction_policy import get_instruction_policy
 
-    generated_template_ids = set(
-        application.generated_contracts.exclude(
+    policy = get_instruction_policy(application.tenant_id, application=application)
+    if not policy.require_credit_contracts:
+        return []
+
+    contracts = application.generated_contracts.exclude(
             status=GeneratedContract.Status.CANCELLED
-        ).values_list("template_id", flat=True)
-    )
+        )
+    if policy.require_credit_signed_contracts:
+        contracts = contracts.filter(status=GeneratedContract.Status.SIGNED).exclude(signed_file="")
+    generated_template_ids = set(contracts.values_list("template_id", flat=True))
     return [
         t.name
         for t in required_templates_for(application)
@@ -59,6 +65,11 @@ def missing_surety_signed_contracts(application) -> list[str]:
     from apps.sureties.models import SuretyEngagement
 
     from .models import GeneratedContract
+    from apps.credits.instruction_policy import get_instruction_policy
+
+    policy = get_instruction_policy(application.tenant_id, application=application)
+    if not policy.require_surety_contracts:
+        return []
 
     missing: list[str] = []
     engagements = (
@@ -74,7 +85,7 @@ def missing_surety_signed_contracts(application) -> list[str]:
         label = eng.surety.display_name if eng.surety_id else str(eng.pk)
         if gc is None:
             missing.append(f"Cautionnement — {label} (non généré)")
-        elif gc.status != GeneratedContract.Status.SIGNED:
+        elif policy.require_surety_signed_contracts and (gc.status != GeneratedContract.Status.SIGNED or not gc.signed_file):
             missing.append(f"Cautionnement — {label} (non signé)")
     return missing
 

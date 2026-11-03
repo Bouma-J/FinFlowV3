@@ -5,7 +5,11 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "tsc && vite build",
+    "check:encoding": "node scripts/check-encoding.mjs",
+    "build": "npm run check:encoding && tsc && vite build",
+    "test:e2e": "playwright test",
+    "test:e2e:api": "playwright test --config=playwright.api.config.ts",
+    "test:e2e:api:isolated": "node scripts/run-api-smoke.mjs",
     "preview": "vite preview"
   },
   "dependencies": {
@@ -16,9 +20,11 @@
     "lucide-react": "^1.24.0",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
-    "react-router-dom": "^6.28.0"
+    "react-router-dom": "^7.18.4"
   },
   "devDependencies": {
+    "@playwright/test": "^1.64.1",
+    "@types/node": "^24.19.2",
     "@types/react": "^18.3.17",
     "@types/react-dom": "^18.3.5",
     "@vitejs/plugin-react": "^4.3.4",

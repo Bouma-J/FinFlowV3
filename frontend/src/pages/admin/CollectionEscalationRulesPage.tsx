@@ -5,6 +5,7 @@ import { useEffect, useState, type FormEvent } from "react";
 import { api } from "@/api/client";
 import type { CollectionEscalationRule, Paginated } from "@/api/types";
 import { useAuth } from "@/auth/AuthContext";
+import { hasPerm } from "@/auth/permissions";
 import { isFinflowAdmin } from "@/auth/routePerms";
 import { EmptyState, ErrorState, PageHeader, Spinner } from "@/components/ui";
 import { apiErrorMessage } from "@/utils/apiError";
@@ -39,7 +40,11 @@ export function AdminCollectionEscalationRulesPage() {
   const { user, activeTenant } = useAuth();
   const qc = useQueryClient();
   const needsTenant = Boolean(user?.is_group_level && !activeTenant);
-  const canManage = isFinflowAdmin(user);
+  const canAdmin = isFinflowAdmin(user);
+  const canAdd = hasPerm(user, "collections.add_collectionescalationrule");
+  const canChange = hasPerm(user, "collections.change_collectionescalationrule");
+  const canDelete = hasPerm(user, "collections.delete_collectionescalationrule");
+  const hasWritePermission = canAdd || canChange || canDelete;
   const [rows, setRows] = useState<DraftRule[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [saved, setSaved] = useState(false);
@@ -53,12 +58,34 @@ export function AdminCollectionEscalationRulesPage() {
           { params: { page_size: 50, ordering: "min_days_overdue" } },
         )
       ).data,
-    enabled: canManage && !needsTenant,
+    enabled: canAdmin && !needsTenant,
   });
 
   useEffect(() => {
     if (query.data?.results) setRows(toDraft(query.data.results));
   }, [query.data]);
+
+  const existingRows = query.data?.results ?? [];
+  const existingById = new Map(existingRows.map((row) => [row.id, row]));
+  const hasNewRows = rows.some((row) => !row.id);
+  const hasDeletedRows = existingRows.some(
+    (old) => !rows.some((row) => row.id === old.id),
+  );
+  const hasEditedRows = rows.some((row) => {
+    if (!row.id) return false;
+    const old = existingById.get(row.id);
+    return Boolean(old && (
+      Number(row.min_days_overdue) !== old.min_days_overdue ||
+      row.target_stage !== old.target_stage ||
+      row.label.trim() !== old.label ||
+      row.is_active !== old.is_active
+    ));
+  });
+  const canSave = canAdmin && (
+    (hasNewRows && canAdd) ||
+    (hasEditedRows && canChange) ||
+    (hasDeletedRows && canDelete)
+  ) && (!hasNewRows || canAdd) && (!hasEditedRows || canChange) && (!hasDeletedRows || canDelete);
 
   const save = useMutation({
     mutationFn: async () => {
@@ -66,6 +93,7 @@ export function AdminCollectionEscalationRulesPage() {
       const keepIds = new Set(rows.map((row) => row.id).filter(Boolean));
       for (const old of existing) {
         if (!keepIds.has(old.id)) {
+          if (!canDelete) throw new Error("Droit de suppression requis.");
           await api.delete(`/collection-escalation-rules/${old.id}/`);
         }
       }
@@ -77,16 +105,30 @@ export function AdminCollectionEscalationRulesPage() {
           label: row.label.trim(),
           is_active: row.is_active,
         };
-        const res = row.id
-          ? await api.patch<CollectionEscalationRule>(
-              `/collection-escalation-rules/${row.id}/`,
-              payload,
-            )
-          : await api.post<CollectionEscalationRule>(
-              "/collection-escalation-rules/",
-              payload,
-            );
-        savedRows.push(res.data);
+        if (!row.id) {
+          if (!canAdd) throw new Error("Droit de création requis.");
+          const res = await api.post<CollectionEscalationRule>(
+            "/collection-escalation-rules/", payload,
+          );
+          savedRows.push(res.data);
+          continue;
+        }
+        const old = existingById.get(row.id);
+        if (!old) throw new Error("Règle introuvable.");
+        const changed =
+          Number(row.min_days_overdue) !== old.min_days_overdue ||
+          row.target_stage !== old.target_stage ||
+          row.label.trim() !== old.label ||
+          row.is_active !== old.is_active;
+        if (changed) {
+          if (!canChange) throw new Error("Droit de modification requis.");
+          const res = await api.patch<CollectionEscalationRule>(
+            `/collection-escalation-rules/${row.id}/`, payload,
+          );
+          savedRows.push(res.data);
+        } else {
+          savedRows.push(old);
+        }
       }
       return savedRows;
     },
@@ -138,7 +180,7 @@ export function AdminCollectionEscalationRulesPage() {
     setRows((current) => current.filter((row) => row.key !== key));
   }
 
-  if (!canManage) {
+  if (!canAdmin) {
     return (
       <EmptyState message="Paramétrage réservé aux administrateurs filiale et groupe." />
     );
@@ -179,7 +221,7 @@ export function AdminCollectionEscalationRulesPage() {
           className="tenant-compose-form"
           onSubmit={(e: FormEvent) => {
             e.preventDefault();
-            save.mutate();
+            if (canSave) save.mutate();
           }}
         >
           <p className="muted" style={{ marginBottom: 16 }}>
@@ -199,6 +241,7 @@ export function AdminCollectionEscalationRulesPage() {
               appliquera.
             </div>
           )}
+          {!hasWritePermission && <p className="muted" role="status">Consultation seule : aucun droit de création, modification ou suppression n&apos;est attribué.</p>}
 
           <div className="card" style={{ padding: 0, overflow: "auto" }}>
             <table className="table">
@@ -217,6 +260,7 @@ export function AdminCollectionEscalationRulesPage() {
                     <td>
                       <input
                         type="number"
+                        disabled={row.id ? !canChange : !canAdd}
                         min={1}
                         value={row.min_days_overdue}
                         onChange={(e) =>
@@ -230,6 +274,7 @@ export function AdminCollectionEscalationRulesPage() {
                     <td>
                       <select
                         value={row.target_stage}
+                        disabled={row.id ? !canChange : !canAdd}
                         onChange={(e) =>
                           updateRow(row.key, {
                             target_stage: e.target
@@ -247,6 +292,7 @@ export function AdminCollectionEscalationRulesPage() {
                     <td>
                       <input
                         value={row.label}
+                        disabled={row.id ? !canChange : !canAdd}
                         onChange={(e) =>
                           updateRow(row.key, { label: e.target.value })
                         }
@@ -257,20 +303,21 @@ export function AdminCollectionEscalationRulesPage() {
                       <input
                         type="checkbox"
                         checked={row.is_active}
+                        disabled={row.id ? !canChange : !canAdd}
                         onChange={(e) =>
                           updateRow(row.key, { is_active: e.target.checked })
                         }
                       />
                     </td>
                     <td>
-                      <button
+                      {(row.id ? canDelete : canAdd) && <button
                         type="button"
                         className="btn btn-ghost btn-sm"
                         onClick={() => removeRow(row.key)}
                         aria-label="Supprimer la règle"
                       >
                         <Trash2 size={14} />
-                      </button>
+                      </button>}
                     </td>
                   </tr>
                 ))}
@@ -279,17 +326,17 @@ export function AdminCollectionEscalationRulesPage() {
           </div>
 
           <div className="credit-form-actions" style={{ marginTop: 16 }}>
-            <button type="button" className="btn btn-ghost" onClick={addRow}>
+            {canAdd && <button type="button" className="btn btn-ghost" onClick={addRow}>
               <Plus size={16} /> Ajouter une règle
-            </button>
-            <button
+            </button>}
+            {hasWritePermission && <button
               type="submit"
               className="btn btn-primary"
-              disabled={save.isPending}
+              disabled={save.isPending || !canSave}
             >
               <Save size={16} />
               {save.isPending ? "Enregistrement…" : "Enregistrer"}
-            </button>
+            </button>}
           </div>
         </form>
       )}

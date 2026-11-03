@@ -34,6 +34,9 @@ class CoreBankingConnectorViewSet(TenantScopedViewSet):
     filterset_fields = ["protocol", "is_active"]
     search_fields = ["name"]
 
+    def get_queryset(self):
+        return super().get_queryset().order_by("name", "id")
+
     def perform_create(self, serializer):
         super().perform_create(serializer)
         if is_live_cbs_connector(serializer.instance):
@@ -55,6 +58,8 @@ class CoreBankingConnectorViewSet(TenantScopedViewSet):
         """Envoie une opération de test au connecteur (journalisée)."""
         connector = self.get_object()
         operation = request.data.get("operation", "PING")
+        if str(operation).strip().upper() == "SUBMIT_CREDIT":
+            raise ValidationError("La création d'un crédit doit être transmise depuis le dossier après autorisation de mise en place.")
         payload = request.data.get("payload", {})
         log = send_operation(connector, operation, payload)
         return Response(IntegrationLogSerializer(log).data)
@@ -193,6 +198,8 @@ class IntegrationLogViewSet(TenantScopedReadOnlyViewSet):
     def retry(self, request, pk=None):
         """Rejoue une opération en échec."""
         log = self.get_object()
+        if log.operation == "SUBMIT_CREDIT":
+            raise ValidationError("Reprenez la mise en place depuis le dossier avec un contrôle final et une autorisation à jour. Le rejeu générique d'une création de crédit est interdit.")
         if log.status not in (IntegrationLog.Status.FAILED, IntegrationLog.Status.RETRY):
             raise ValidationError("Seule une opération en échec peut être rejouée.")
         new_log = send_operation(

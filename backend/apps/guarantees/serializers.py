@@ -201,7 +201,7 @@ class JewelryItemsField(serializers.Field):
 
 
 def _collection_link_for_application(application):
-    """Pont dossier → prêt → recouvrement (None si pas encore décaissé)."""
+    """Pont dossier → prêt → recouvrement (None si pas encore mis en place)."""
     if application is None:
         return None, "", ""
     try:

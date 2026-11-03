@@ -22,6 +22,8 @@ import type {
   Tenant,
 } from "@/api/types";
 import { useAuth } from "@/auth/AuthContext";
+import { hasAnyPerm } from "@/auth/permissions";
+import { isFinflowAdmin } from "@/auth/routePerms";
 import { isSmsEnabled } from "@/auth/features";
 import {
   Badge,
@@ -161,6 +163,14 @@ export function AdminNotificationsPage() {
   const qc = useQueryClient();
   const smsEnabled = isSmsEnabled(user);
   const needsTenant = Boolean(user?.is_group_level && !activeTenant);
+  const canManage = Boolean(
+    isFinflowAdmin(user) ||
+    user?.permissions.includes("notifications.change_tenantnotificationsettings") ||
+    user?.permissions.includes("tenants.change_tenant"),
+  );
+  const canViewLogs = Boolean(
+    canManage || hasAnyPerm(user, ["notifications.view_notificationlog"]),
+  );
   const [form, setForm] = useState<NotificationSettings>(EMPTY);
   const [smtpPassword, setSmtpPassword] = useState("");
   const [error, setError] = useState<string | null>(null);
@@ -199,7 +209,7 @@ export function AdminNotificationsPage() {
       (await api.get<Paginated<NotificationLog>>("/notification-logs/", {
         params: { page_size: 50 },
       })).data,
-    enabled: !needsTenant,
+    enabled: !needsTenant && canViewLogs,
   });
 
   useEffect(() => {
@@ -425,6 +435,14 @@ export function AdminNotificationsPage() {
               recouvrement, et contrôle d’envoi.
             </p>
           </div>
+
+          {!canManage && (
+            <p className="muted" role="status">
+              Consultation seule : la modification des paramètres et le test d’envoi sont réservés aux gestionnaires.
+            </p>
+          )}
+
+          <fieldset disabled={!canManage} style={{ border: 0, padding: 0, margin: 0, minWidth: 0 }}>
 
           <div
             className={`alerts-status-strip ${
@@ -694,6 +712,7 @@ export function AdminNotificationsPage() {
               {save.isPending ? "Enregistrement…" : "Enregistrer"}
             </button>
           </div>
+          </fieldset>
         </form>
       )}
 
@@ -747,7 +766,9 @@ export function AdminNotificationsPage() {
             </div>
           </div>
 
-          {logs.isLoading ? (
+          {!canViewLogs ? (
+            <EmptyState message="Votre rôle ne permet pas de consulter le journal des envois." />
+          ) : logs.isLoading ? (
             <Spinner />
           ) : logs.isError ? (
             <ErrorState

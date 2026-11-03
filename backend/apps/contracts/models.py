@@ -125,8 +125,8 @@ class ContractTemplate(TenantScopedModel, AuthoredModel):
     )
 
     is_required = models.BooleanField(
-        "obligatoire avant décaissement", default=False,
-        help_text="Le dossier ne pourra être décaissé qu'une fois ce contrat généré.",
+        "obligatoire avant mise en place", default=False,
+        help_text="Le dossier ne pourra être mis en place qu'une fois ce contrat généré.",
     )
     is_active = models.BooleanField("actif", default=True)
     ordering = models.PositiveIntegerField("ordre d'affichage", default=0)

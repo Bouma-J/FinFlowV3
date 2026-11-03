@@ -158,10 +158,9 @@ class Command(BaseCommand):
         if fil_admin_exists and fil_admin.must_change_password:
             fil_admin.must_change_password = False
             fil_admin.save(update_fields=["must_change_password"])
-        # Rôles workflow additionnels (circuits d'approbation)
-        fil_admin.groups.add(
-            analyst_role, manager_role, committee_role, committee_group_role
-        )
+        from apps.common.demo_users import ensure_demo_business_users
+
+        ensure_demo_business_users(tenant, agency)
         if created:
             self.stdout.write(self.style.SUCCESS("Administrateur filiale créé."))
 
@@ -299,11 +298,18 @@ class Command(BaseCommand):
             defaults = perfect_connector_defaults(
                 demo=True, base_url="https://cbs.fil01.local/api"
             )
-            CoreBankingConnector.objects.get_or_create(
+            demo_connector, _ = CoreBankingConnector.objects.get_or_create(
                 tenant=tenant,
                 name="CBS Filiale 01",
                 defaults=defaults,
             )
+            # Le bootstrap a pu créer le connecteur technique par défaut.
+            # La démo doit utiliser un seul connecteur actif explicitement simulé.
+            from apps.corebanking.perfect_defaults import DEFAULT_CONNECTOR_NAME
+
+            for placeholder in CoreBankingConnector.objects.filter(name=DEFAULT_CONNECTOR_NAME, is_active=True).exclude(pk=demo_connector.pk):
+                placeholder.is_active = False
+                placeholder.save(update_fields=["is_active", "updated_at"])
             # Complète endpoints Perfect si le connecteur existait déjà.
             ensure_perfect_connector(tenant, demo=True, name="CBS Filiale 01")
 
@@ -325,6 +331,8 @@ class Command(BaseCommand):
             volume_count = options["count"]
             if options["full"] and volume_count == 40:
                 volume_count = 80
+            if run_volume:
+                volume_count = max(20, min(int(volume_count), 120))
 
             if run_rich:
                 seed_rich_operational_data(
@@ -344,7 +352,10 @@ class Command(BaseCommand):
                     count=volume_count,
                     stdout=self.stdout,
                 )
-                # Rafraîchir widgets recouvrement après volume
+
+            if run_rich or run_volume:
+                # Les widgets dépendent des dossiers et prêts des deux seeds.
+                # Les générer une seule fois, une fois le portefeuille complet.
                 from apps.common.demo_bulk import seed_collection_list_widgets
 
                 seed_collection_list_widgets(

@@ -1,13 +1,36 @@
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { ClipboardCheck, Save, ShieldCheck, SlidersHorizontal } from "lucide-react";
-import { useEffect, useState, type FormEvent } from "react";
+import { useQuery } from "@tanstack/react-query";
+import { ClipboardCheck, SlidersHorizontal } from "lucide-react";
+import { useEffect, useState } from "react";
+import { Link } from "react-router-dom";
 
 import { api } from "@/api/client";
 import type { CreditInstructionPolicy, Paginated, Tenant } from "@/api/types";
 import { useAuth } from "@/auth/AuthContext";
 import { ErrorState, PageHeader, Spinner } from "@/components/ui";
 
+const EXTRA_DEFAULTS = {
+  require_credit_contracts: true, require_credit_signed_contracts: false,
+  require_surety_contracts: true, require_setup_request: false,
+  require_setup_four_eyes: false, require_final_review: true,
+  setup_execution_role: "OPERATIONS" as const, require_setup_authorizer_separation: false,
+  recheck_kyc_on_setup: true, require_verified_documents: false,
+  risk_mode: "RECOMMENDATION" as const, approval_validity_days: 0, max_analysis_age_days: 0,
+};
+
+const EXTRA_FLAGS = [
+  ["require_credit_contracts", "Exiger un contrat de crédit avant mise en place"],
+  ["require_credit_signed_contracts", "Exiger un contrat de crédit signé"],
+  ["require_surety_contracts", "Exiger les contrats de cautionnement"],
+  ["require_setup_request", "Exiger une demande formelle de mise en place"],
+  ["require_setup_four_eyes", "Exiger une validation à quatre yeux de la mise en place"],
+  ["require_final_review", "Exiger le contrôle final avant transmission au CBS"],
+  ["require_setup_authorizer_separation", "Séparer l'auteur et l'autorisateur de la mise en place"],
+  ["recheck_kyc_on_setup", "Revérifier le KYC avant mise en place"],
+  ["require_verified_documents", "Exiger la vérification des documents"],
+] as const satisfies readonly (readonly [keyof CreditInstructionPolicy, string])[];
+
 const EMPTY: CreditInstructionPolicy = {
+  ...EXTRA_DEFAULTS,
   id: "",
   collateral_coverage_mode: "ALERT",
   require_field_visit: false,
@@ -24,33 +47,10 @@ const EMPTY: CreditInstructionPolicy = {
   require_formalization_before_disbursement: false,
 };
 
-/** Preset banque stricte — B2 maturité. */
-const STRICT_BANK: Omit<
-  CreditInstructionPolicy,
-  "id" | "created_at" | "updated_at"
-> = {
-  collateral_coverage_mode: "BLOCK_SUBMIT",
-  require_field_visit: true,
-  allow_unfavorable_analysis_submit: false,
-  require_product_checklist: true,
-  match_product_client_type: true,
-  kyc_gate: "ON_CREATE",
-  product_bounds_gate: "ON_SAVE",
-  amount_approved_mode: "FORBID",
-  show_readiness_checklist: true,
-  enable_cancel_status: false,
-  allow_collateral_during_approval: false,
-  require_surety_signed_contracts: true,
-  require_formalization_before_disbursement: true,
-};
-
 export function AdminCreditPolicyPage() {
   const { user, activeTenant } = useAuth();
-  const qc = useQueryClient();
   const needsTenant = Boolean(user?.is_group_level && !activeTenant);
   const [form, setForm] = useState<CreditInstructionPolicy>(EMPTY);
-  const [error, setError] = useState<string | null>(null);
-  const [saved, setSaved] = useState(false);
 
   const tenants = useQuery({
     queryKey: ["tenants"],
@@ -73,43 +73,6 @@ export function AdminCreditPolicyPage() {
   useEffect(() => {
     if (policy.data) setForm({ ...EMPTY, ...policy.data });
   }, [policy.data]);
-
-  const save = useMutation({
-    mutationFn: async () =>
-      (
-        await api.patch<CreditInstructionPolicy>(
-          "/credit-instruction-policy/current/",
-          {
-            collateral_coverage_mode: form.collateral_coverage_mode,
-            require_field_visit: form.require_field_visit,
-            allow_unfavorable_analysis_submit:
-              form.allow_unfavorable_analysis_submit,
-            require_product_checklist: form.require_product_checklist,
-            match_product_client_type: form.match_product_client_type,
-            kyc_gate: form.kyc_gate,
-            product_bounds_gate: form.product_bounds_gate,
-            amount_approved_mode: form.amount_approved_mode,
-            show_readiness_checklist: form.show_readiness_checklist,
-            enable_cancel_status: form.enable_cancel_status,
-            allow_collateral_during_approval:
-              form.allow_collateral_during_approval,
-            require_surety_signed_contracts:
-              form.require_surety_signed_contracts,
-            require_formalization_before_disbursement:
-              form.require_formalization_before_disbursement,
-          },
-        )
-      ).data,
-    onSuccess: (data) => {
-      setForm({ ...EMPTY, ...data });
-      setError(null);
-      setSaved(true);
-      qc.invalidateQueries({ queryKey: ["credit-instruction-policy"] });
-      window.setTimeout(() => setSaved(false), 2500);
-    },
-    onError: () =>
-      setError("Enregistrement impossible. Vérifiez vos droits et la filiale."),
-  });
 
   const scopeLabel = user?.is_group_level
     ? tenants.data?.results.find((t) => t.id === activeTenant)?.name ??
@@ -150,13 +113,7 @@ export function AdminCreditPolicyPage() {
       ) : !policy.data ? (
         <Spinner />
       ) : (
-        <form
-          className="tenant-compose-form"
-          onSubmit={(e: FormEvent) => {
-            e.preventDefault();
-            save.mutate();
-          }}
-        >
+        <><p className="muted">Consultation seule. Les changements de politique sont préparés et validés par deux utilisateurs distincts dans le <Link to="/admin/configuration">Centre de configuration</Link>. Les valeurs ci-dessous correspondent au socle applicable sans ciblage produit ou clientèle.</p><fieldset disabled style={{ border: 0, padding: 0, margin: 0, minWidth: 0 }}><div className="tenant-compose-form" aria-disabled="true">
           <div className="tenant-compose-head">
             <h2>
               <ClipboardCheck size={18} style={{ verticalAlign: "-3px" }} />{" "}
@@ -167,21 +124,6 @@ export function AdminCreditPolicyPage() {
               valeurs par défaut conservent le comportement historique
               (souple).
             </p>
-            <div style={{ marginTop: 10 }}>
-              <button
-                type="button"
-                className="btn btn-ghost btn-sm"
-                onClick={() =>
-                  setForm((f) => ({
-                    ...f,
-                    ...STRICT_BANK,
-                  }))
-                }
-              >
-                <ShieldCheck size={14} />
-                Appliquer le preset banque stricte
-              </button>
-            </div>
           </div>
 
           <section className="tenant-form-block">
@@ -381,7 +323,7 @@ export function AdminCreditPolicyPage() {
                   }
                 />
                 <span>
-                  Exiger un contrat de cautionnement signé avant décaissement
+                  Exiger un contrat de cautionnement signé avant mise en place
                 </span>
               </label>
               <label className="checkbox">
@@ -398,29 +340,29 @@ export function AdminCreditPolicyPage() {
                 />
                 <span>
                   Exiger la formalisation des garanties (hypothèque / gage /
-                  nantissement) avant décaissement
+                  nantissement) avant mise en place
                 </span>
               </label>
             </div>
           </section>
 
-          {error && <div className="form-error">{error}</div>}
-          {saved && (
-            <p className="muted small" style={{ color: "var(--brand)" }}>
-              Politique enregistrée.
-            </p>
-          )}
-          <div className="tenant-compose-actions">
-            <button
-              className="btn btn-primary"
-              disabled={save.isPending}
-              type="submit"
-            >
-              <Save size={16} />
-              {save.isPending ? "Enregistrement…" : "Enregistrer"}
-            </button>
-          </div>
-        </form>
+          <section className="card"><div className="card-body stack">
+            <h3>Décision et mise en place CBS</h3>
+            <p className="muted small">Après l'approbation du crédit, l'administration crédit effectue le contrôle final et autorise la mise en place. Cette autorisation préalable est obligatoire.</p>
+            <label className="field"><span>Responsable de la transmission au CBS</span><select value={form.setup_execution_role} onChange={(event) => setForm({ ...form, setup_execution_role: event.target.value as CreditInstructionPolicy["setup_execution_role"] })}><option value="OPERATIONS">Opérations</option><option value="CREDIT_ADMIN">Administrateur crédit</option></select></label>
+            {EXTRA_FLAGS.map(([key, label]) => <label className="checkbox" key={key}>
+              <input type="checkbox" checked={form[key]} onChange={(event) => setForm({ ...form, [key]: event.target.checked })} /><span>{label}</span>
+            </label>)}
+            <label className="field"><span>Détermination du risque</span><select value={form.risk_mode} onChange={(event) => setForm({ ...form, risk_mode: event.target.value as CreditInstructionPolicy["risk_mode"] })}>
+              <option value="RECOMMENDATION">Avis de l'analyste</option><option value="SCORE">Score financier</option><option value="CONSERVATIVE">Le plus prudent du score et de l'avis</option>
+            </select></label>
+            <div className="form-grid two-col">
+              <label className="field"><span>Validité de l'accord en jours (0 : sans limite)</span><input type="number" min="0" value={form.approval_validity_days} onChange={(event) => setForm({ ...form, approval_validity_days: Number(event.target.value) })} /></label>
+              <label className="field"><span>Ancienneté maximale de l'analyse en jours (0 : sans limite)</span><input type="number" min="0" value={form.max_analysis_age_days} onChange={(event) => setForm({ ...form, max_analysis_age_days: Number(event.target.value) })} /></label>
+            </div>
+            <p className="muted small">Un retour positif du CBS confirme la mise en place du dossier. Le versement effectif des fonds est réalisé dans le CBS.</p>
+          </div></section>
+        </div></fieldset></>
       )}
     </div>
   );

@@ -200,9 +200,25 @@ Windows, donc l’antivirus hôte s’applique aussi aux envois FIN_FLOW.
 |----------|-------|
 | `VITE_API_BASE_URL` | Défaut `/api/v1` (même origine via Nginx) |
 
+### Encodage des textes
+
+Les sources sont enregistrées en UTF-8 (`.editorconfig`). Le HTML déclare UTF-8 et Nginx utilise `charset utf-8`. Django conserve son encodage UTF-8 par défaut pour les réponses textuelles.
+
+Le build frontend exécute `npm run check:encoding` avant la compilation : il refuse les fichiers non valides en UTF-8 et les séquences caractéristiques de textes mal convertis. Depuis la racine, `node frontend/scripts/check-encoding.mjs .` contrôle également le backend, les configurations et la documentation, en excluant les dépendances, les fichiers générés et les fichiers binaires. Le contrôle signale les chemins et lignes sans afficher leur contenu. Il ne modifie pas les données en base ni les documents téléversés.
+
 ## 10. Bonnes pratiques
 
 - Ne jamais committer de `.env` avec secrets réels.  
 - Aligner `AWS_S3_CUSTOM_DOMAIN` sur le hostname joignable depuis le navigateur.  
 - Séparer les index Redis (broker / result / cache).  
 - Documenter toute variable ajoutée ici **et** dans `.env.example`.
+
+## 11. Couleurs des filiales
+
+Dans **Administration → Filiales → Charte graphique**, chaque filiale dispose de quatre choix indépendants : **Principale**, **Accent**, **Barre latérale** et **Texte de la barre**. L'aperçu montre le fond, les libellés et l'indicateur actif du menu. Les textes, icônes, rubriques, états actifs et survolés utilisent la couleur de texte sélectionnée, y compris sur mobile.
+
+Les champs API sont `brand_primary`, `brand_accent`, `brand_sidebar` et `brand_sidebar_text`, au format `#RRGGBB`. Ils sont disponibles dans le détail de la filiale, sa charte publique et le profil utilisateur. La modification conserve les droits existants d'administration des filiales et actualise la charte active après enregistrement.
+
+La migration `tenants.0006` initialise les deux nouveaux champs à partir des couleurs précédemment calculées, sans remplacer les couleurs principale et accent existantes. Le champ historique `brand_secondary` est conservé pour compatibilité et pour les anciennes restitutions ; il n'est plus un cinquième réglage dans les formulaires. Sa nuance est dérivée lors d'un changement de couleur principale, sauf demande explicite d'un ancien client API.
+
+Au rechargement, la dernière charte connue de la filiale est restaurée avant le premier affichage afin d'éviter le passage par les couleurs par défaut. Le navigateur conserve uniquement l'identité publique et les couleurs, séparément par identifiant et code de filiale (`finflow.branding.v1.*`). L'API actualise ensuite cette présentation ; ce cache n'accorde aucun droit et ne contient aucune donnée de dossier. Sans charte connue, le menu attend les données de la filiale avant de s'afficher.

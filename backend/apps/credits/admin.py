@@ -63,8 +63,21 @@ class FieldVisitAdmin(admin.ModelAdmin):
     list_filter = ["tenant"]
 
 
+class PublishedConfigurationReadOnlyAdmin(admin.ModelAdmin):
+    """Toute évolution des paramètres passe par le centre et ses quatre yeux."""
+
+    def has_add_permission(self, request):
+        return False
+
+    def has_change_permission(self, request, obj=None):
+        return False
+
+    def has_delete_permission(self, request, obj=None):
+        return False
+
+
 @admin.register(AnalysisThreshold)
-class AnalysisThresholdAdmin(admin.ModelAdmin):
+class AnalysisThresholdAdmin(PublishedConfigurationReadOnlyAdmin):
     list_display = [
         "tenant", "max_debt_ratio", "min_dscr", "max_gearing",
         "min_guarantee_coverage", "stress_pct",
@@ -85,7 +98,7 @@ class AnalysisThresholdAdmin(admin.ModelAdmin):
 
 
 @admin.register(CreditInstructionPolicy)
-class CreditInstructionPolicyAdmin(admin.ModelAdmin):
+class CreditInstructionPolicyAdmin(PublishedConfigurationReadOnlyAdmin):
     list_display = [
         "tenant",
         "collateral_coverage_mode",

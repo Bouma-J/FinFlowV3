@@ -9,6 +9,7 @@ import type {
   Paginated,
 } from "@/api/types";
 import { useAuth } from "@/auth/AuthContext";
+import { hasPerm } from "@/auth/permissions";
 import { isFinflowAdmin } from "@/auth/routePerms";
 import { EmptyState, ErrorState, PageHeader, Spinner } from "@/components/ui";
 import { apiErrorMessage } from "@/utils/apiError";
@@ -52,7 +53,8 @@ export function AdminCollectionTranchesPage() {
   const { user, activeTenant } = useAuth();
   const qc = useQueryClient();
   const needsTenant = Boolean(user?.is_group_level && !activeTenant);
-  const canManage = isFinflowAdmin(user);
+  const canAdmin = isFinflowAdmin(user);
+  const canManage = canAdmin && hasPerm(user, "collections.change_collectiontranche");
   const [rows, setRows] = useState<DraftTranche[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [saved, setSaved] = useState(false);
@@ -65,7 +67,7 @@ export function AdminCollectionTranchesPage() {
           params: { page_size: 50, ordering: "position" },
         })
       ).data,
-    enabled: canManage && !needsTenant,
+    enabled: canAdmin && !needsTenant,
   });
 
   useEffect(() => {
@@ -138,7 +140,7 @@ export function AdminCollectionTranchesPage() {
     setRows((current) => (current.length <= 1 ? current : current.filter((r) => r.key !== key)));
   }
 
-  if (!canManage) {
+  if (!canAdmin) {
     return (
       <EmptyState message="Paramétrage réservé aux administrateurs filiale et groupe." />
     );
@@ -179,7 +181,7 @@ export function AdminCollectionTranchesPage() {
           className="tenant-compose-form"
           onSubmit={(e: FormEvent) => {
             e.preventDefault();
-            save.mutate();
+            if (canManage) save.mutate();
           }}
         >
           <p className="muted" style={{ marginBottom: 16 }}>
@@ -220,6 +222,7 @@ export function AdminCollectionTranchesPage() {
                     <td>
                       <input
                         value={row.name}
+                        disabled={!canManage}
                         onChange={(e) =>
                           updateRow(row.key, { name: e.target.value })
                         }
@@ -236,6 +239,7 @@ export function AdminCollectionTranchesPage() {
                     <td>
                       <input
                         type="number"
+                        disabled={!canManage}
                         min={1}
                         value={row.min_days_overdue}
                         onChange={(e) =>
@@ -247,6 +251,7 @@ export function AdminCollectionTranchesPage() {
                     <td>
                       <input
                         type="number"
+                        disabled={!canManage}
                         min={1}
                         value={row.max_days_overdue}
                         onChange={(e) =>
@@ -260,6 +265,7 @@ export function AdminCollectionTranchesPage() {
                     <td>
                       <select
                         value={row.owner_kind}
+                        disabled={!canManage}
                         onChange={(e) =>
                           updateRow(row.key, {
                             owner_kind: e.target.value as CollectionTrancheOwner,
@@ -274,7 +280,7 @@ export function AdminCollectionTranchesPage() {
                       </select>
                     </td>
                     <td>
-                      <button
+                      {canManage && <button
                         type="button"
                         className="btn btn-ghost btn-sm"
                         onClick={() => removeRow(row.key)}
@@ -282,7 +288,7 @@ export function AdminCollectionTranchesPage() {
                         aria-label="Supprimer la tranche"
                       >
                         <Trash2 size={14} />
-                      </button>
+                      </button>}
                     </td>
                   </tr>
                 ))}
@@ -291,17 +297,17 @@ export function AdminCollectionTranchesPage() {
           </div>
 
           <div className="credit-form-actions" style={{ marginTop: 16 }}>
-            <button type="button" className="btn btn-ghost" onClick={addRow}>
+            {canManage && <button type="button" className="btn btn-ghost" onClick={addRow}>
               <Plus size={16} /> Ajouter une tranche
-            </button>
-            <button
+            </button>}
+            {canManage && <button
               type="submit"
               className="btn btn-primary"
               disabled={save.isPending || rows.length === 0}
             >
               <Save size={16} />
               {save.isPending ? "Enregistrement…" : "Enregistrer"}
-            </button>
+            </button>}
           </div>
         </form>
       )}

@@ -54,9 +54,11 @@ def _step(tenant, definition, *, name, order, group, kind, low=None, high=None,
 
 def _seed_style_circuit(tenant, *, agency_kind, code="CIRCUIT-STD"):
     """Reproduit le circuit crédit du seed, la nature de l'étape agence variant."""
-    analyst = Group.objects.create(name=f"Analyste {code}")
-    manager = Group.objects.create(name=f"Agence {code}")
-    committee = Group.objects.create(name=f"Comité {code}")
+    from apps.accounts.services import create_tenant_role
+
+    analyst = create_tenant_role(tenant, f"Analyste {code}").group
+    manager = create_tenant_role(tenant, f"Agence {code}").group
+    committee = create_tenant_role(tenant, f"Comité {code}").group
     definition = _definition(tenant, code=code)
     _step(
         tenant, definition, name="Analyse crédit", order=1, group=analyst,
@@ -273,7 +275,9 @@ def test_api_refuses_a_step_edit_that_opens_a_gap(tenant_a):
 
 def test_api_allows_building_a_circuit_step_by_step(tenant_a):
     """La construction progressive reste possible : pas de faux blocage."""
-    group = Group.objects.create(name="Analyste construction")
+    from apps.accounts.services import create_tenant_role
+
+    group = create_tenant_role(tenant_a, "Analyste construction").group
     with tenant_context(tenant_a.id):
         definition = _definition(tenant_a, code="CONSTR")
 

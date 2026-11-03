@@ -1,11 +1,12 @@
 """Dossiers de crédit et cycle de vie associé."""
 import math
+from .exposure_models import BorrowerGroup, CreditExposureObservation  # noqa: F401
 from dateutil.relativedelta import relativedelta
 from datetime import timedelta
 from decimal import Decimal
 
 from django.contrib.contenttypes.fields import GenericRelation
-from django.db import models
+from django.db import models, transaction
 from django.utils import timezone
 
 from apps.common.files import safe_filename
@@ -190,9 +191,9 @@ class CreditApplication(TenantScopedModel, AuthoredModel):
         CONTRACT_GENERATED = "CONTRACT_GENERATED", "Contrat généré"
         DISBURSEMENT_PENDING = (
             "DISBURSEMENT_PENDING",
-            "Décaissement en attente de validation",
+            "Transmission au CBS en attente",
         )
-        DISBURSED = "DISBURSED", "Décaissé"
+        DISBURSED = "DISBURSED", "Mis en place"
         CLOSED = "CLOSED", "Clôturé"
         CANCELLED = "CANCELLED", "Annulé"
 
@@ -259,6 +260,10 @@ class CreditApplication(TenantScopedModel, AuthoredModel):
     )
     purpose_type = models.CharField(
         "objet du financement", max_length=20, choices=PurposeType.choices, blank=True
+    )
+    financing_object = models.ForeignKey(
+        "catalog.FinancingObject", on_delete=models.PROTECT, null=True, blank=True,
+        related_name="credit_applications", verbose_name="objet de financement CBS exact",
     )
     purpose = models.TextField("détails de la demande", blank=True)
     request_letter_scan = models.FileField(
@@ -357,13 +362,15 @@ class CreditApplication(TenantScopedModel, AuthoredModel):
     insurance_premium = models.DecimalField(
         "prime d'assurance", max_digits=18, decimal_places=2, null=True, blank=True
     )
+    insurance_policy_number = models.CharField("numéro de police", max_length=100, blank=True)
+    insurance_expiry_date = models.DateField("fin de couverture assurance", null=True, blank=True)
 
     # ------------------------------------------------------------------ #
     # Conditions particulières
     # ------------------------------------------------------------------ #
     special_conditions = models.TextField("conditions particulières", blank=True)
     suspensive_conditions = models.TextField(
-        "conditions suspensives (avant décaissement)", blank=True
+        "conditions suspensives (avant mise en place)", blank=True
     )
 
     # ------------------------------------------------------------------ #
@@ -411,9 +418,9 @@ class CreditApplication(TenantScopedModel, AuthoredModel):
         related_name="+",
         verbose_name="soumis par",
     )
-    disbursed_at = models.DateTimeField("décaissé le", null=True, blank=True)
+    disbursed_at = models.DateTimeField("mis en place le", null=True, blank=True)
     disbursement_requested_at = models.DateTimeField(
-        "décaissement demandé le", null=True, blank=True
+        "mise en place demandé le", null=True, blank=True
     )
     disbursement_requested_by = models.ForeignKey(
         "accounts.User",
@@ -421,15 +428,20 @@ class CreditApplication(TenantScopedModel, AuthoredModel):
         null=True,
         blank=True,
         related_name="+",
-        verbose_name="décaissement demandé par",
+        verbose_name="mise en place demandé par",
     )
     disbursement_previous_status = models.CharField(
-        "statut avant demande de décaissement",
+        "statut avant demande de mise en place",
         max_length=32,
         blank=True,
         default="",
     )
-    # Références CBS après décaissement réussi (crd/simple)
+    approval_snapshot = models.JSONField(default=dict, blank=True)
+    approval_fingerprint = models.CharField(max_length=64, blank=True)
+    setup_review = models.JSONField(default=dict, blank=True)
+    setup_authorization = models.JSONField(default=dict, blank=True)
+    configuration_snapshot = models.JSONField("configuration métier à la soumission", default=dict, blank=True)
+    # Références CBS après mise en place réussi (crd/simple)
     cbs_demande_number = models.CharField(
         "n° demande CBS (numDemande)", max_length=100, blank=True, default=""
     )
@@ -459,13 +471,17 @@ class CreditApplication(TenantScopedModel, AuthoredModel):
             models.Index(fields=["tenant", "reference"]),
         ]
         permissions = [
+            ("review_setup_creditapplication", "Peut contrôler le dossier avant mise en place"),
+            ("authorize_setup_creditapplication", "Peut autoriser ou révoquer la mise en place"),
+            ("execute_setup_creditadmin", "Peut transmettre au CBS au titre de l'administration crédit"),
+            ("execute_setup_operations", "Peut transmettre au CBS au titre des opérations"),
             (
                 "disburse_creditapplication",
-                "Peut valider / exécuter le décaissement d'un dossier",
+                "Peut valider / exécuter la mise en place d'un dossier",
             ),
             (
                 "initiate_disburse_creditapplication",
-                "Peut initier une demande de décaissement",
+                "Peut initier une demande de mise en place",
             ),
         ]
 
@@ -721,6 +737,12 @@ class AnalysisThreshold(TenantScopedModel):
         return f"Seuils d'analyse — {self.tenant_id}"
 
     @classmethod
+    def for_application(cls, application, *, individual_profile=None):
+        from apps.configuration.services import effective_thresholds
+
+        return effective_thresholds(application, individual_profile=individual_profile)
+
+    @classmethod
     def for_tenant(cls, tenant_id):
         """Renvoie les seuils de la filiale, ou des seuils par défaut non persistés."""
         obj = cls.all_tenants.filter(tenant_id=tenant_id).first()
@@ -741,6 +763,30 @@ class CreditInstructionPolicy(TenantScopedModel):
         ALERT = "ALERT", "Alerte uniquement"
         BLOCK_SUBMIT = "BLOCK_SUBMIT", "Bloquer la soumission"
         BLOCK_APPROVE = "BLOCK_APPROVE", "Bloquer l'approbation finale"
+
+    class RiskMode(models.TextChoices):
+        RECOMMENDATION = "RECOMMENDATION", "Avis de l'analyste"
+        SCORE = "SCORE", "Score financier"
+        CONSERVATIVE = "CONSERVATIVE", "Le plus prudent du score et de l'avis"
+
+    require_credit_contracts = models.BooleanField(default=True)
+    require_credit_signed_contracts = models.BooleanField(default=False)
+    require_surety_contracts = models.BooleanField(default=True)
+    require_setup_request = models.BooleanField(default=False)
+    require_setup_four_eyes = models.BooleanField(default=False)
+    risk_mode = models.CharField(max_length=20, choices=RiskMode.choices, default=RiskMode.RECOMMENDATION)
+    approval_validity_days = models.PositiveIntegerField(default=0)
+    max_analysis_age_days = models.PositiveIntegerField(default=0)
+    # Conservé pour compatibilité API ; le contrôle précède toujours l'autorisation.
+    require_final_review = models.BooleanField(default=True, editable=False)
+    class SetupExecutionRole(models.TextChoices):
+        CREDIT_ADMIN = "CREDIT_ADMIN", "Administrateur crédit"
+        OPERATIONS = "OPERATIONS", "Opérations"
+
+    setup_execution_role = models.CharField(max_length=20, choices=SetupExecutionRole.choices, default=SetupExecutionRole.OPERATIONS)
+    require_setup_authorizer_separation = models.BooleanField(default=False)
+    recheck_kyc_on_setup = models.BooleanField(default=True)
+    require_verified_documents = models.BooleanField(default=False)
 
     class AmountApprovedMode(models.TextChoices):
         ALLOW = "ALLOW", "Saisissable dès l'instruction"
@@ -807,20 +853,20 @@ class CreditInstructionPolicy(TenantScopedModel):
         default=False,
     )
     require_surety_signed_contracts = models.BooleanField(
-        "exiger un contrat de cautionnement signé avant décaissement",
+        "exiger un contrat de cautionnement signé avant mise en place",
         default=True,
         help_text=(
             "Si le dossier a des engagements de caution actifs, chaque caution "
-            "doit avoir un contrat SURETY généré et signé avant décaissement."
+            "doit avoir un contrat SURETY généré et signé avant mise en place."
         ),
     )
     require_formalization_before_disbursement = models.BooleanField(
-        "exiger la formalisation des garanties avant décaissement",
+        "exiger la formalisation des garanties avant mise en place",
         default=False,
         help_text=(
             "Si activé, les garanties hypothécaires / gages / nantissements "
             "rattachés au dossier doivent être formalisées (formalized_at) "
-            "avant décaissement. Désactivé par défaut (processus parallèle)."
+            "avant mise en place. Désactivé par défaut (processus parallèle)."
         ),
     )
 
@@ -872,6 +918,19 @@ class FinancialAnalysis(TenantScopedModel, AuthoredModel):
         INDEPENDANT = "INDEPENDANT", "Indépendant"
         MIXTE = "MIXTE", "Mixte (salarié + activité)"
 
+    class InformationQuality(models.TextChoices):
+        DECLARED = "DECLARED", "Déclarée par le client"
+        PARTIALLY_VERIFIED = "PARTIALLY_VERIFIED", "Partiellement vérifiée"
+        VERIFIED = "VERIFIED", "Vérifiée sur pièces / visite"
+        AUDITED = "AUDITED", "Comptes certifiés / audités"
+
+    class EmploymentType(models.TextChoices):
+        PERMANENT = "PERMANENT", "CDI / fonctionnaire"
+        FIXED_TERM = "FIXED_TERM", "CDD / contrat à terme"
+        RETIRED = "RETIRED", "Retraité"
+        DAILY = "DAILY", "Journalier / intermittent"
+        OTHER = "OTHER", "Autre situation"
+
     application = models.ForeignKey(
         CreditApplication,
         on_delete=models.CASCADE,
@@ -906,6 +965,45 @@ class FinancialAnalysis(TenantScopedModel, AuthoredModel):
         choices=ReferencePeriod.choices, default=ReferencePeriod.MONTHLY,
     )
     analysis_date = models.DateField("date de l'analyse", null=True, blank=True)
+    custom_fields = models.JSONField("champs complémentaires", default=dict, blank=True)
+    analysis_details = models.JSONField(
+        "détail de la reconstitution financière", default=dict, blank=True,
+        help_text="Produits, stocks, dettes, historique et plan de trésorerie détaillés.",
+    )
+
+    # ------------------------------------------------------------------ #
+    # CADRE DE L'ANALYSE — traçabilité et fiabilité des données
+    # ------------------------------------------------------------------ #
+    information_quality = models.CharField(
+        "niveau de fiabilité des informations",
+        max_length=25,
+        choices=InformationQuality.choices,
+        default=InformationQuality.DECLARED,
+    )
+    financial_statement_date = models.DateField(
+        "date d'arrêté des données financières", null=True, blank=True
+    )
+    bank_statement_months = models.PositiveIntegerField(
+        "nombre de mois de relevés examinés", null=True, blank=True
+    )
+    financial_documents_verified = models.BooleanField(
+        "pièces financières vérifiées", default=False
+    )
+    field_visit_confirmed = models.BooleanField(
+        "visite terrain prise en compte", default=False
+    )
+    stock_count_verified = models.BooleanField(
+        "stock vérifié / inventorié", default=False
+    )
+    cash_position_verified = models.BooleanField(
+        "caisse et banques vérifiées", default=False
+    )
+    verification_comment = models.TextField(
+        "commentaire de vérification et écarts constatés", blank=True
+    )
+    primary_repayment_source = models.CharField(
+        "source principale de remboursement", max_length=250, blank=True
+    )
 
     # ------------------------------------------------------------------ #
     # PARTICULIER — revenus du ménage (période de référence)
@@ -980,6 +1078,48 @@ class FinancialAnalysis(TenantScopedModel, AuthoredModel):
         decimal_places=2, null=True, blank=True,
         help_text="Laisser vide pour utiliser le seuil de la filiale.",
     )
+    employment_type = models.CharField(
+        "type d'emploi", max_length=20, choices=EmploymentType.choices,
+        blank=True,
+    )
+    employer_name = models.CharField("employeur", max_length=250, blank=True)
+    employer_sector = models.CharField(
+        "secteur de l'employeur", max_length=150, blank=True
+    )
+    salary_paid_through_bank = models.BooleanField(
+        "salaire domicilié / traçable en banque", default=False
+    )
+    salary_verified = models.BooleanField(
+        "salaire vérifié sur bulletin ou relevé", default=False
+    )
+    variable_income = models.DecimalField(
+        "primes et revenus variables récurrents", max_digits=18,
+        decimal_places=2, default=0,
+    )
+    pension_income = models.DecimalField(
+        "pension / retraite", max_digits=18, decimal_places=2, default=0
+    )
+    other_monthly_obligations = models.DecimalField(
+        "autres obligations récurrentes", max_digits=18, decimal_places=2,
+        default=0,
+        help_text="Pensions, loyers dus, assurances, engagements non bancaires.",
+    )
+    personal_savings = models.DecimalField(
+        "épargne disponible du ménage", max_digits=18, decimal_places=2,
+        default=0,
+    )
+    personal_real_estate_value = models.DecimalField(
+        "valeur immobilière nette du ménage", max_digits=18,
+        decimal_places=2, default=0,
+    )
+    personal_vehicle_value = models.DecimalField(
+        "valeur des véhicules du ménage", max_digits=18, decimal_places=2,
+        default=0,
+    )
+    personal_productive_assets = models.DecimalField(
+        "valeur des actifs productifs du ménage", max_digits=18,
+        decimal_places=2, default=0,
+    )
 
     # ------------------------------------------------------------------ #
     # ENTREPRISE — compte d'exploitation (période de référence)
@@ -1021,6 +1161,10 @@ class FinancialAnalysis(TenantScopedModel, AuthoredModel):
     financial_charges = models.DecimalField(
         "charges financières", max_digits=18, decimal_places=2, default=0
     )
+    other_operating_income = models.DecimalField(
+        "autres produits d'exploitation", max_digits=18, decimal_places=2,
+        default=0,
+    )
 
     # ENTREPRISE — bilan simplifié
     stock_value = models.DecimalField(
@@ -1046,6 +1190,39 @@ class FinancialAnalysis(TenantScopedModel, AuthoredModel):
         "autres dettes court terme (fiscales, sociales…)", max_digits=18,
         decimal_places=2, default=0,
     )
+    cash_in_hand = models.DecimalField(
+        "caisse", max_digits=18, decimal_places=2, default=0
+    )
+    bank_balance = models.DecimalField(
+        "solde bancaire disponible", max_digits=18, decimal_places=2, default=0
+    )
+    other_current_assets = models.DecimalField(
+        "autres actifs courants", max_digits=18, decimal_places=2, default=0
+    )
+    land_building_value = models.DecimalField(
+        "terrains et bâtiments", max_digits=18, decimal_places=2, default=0
+    )
+    equipment_value = models.DecimalField(
+        "matériel et équipements", max_digits=18, decimal_places=2, default=0
+    )
+    vehicle_value = models.DecimalField(
+        "véhicules d'exploitation", max_digits=18, decimal_places=2, default=0
+    )
+    other_fixed_assets = models.DecimalField(
+        "autres immobilisations", max_digits=18, decimal_places=2, default=0
+    )
+    tax_social_debt = models.DecimalField(
+        "dettes fiscales et sociales", max_digits=18, decimal_places=2, default=0
+    )
+    other_current_debt = models.DecimalField(
+        "autres dettes d'exploitation", max_digits=18, decimal_places=2, default=0
+    )
+    long_term_debt = models.DecimalField(
+        "dettes financières long terme", max_digits=18, decimal_places=2, default=0
+    )
+    shareholder_debt = models.DecimalField(
+        "comptes courants d'associés", max_digits=18, decimal_places=2, default=0
+    )
 
     # ENTREPRISE — période précédente (N-1) pour l'analyse de tendance
     turnover_prev = models.DecimalField(
@@ -1062,7 +1239,7 @@ class FinancialAnalysis(TenantScopedModel, AuthoredModel):
         "encaissements prévisionnels", max_digits=18, decimal_places=2, default=0
     )
     projected_monthly_outflows = models.DecimalField(
-        "décaissements prévisionnels", max_digits=18, decimal_places=2, default=0
+        "sorties de trésorerie prévisionnelles", max_digits=18, decimal_places=2, default=0
     )
     cashflow_comment = models.TextField(
         "commentaire sur la trésorerie prévisionnelle", blank=True
@@ -1316,6 +1493,44 @@ class FinancialAnalysis(TenantScopedModel, AuthoredModel):
         "charges activité", max_digits=18, decimal_places=2, default=0,
     )
     activity_comment = models.TextField("commentaire activité", blank=True)
+    activity_name = models.CharField(
+        "activité principale", max_length=250, blank=True
+    )
+    activity_business_age_months = models.PositiveIntegerField(
+        "ancienneté de l'activité (mois)", null=True, blank=True
+    )
+    activity_sales_days = models.PositiveIntegerField(
+        "jours de vente sur la période", null=True, blank=True
+    )
+    activity_purchases = models.DecimalField(
+        "achats / approvisionnements activité", max_digits=18,
+        decimal_places=2, default=0,
+    )
+    activity_stock_value = models.DecimalField(
+        "stock de l'activité", max_digits=18, decimal_places=2, default=0
+    )
+    activity_receivables = models.DecimalField(
+        "créances clients de l'activité", max_digits=18, decimal_places=2,
+        default=0,
+    )
+    activity_cash_available = models.DecimalField(
+        "trésorerie disponible de l'activité", max_digits=18,
+        decimal_places=2, default=0,
+    )
+    activity_fixed_assets = models.DecimalField(
+        "actifs productifs de l'activité", max_digits=18,
+        decimal_places=2, default=0,
+    )
+    activity_supplier_debt = models.DecimalField(
+        "dettes fournisseurs de l'activité", max_digits=18,
+        decimal_places=2, default=0,
+    )
+    activity_is_formal = models.BooleanField(
+        "activité formalisée", default=False
+    )
+    activity_records_available = models.BooleanField(
+        "cahier de caisse / pièces d'activité disponibles", default=False
+    )
 
     # ------------------------------------------------------------------ #
     # Groupement (PROFESSIONAL)
@@ -1351,6 +1566,18 @@ class FinancialAnalysis(TenantScopedModel, AuthoredModel):
         "charges activité commune", max_digits=18, decimal_places=2, default=0,
     )
     group_comment = models.TextField("commentaire groupement", blank=True)
+    group_age_months = models.PositiveIntegerField(
+        "ancienneté du groupement (mois)", null=True, blank=True
+    )
+    members_with_arrears = models.PositiveIntegerField(
+        "membres en retard de cotisation", null=True, blank=True
+    )
+    group_records_verified = models.BooleanField(
+        "registres et épargne du groupement vérifiés", default=False
+    )
+    collective_savings_locked = models.BooleanField(
+        "épargne collective mobilisable / nantie", default=False
+    )
 
     # Décision & synthèse structurée
     internal_score = models.DecimalField(
@@ -1383,15 +1610,32 @@ class FinancialAnalysis(TenantScopedModel, AuthoredModel):
         base = (
             _dec(self.salary_income) + _dec(self.spouse_income)
             + _dec(self.rental_income) + _dec(self.other_activity_income)
-            + _dec(self.other_income)
+            + _dec(self.other_income) + _dec(self.variable_income)
+            + _dec(self.pension_income)
         )
         if self.has_side_activity:
             base += _dec(self.activity_turnover) - _dec(self.activity_expenses)
         return base
 
     @property
+    def reference_periods_per_year(self):
+        return {
+            self.ReferencePeriod.MONTHLY: Decimal("12"),
+            self.ReferencePeriod.QUARTERLY: Decimal("4"),
+            self.ReferencePeriod.ANNUAL: Decimal("1"),
+        }.get(self.reference_period, Decimal("12"))
+
+    @property
+    def monthly_total_income(self):
+        return self.total_income * self.reference_periods_per_year / Decimal("12")
+
+    @property
     def activity_net(self):
         return _dec(self.activity_turnover) - _dec(self.activity_expenses)
+
+    @property
+    def monthly_activity_net(self):
+        return self.activity_net * self.reference_periods_per_year / Decimal("12")
 
     @property
     def collective_capacity(self):
@@ -1413,14 +1657,26 @@ class FinancialAnalysis(TenantScopedModel, AuthoredModel):
             + _dec(self.other_household_expenses)
             + _dec(self.tontine_expense) + _dec(self.social_contributions)
             + _dec(self.family_support_expense)
+            + _dec(self.other_monthly_obligations)
+        )
+
+    @property
+    def monthly_household_charges(self):
+        return (
+            self.total_household_charges * self.reference_periods_per_year
+            / Decimal("12")
         )
 
     @property
     def disposable_income(self):
         return (
-            self.total_income - self.total_household_charges
+            self.monthly_total_income - self.monthly_household_charges
             - _dec(self.existing_debt_monthly)
         )
+
+    @property
+    def monthly_disposable_income(self):
+        return self.disposable_income
 
     @property
     def dependents_count(self):
@@ -1457,21 +1713,56 @@ class FinancialAnalysis(TenantScopedModel, AuthoredModel):
 
     @property
     def ebe(self):
-        return self.gross_margin - self.total_operating_expenses
+        return (
+            self.gross_margin + _dec(self.other_operating_income)
+            - self.total_operating_expenses
+        )
 
     @property
     def net_result(self):
-        return self.ebe - _dec(self.depreciation) - _dec(self.financial_charges)
+        from .analysis_details import detail_amount
+        return (self.ebe - _dec(self.depreciation) - _dec(self.financial_charges)
+                - detail_amount(self, "income_tax_expense") - detail_amount(self, "provision_expense")
+                + detail_amount(self, "provision_reversal") + detail_amount(self, "exceptional_income")
+                - detail_amount(self, "exceptional_expense"))
 
     @property
     def cash_flow(self):
-        return self.net_result + _dec(self.depreciation)
+        from .analysis_details import detail_amount
+        return (self.net_result + _dec(self.depreciation) + detail_amount(self, "provision_expense")
+                - detail_amount(self, "provision_reversal"))
+
+    @property
+    def effective_cash_available(self):
+        """Détail caisse + banque, avec repli pour les analyses historiques."""
+        detailed = _dec(self.cash_in_hand) + _dec(self.bank_balance)
+        mode = (self.analysis_details or {}).get("cash_detail_mode")
+        if mode == "DETAIL":
+            return detailed
+        if mode == "LEGACY":
+            return _dec(self.cash_available)
+        return detailed if detailed else _dec(self.cash_available)
+
+    @property
+    def effective_fixed_assets(self):
+        """Détail des immobilisations, avec repli pour les analyses historiques."""
+        detailed = (
+            _dec(self.land_building_value) + _dec(self.equipment_value)
+            + _dec(self.vehicle_value) + _dec(self.other_fixed_assets)
+        )
+        mode = (self.analysis_details or {}).get("fixed_assets_detail_mode")
+        if mode == "DETAIL":
+            return detailed
+        if mode == "LEGACY":
+            return _dec(self.fixed_assets)
+        return detailed if detailed else _dec(self.fixed_assets)
 
     @property
     def total_assets(self):
         return (
             _dec(self.stock_value) + _dec(self.receivables)
-            + _dec(self.cash_available) + _dec(self.fixed_assets)
+            + self.effective_cash_available + _dec(self.other_current_assets)
+            + self.effective_fixed_assets
         )
 
     @property
@@ -1480,6 +1771,8 @@ class FinancialAnalysis(TenantScopedModel, AuthoredModel):
             _dec(self.supplier_debt)
             + _dec(self.ongoing_credit_balance)
             + _dec(self.short_term_debt)
+            + _dec(self.tax_social_debt) + _dec(self.other_current_debt)
+            + _dec(self.shareholder_debt)
         )
 
     @property
@@ -1488,7 +1781,50 @@ class FinancialAnalysis(TenantScopedModel, AuthoredModel):
 
     @property
     def bfr(self):
-        return _dec(self.stock_value) + _dec(self.receivables) - _dec(self.supplier_debt)
+        return (
+            _dec(self.stock_value) + _dec(self.receivables)
+            + _dec(self.other_current_assets) - _dec(self.supplier_debt)
+            - _dec(self.tax_social_debt) - _dec(self.other_current_debt)
+        )
+
+    @property
+    def monthly_cash_flow(self):
+        return self.cash_flow * self.reference_periods_per_year / Decimal("12")
+
+    @property
+    def monthly_collective_capacity(self):
+        return (
+            self.collective_capacity * self.reference_periods_per_year
+            / Decimal("12")
+        )
+
+    @property
+    def monthly_new_installment(self):
+        """Échéance convertie en effort mensuel pour comparer les capacités."""
+        app = self.application
+        periods_per_year = {
+            Periodicity.DAILY: Decimal("360"),
+            Periodicity.WEEKLY: Decimal("52"),
+            Periodicity.BIMONTHLY: Decimal("24"),
+            Periodicity.MONTHLY: Decimal("12"),
+            Periodicity.QUARTERLY: Decimal("4"),
+            Periodicity.SEMIANNUAL: Decimal("2"),
+            Periodicity.ANNUAL: Decimal("1"),
+        }.get(getattr(app, "periodicity", None), Decimal("12"))
+        conventions = getattr(self, "_effective_simulation_conventions", None) or (
+            app.configuration_snapshot or {}
+        ).get("simulation", {}).get("conventions", {})
+        if conventions.get("engine") == "CONFIGURED":
+            periods_per_year = Decimal(str(conventions.get("periods_per_year", {}).get(
+                app.periodicity, _PERIODS_PER_YEAR.get(app.periodicity, 12)
+            )))
+        elif app.tenant_id:
+            from apps.catalog.cbs_resolve import resolve_periodicity_periods_per_year
+
+            periods_per_year = Decimal(str(resolve_periodicity_periods_per_year(
+                app.tenant_id, app.periodicity, default=int(periods_per_year)
+            )))
+        return _dec(self.new_installment) * periods_per_year / Decimal("12")
 
     @property
     def gross_margin_pct(self):
@@ -1514,19 +1850,29 @@ class FinancialAnalysis(TenantScopedModel, AuthoredModel):
             self.client_type not in ("CORPORATE", "PROFESSIONAL")
         )
 
-    def _compute_new_installment(self):
-        """Échéance institution (principal + intérêt), hors épargne obligatoire."""
+    def _compute_loan_schedule(self, configuration=None):
+        """Un échéancier partagé pour la dette, l'épargne et les prévisions."""
         from apps.credits.amounts import reference_amount
         from apps.credits.services import compute_amortization_schedule
+        from apps.credits.simulation import conventions_for_application
 
         app = self.application
         amount = reference_amount(app)
-        rate = app.interest_rate
-        if rate is None and app.product_id:
-            rate = getattr(app.product, "interest_rate", None)
         months = app.duration_months
         if not (amount and months):
             return None
+        from apps.configuration.services import application_configuration
+        from .pricing import quote_pricing
+        from datetime import datetime
+
+        config = configuration if configuration is not None else application_configuration(app, individual_profile=self.individual_profile)
+        self._effective_simulation_conventions = conventions_for_application(app, config)
+        quote = quote_pricing(app, configuration=config)
+        self._financial_rates = quote["rates"]
+        rate = quote["rates"]["interest_rate"]
+        captured = config.get("captured_at") or (app.configuration_snapshot or {}).get("captured_at")
+        origin = (datetime.fromisoformat(captured).date() if config.get("schema_version", 1) >= 3 and captured
+                  else self.analysis_date or (self.created_at.date() if self.created_at else None))
         try:
             schedule = compute_amortization_schedule(
                 amount,
@@ -1534,16 +1880,27 @@ class FinancialAnalysis(TenantScopedModel, AuthoredModel):
                 months,
                 periodicity=app.periodicity or "MONTHLY",
                 first_due_date=app.first_due_date,
-                savings_rate=0,
+                start_date=origin,
+                savings_rate=quote["rates"].get("mandatory_savings_rate") or 0,
                 mechanism=app.repayment_mechanism or "DEGRESSIVE",
                 tenant_id=app.tenant_id,
+                conventions=self._effective_simulation_conventions,
             )
         except Exception:
             return None
+        return schedule
+
+    def _compute_new_installment(self, configuration=None):
+        """Échéance institution maximale, hors épargne obligatoire."""
+        schedule = self._compute_loan_schedule(configuration)
+        self._financial_schedule = schedule
         if not schedule:
             return None
         # Hors épargne : ce qui revient à l'institution.
-        return schedule[0].get("institution_due", schedule[0]["principal"] + schedule[0]["interest"])
+        return max(
+            row.get("institution_due", row["principal"] + row["interest"])
+            for row in schedule
+        )
 
     @staticmethod
     def _clamp(value, max_digits, decimal_places):
@@ -1558,7 +1915,11 @@ class FinancialAnalysis(TenantScopedModel, AuthoredModel):
             return -limit
         return value
 
+    @transaction.atomic
     def save(self, *args, **kwargs):
+        # Sérialiser la désignation de référence sur le dossier parent.
+        if self.application_id:
+            CreditApplication.all_tenants.select_for_update().get(pk=self.application_id)
         # Affecte tôt le tenant pour récupérer les bons seuils.
         if self.tenant_id is None:
             from apps.common.tenancy import get_current_tenant_id
@@ -1599,74 +1960,31 @@ class FinancialAnalysis(TenantScopedModel, AuthoredModel):
                 self.reference_period = self.ReferencePeriod.MONTHLY
 
         # Un seul salaire net saisi : synchronise la base quotité.
-        if _dec(self.salary_income) and not _dec(self.net_salary):
-            self.net_salary = self.salary_income
-        elif _dec(self.salary_income):
-            self.net_salary = self.salary_income
+        self.net_salary = self.salary_income
 
+        # Une seule source pour la consultation et les indicateurs persistés.
+        from .analytics import compute_metrics, compute_score
         self.new_installment = self._compute_new_installment()
-        installment = _dec(self.new_installment)
-        existing = _dec(self.existing_debt_monthly)
+        th = AnalysisThreshold.for_application(self.application, individual_profile=self.individual_profile)
+        metrics = compute_metrics(self, th)
+        self.repayment_capacity = self._clamp(metrics.get("repayment_capacity"), 18, 2)
+        self.debt_ratio = self._clamp(metrics.get("solvency_ratio") if self.is_corporate else metrics.get("debt_ratio"), 8, 2)
+        self.dscr = self._clamp(metrics.get("global_dscr"), 8, 2) if not self.is_individual else None
+        self.dscr_stress = self._clamp(metrics.get("dscr_stress"), 8, 2) if self.is_corporate else None
+        self.debt_ratio_stress = self._clamp(metrics.get("debt_ratio_stress"), 8, 2) if not self.is_corporate else None
+        self.new_installment = self._clamp(metrics.get("contractual_installment"), 18, 2)
+        self.guarantee_coverage = self._clamp(metrics.get("guarantee_coverage"), 8, 2)
+        score, breakdown = compute_score(self, metrics, th)
+        self.internal_score = self._clamp(score, 6, 2)
+        self.score_breakdown = breakdown
 
-        if self.is_corporate:
-            cash_flow = self.cash_flow
-            self.repayment_capacity = cash_flow - existing
-            self.dscr = (cash_flow / installment) if installment else None
-            assets = self.total_assets
-            self.debt_ratio = (
-                (self.total_debts / assets * Decimal("100")) if assets else None
-            )
-        elif self.is_groupement:
-            self.repayment_capacity = self.collective_capacity - existing
-            income = (
-                _dec(self.collective_contributions)
-                + _dec(self.collective_other_income)
-                + _dec(self.group_activity_turnover)
-            )
-            self.debt_ratio = (
-                ((existing + installment) / income * Decimal("100"))
-                if income else None
-            )
-            self.dscr = None
-        else:
-            self.repayment_capacity = self.disposable_income
-            income = self.total_income
-            self.debt_ratio = (
-                ((existing + installment) / income * Decimal("100"))
-                if income else None
-            )
-            self.dscr = None
-
-        # Bornage pour respecter les contraintes de colonnes.
-        self.debt_ratio = self._clamp(self.debt_ratio, 8, 2)
-        self.dscr = self._clamp(self.dscr, 8, 2)
-        self.repayment_capacity = self._clamp(self.repayment_capacity, 18, 2)
-        self.new_installment = self._clamp(self.new_installment, 18, 2)
-
-        # Contre-analyse : stress test, couverture garanties et scoring pondéré.
-        try:
-            from .analytics import compute_metrics, compute_score
-
-            th = AnalysisThreshold.for_tenant(self.tenant_id)
-            metrics = compute_metrics(self, th)
-            if self.is_corporate:
-                self.dscr_stress = self._clamp(metrics.get("dscr_stress"), 8, 2)
-                self.debt_ratio_stress = None
-            else:
-                self.debt_ratio_stress = self._clamp(
-                    metrics.get("debt_ratio_stress"), 8, 2
-                )
-                self.dscr_stress = None
-            self.guarantee_coverage = self._clamp(
-                metrics.get("guarantee_coverage"), 8, 2
-            )
-            score, breakdown = compute_score(self, metrics, th)
-            self.internal_score = self._clamp(score, 6, 2)
-            self.score_breakdown = breakdown
-        except Exception:
-            # La contre-analyse ne doit jamais bloquer l'enregistrement.
-            pass
-
+        if kwargs.get("update_fields") is not None:
+            kwargs["update_fields"] = set(kwargs["update_fields"]) | {
+                "client_type", "individual_profile", "has_side_activity", "net_salary",
+                "new_installment", "repayment_capacity", "debt_ratio", "dscr",
+                "debt_ratio_stress", "dscr_stress", "guarantee_coverage",
+                "internal_score", "score_breakdown",
+            }
         super().save(*args, **kwargs)
 
         # Une seule analyse de référence par dossier.
@@ -1743,7 +2061,7 @@ class FieldVisit(TenantScopedModel):
 
 
 class Loan(TenantScopedModel):
-    """Prêt mis en place après décaissement d'un dossier approuvé."""
+    """Prêt mis en place après mise en place d'un dossier approuvé."""
 
     class Status(models.TextChoices):
         ACTIVE = "ACTIVE", "En cours"
@@ -1762,7 +2080,7 @@ class Loan(TenantScopedModel):
         "taux d'épargne obligatoire (%)", max_digits=6, decimal_places=3, default=0
     )
     duration_months = models.PositiveIntegerField("durée (mois)")
-    disbursed_at = models.DateField("date de décaissement")
+    disbursed_at = models.DateField("date de mise en place")
     first_due_date = models.DateField("première échéance")
     status = models.CharField(max_length=20, choices=Status.choices, default=Status.ACTIVE)
 
@@ -1781,14 +2099,14 @@ class Loan(TenantScopedModel):
         "n° contrat CBS (numContrat)", max_length=100, blank=True
     )
     cbs_disbursement_status = models.CharField(
-        "statut décaissement CBS",
+        "statut mise en place CBS",
         max_length=40,
         blank=True,
         default="",
         help_text="SUBMITTED / CONFIRMED / FAILED / … (callbacks Perfect).",
     )
     cbs_disbursement_payload = models.JSONField(
-        "dernier payload CBS décaissement", default=dict, blank=True
+        "dernier payload CBS mise en place", default=dict, blank=True
     )
 
     class Meta:

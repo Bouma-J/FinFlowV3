@@ -11,10 +11,17 @@ class TenantOfficerInline(admin.TabularInline):
 
 @admin.register(Tenant)
 class TenantAdmin(admin.ModelAdmin):
+    exclude = ["brand_secondary"]
     list_display = ["code", "name", "country", "zone", "currency", "is_active"]
     list_filter = ["is_active", "country", "zone"]
     search_fields = ["code", "name"]
     inlines = [TenantOfficerInline]
+
+    def save_model(self, request, obj, form, change):
+        if not change or "brand_primary" in form.changed_data:
+            from .branding import secondary_from_primary
+            obj.brand_secondary = secondary_from_primary(obj.brand_primary)
+        super().save_model(request, obj, form, change)
 
 
 @admin.register(Agency)

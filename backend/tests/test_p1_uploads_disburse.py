@@ -1,6 +1,7 @@
 """P1 — validation uploads + décaissement sous verrou."""
 from datetime import date
 from decimal import Decimal
+from unittest.mock import Mock
 
 import pytest
 from django.core.files.uploadedfile import SimpleUploadedFile
@@ -68,15 +69,16 @@ def test_disburse_idempotent_under_lock(tenant_a, product_a, client_a, monkeypat
             currency="XOF",
         )
 
-    monkeypatch.setattr(
-        "apps.credits.services._assert_disbursement_prerequisites",
-        lambda _a: None,
-    )
-
     with tenant_context(tenant_a.id):
-        loan1 = disburse_application(app, disburse_date=date.today(), skip_cbs=True)
-        loan2 = disburse_application(app, disburse_date=date.today(), skip_cbs=True)
+        from tests.setup_helpers import configure_local_cbs, prepare_setup
+        configure_local_cbs(app)
+        executor = prepare_setup(app)
+        submit_cbs = Mock(return_value={"num_contrat": "IDEMPOTENT-CONTRACT", "external_id": app.reference, "raw": {"responseCode": 200}})
+        monkeypatch.setattr("apps.corebanking.disbursement.submit_credit_to_cbs", submit_cbs)
+        loan1 = disburse_application(app, disburse_date=date.today(), user=executor)
+        loan2 = disburse_application(app, disburse_date=date.today(), user=executor)
         assert loan1.id == loan2.id
+        submit_cbs.assert_called_once()
         assert Loan.objects.filter(application=app).count() == 1
         app.refresh_from_db()
         assert app.status == CreditApplication.Status.DISBURSED

@@ -1,4 +1,6 @@
-from django.contrib.auth.models import Group, Permission
+from django.contrib.auth.models import Permission
+from django.db.models import Count
+from django.utils import timezone
 from rest_framework import status, viewsets
 from rest_framework.decorators import action
 from rest_framework.exceptions import PermissionDenied, ValidationError
@@ -8,7 +10,7 @@ from rest_framework.response import Response
 from apps.common.cache_utils import invalidate_prefix
 from apps.common.permissions import (
     HasModelPermission,
-    IsGroupLevel,
+    IsGroupAdministrator,
     MustChangePasswordGate,
 )
 from apps.common.tenancy import get_current_tenant_id, is_group_context
@@ -24,6 +26,7 @@ from .serializers import (
     PermissionSerializer,
     ProvisionFilialeAdminSerializer,
     TenantRoleSerializer,
+    TenantRoleOptionSerializer,
     UserCreateSerializer,
     UserSerializer,
 )
@@ -44,13 +47,15 @@ class UserViewSet(TenantContextMixin, viewsets.ModelViewSet):
         "change_password": [],
         "officers": [],
         "reset_password": ["accounts.change_user"],
-        "provision_filiale_admin": [],  # IsGroupLevel vérifié dans l'action
+        "provision_filiale_admin": [],  # IsGroupAdministrator vérifié dans l'action
     }
     filterset_fields = [
         "tenant", "agency", "data_scope", "is_group_level",
         "is_active", "is_staff",
     ]
     search_fields = ["username", "email", "first_name", "last_name", "employee_id"]
+    ordering_fields = ["username", "last_name", "first_name", "is_active", "id"]
+    ordering = ["last_name", "first_name", "username", "id"]
 
     def get_serializer_class(self):
         if self.action == "create":
@@ -120,10 +125,6 @@ class UserViewSet(TenantContextMixin, viewsets.ModelViewSet):
     @action(detail=False, methods=["get", "patch"])
     def me(self, request):
         """Profil de l'utilisateur connecté (lecture / mise à jour limitée)."""
-        from django.conf import settings
-
-        from apps.common.cache_utils import cache_key, cached_get
-
         if request.method == "PATCH":
             allowed = {"first_name", "last_name", "email", "phone"}
             payload = {k: v for k, v in request.data.items() if k in allowed}
@@ -141,18 +142,9 @@ class UserViewSet(TenantContextMixin, viewsets.ModelViewSet):
             )
 
         data = MeSerializer(request.user, context={"request": request}).data
-        # Ne jamais mettre en cache un profil qui force le changement de MDP :
-        # sinon l'UI peut rester bloquée / débloquée à tort après reset.
-        if data.get("must_change_password"):
-            return Response(data)
-
-        key = cache_key("me", request.user.id)
-        ttl = getattr(settings, "ME_CACHE_TTL", 60)
-
-        def _produce():
-            return MeSerializer(request.user, context={"request": request}).data
-
-        return Response(cached_get(key, _produce, timeout=ttl))
+        # Les permissions et le périmètre doivent refléter toute révocation
+        # dès la prochaine lecture du profil, sans attendre un TTL de cache.
+        return Response(data)
 
     @action(detail=False, methods=["post"], url_path="me/change-password")
     def change_password(self, request):
@@ -247,7 +239,7 @@ class UserViewSet(TenantContextMixin, viewsets.ModelViewSet):
         permission_classes=[
             IsAuthenticated,
             MustChangePasswordGate,
-            IsGroupLevel,
+            IsGroupAdministrator,
         ],
     )
     def provision_filiale_admin(self, request):
@@ -314,7 +306,34 @@ class GroupViewSet(TenantContextMixin, viewsets.ModelViewSet):
     lookup_url_kwarg = "pk"
     action_perms = {
         "group_level": ["accounts.view_tenantrole"],
+        "capabilities": ["accounts.view_tenantrole"],
+        "options": ["accounts.view_tenantrole"],
     }
+
+    @action(detail=False, methods=["get"])
+    def capabilities(self, request):
+        from .capabilities import CAPABILITIES
+        return Response([{"code": code, "label": label, "permission": f"accounts.business_{code}"} for code, label in CAPABILITIES.items()])
+
+    @action(detail=False, methods=["get"])
+    def options(self, request):
+        """Compact role list for screens that only need ids, names and counts."""
+        queryset = self.filter_queryset(
+            self.get_queryset()
+            .prefetch_related(None)
+            .annotate(
+                permission_count=Count("group__permissions", distinct=True),
+                user_count=Count("group__user", distinct=True),
+            )
+            .order_by("tenant__code", "name", "pk")
+        )
+        page = self.paginate_queryset(queryset)
+        serializer = TenantRoleOptionSerializer(
+            page if page is not None else queryset, many=True
+        )
+        if page is not None:
+            return self.get_paginated_response(serializer.data)
+        return Response(serializer.data)
 
     def get_queryset(self):
         qs = TenantRole.objects.select_related("tenant", "group").prefetch_related(
@@ -336,10 +355,15 @@ class GroupViewSet(TenantContextMixin, viewsets.ModelViewSet):
         """Rôles transverses Groupe (ex. comité de crédit groupe)."""
         from apps.accounts.services import (
             CREDIT_COMMITTEE_GROUP_ROLE_NAME,
-            ensure_group_credit_committee_role,
         )
 
-        group = ensure_group_credit_committee_role()
+        from .services import GROUP_CREDIT_COMMITTEE_DJANGO_GROUP
+        from django.contrib.auth.models import Group
+        # La consultation d'un catalogue ne modifie pas les habilitations.
+        group = Group.objects.filter(name=GROUP_CREDIT_COMMITTEE_DJANGO_GROUP).first()
+        if group is None:
+            return Response([])
+        from .capabilities import group_capabilities
         return Response(
             [
                 {
@@ -349,6 +373,7 @@ class GroupViewSet(TenantContextMixin, viewsets.ModelViewSet):
                     "tenant": None,
                     "permissions": [],
                     "is_group_level_role": True,
+                    "capabilities": sorted(group_capabilities(group)),
                 }
             ]
         )
@@ -400,9 +425,30 @@ class DelegationViewSet(TenantContextMixin, viewsets.ModelViewSet):
     ]
     enforce_model_permissions = True
     filterset_fields = ["delegator", "delegate", "is_active"]
+    def perform_create(self, serializer):
+        if not get_current_tenant_id() and serializer.validated_data["delegator"].tenant_id:
+            raise ValidationError("Sélectionnez la filiale de la délégation.")
+        serializer.save(approval_required=True)
+
+    def perform_update(self, serializer):
+        serializer.save(approval_required=True, approved_by=None, approved_at=None)
+
+    @action(detail=True, methods=["post"])
+    def approve(self, request, pk=None):
+        grant = self.get_object()
+        if request.user.pk in (grant.delegator_id, grant.delegate_id):
+            raise PermissionDenied("L'approbateur doit être distinct des deux acteurs de la délégation.")
+        if not request.user.has_perm("accounts.change_delegation") and not request.user.is_superuser:
+            raise PermissionDenied("Le droit de gestion des délégations est requis.")
+        grant.approved_by = request.user
+        grant.approved_at = timezone.now()
+        grant.approval_required = True
+        grant.save()
+        return Response(self.get_serializer(grant).data)
     # Self-service : tout utilisateur authentifié peut gérer SES délégations.
     action_perms = {
         "mine": [],
+        "approve": ["accounts.change_delegation"],
         "give": [],
         "revoke": [],
         "colleagues": [],
@@ -413,7 +459,10 @@ class DelegationViewSet(TenantContextMixin, viewsets.ModelViewSet):
         tenant_id = get_current_tenant_id()
         if tenant_id:
             return qs.filter(delegator__tenant_id=tenant_id)
-        # Groupe sans filiale sélectionnée : pas de liste cross-tenant.
+        if request_user := getattr(self.request, "user", None):
+            if request_user.is_group_level:
+                return qs.filter(delegator__is_group_level=True, delegate__is_group_level=True,
+                                 delegator__tenant__isnull=True, delegate__tenant__isnull=True)
         return qs.none()
 
     @action(detail=False, methods=["get"])
@@ -425,6 +474,8 @@ class DelegationViewSet(TenantContextMixin, viewsets.ModelViewSet):
         qs = User.objects.filter(is_active=True).exclude(pk=request.user.pk)
         if tenant_id:
             qs = qs.filter(tenant_id=tenant_id)
+        else:
+            qs = qs.filter(is_group_level=True, tenant__isnull=True)
         rows = [
             {
                 "id": str(u.id),
@@ -463,13 +514,7 @@ class DelegationViewSet(TenantContextMixin, viewsets.ModelViewSet):
                 {"delegate": "Le délégataire doit être distinct du délégant."}
             )
         # Même filiale (sauf Groupe / superuser)
-        if (
-            not request.user.is_superuser
-            and not getattr(request.user, "is_group_level", False)
-            and request.user.tenant_id
-            and delegate.tenant_id
-            and delegate.tenant_id != request.user.tenant_id
-        ):
+        if delegate.tenant_id != request.user.tenant_id:
             raise ValidationError(
                 {"delegate": "Le délégataire doit appartenir à votre filiale."}
             )
@@ -480,6 +525,7 @@ class DelegationViewSet(TenantContextMixin, viewsets.ModelViewSet):
             start_date=data["start_date"],
             end_date=data["end_date"],
             is_active=True,
+            approval_required=True,
         )
         return Response(
             DelegationSerializer(delegation, context={"request": request}).data,
@@ -495,7 +541,7 @@ class DelegationViewSet(TenantContextMixin, viewsets.ModelViewSet):
         is_owner = delegation.delegator_id == request.user.id
         can_admin = (
             request.user.is_superuser
-            or getattr(request.user, "is_group_level", False)
+            or (getattr(request.user, "is_group_level", False) and request.user.is_staff)
             or request.user.has_perm("accounts.change_delegation")
         )
         if not is_owner and not can_admin:

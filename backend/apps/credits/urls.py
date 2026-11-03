@@ -11,6 +11,9 @@ from .views import (
 )
 
 router = DefaultRouter()
+from .exposure_views import BorrowerGroupViewSet, CreditExposureObservationViewSet
+router.register("borrower-groups", BorrowerGroupViewSet, basename="borrower-group")
+router.register("credit-exposure-observations", CreditExposureObservationViewSet, basename="credit-exposure-observation")
 router.register("credit-applications", CreditApplicationViewSet, basename="credit-application")
 router.register("credit-documents", CreditDocumentViewSet, basename="credit-document")
 router.register("financial-analyses", FinancialAnalysisViewSet, basename="financial-analysis")

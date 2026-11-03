@@ -22,23 +22,18 @@ def risk_level_from_analysis(analysis) -> int | None:
     if analysis is None:
         return None
 
-    rec = (getattr(analysis, "recommendation", None) or "").upper()
-    if rec == "UNFAVORABLE":
-        return 5
-    if rec == "CONDITIONAL":
-        return 3
-    if rec == "FAVORABLE":
-        return 2
+    from .instruction_policy import get_instruction_policy
+    from .scoring import scoring_grid
 
+    policy = get_instruction_policy(analysis.tenant_id, application=analysis.application)
+    rec = (getattr(analysis, "recommendation", None) or "").upper()
+    recommendation_risk = {"UNFAVORABLE": 5, "CONDITIONAL": 3, "FAVORABLE": 2}.get(rec)
     score = _dec(getattr(analysis, "internal_score", None))
-    if score is None:
-        return None
-    if score >= 80:
-        return 1
-    if score >= 65:
-        return 2
-    if score >= 50:
-        return 3
-    if score >= 35:
-        return 4
-    return 5
+    cutoffs = [Decimal(str(value)) for value in scoring_grid(analysis)["risk_cutoffs"]]
+    score_risk = None if score is None else next((index + 1 for index, limit in enumerate(cutoffs) if score >= limit), 5)
+    if policy.risk_mode == "SCORE":
+        return score_risk if score_risk is not None else recommendation_risk
+    if policy.risk_mode == "CONSERVATIVE":
+        values = [value for value in (score_risk, recommendation_risk) if value is not None]
+        return max(values) if values else None
+    return recommendation_risk if recommendation_risk is not None else score_risk

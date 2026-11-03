@@ -2,8 +2,8 @@
 # Fonctions partagées par les scripts d'installation et de mise à jour
 # sur Ubuntu Server. À sourcer, pas à exécuter.
 #
-# Le dépôt FinFlowV3 est privé : le jeton (Contents: Read) est stocké
-# hors du projet, dans /root/.config/finflow/github.token (mode 600).
+# Dépôt public : aucun jeton. S'il est privé, le jeton (Contents: Read)
+# est stocké hors du projet, dans /root/.config/finflow/github.token (mode 600).
 # Il n'est pas écrit dans l'URL origin ni dans le .env applicatif.
 
 FINFLOW_REPO_DEFAULT="https://github.com/Bouma-J/FinFlowV3.git"

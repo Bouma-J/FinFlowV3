@@ -96,6 +96,7 @@ def test_self_validation_blocked(tenant_a, product_a, client_a):
         ApprovalStep.objects.create(
             tenant=tenant_a, definition=definition, name="Validation",
             order=1, required_group=role, sla_hours=24,
+            step_kind=ApprovalStep.StepKind.DECISIONAL,
         )
         application = _ready_application(
             tenant_a, client_a, product_a, reference="D2",

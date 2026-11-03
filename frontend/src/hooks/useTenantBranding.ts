@@ -1,10 +1,12 @@
 import { useQuery } from "@tanstack/react-query";
-import { useEffect } from "react";
+import { useLayoutEffect, useMemo } from "react";
 
 import { api } from "@/api/client";
 import type { Tenant, TenantBranding } from "@/api/types";
 import { useAuth } from "@/auth/AuthContext";
+import { readCachedBranding, rememberBranding } from "@/hooks/brandingCache";
 import {
+  applyBrowserBranding,
   applyTenantTheme,
   resolveLogoUrl,
 } from "@/hooks/brandingTheme";
@@ -21,6 +23,7 @@ export {
 /** Charte publique avant authentification (écran login). */
 export function usePublicTenantBranding(code: string | null | undefined) {
   const normalized = (code || "").trim().toUpperCase();
+  const cached = useMemo(() => readCachedBranding("code", normalized), [normalized]);
 
   const query = useQuery({
     queryKey: ["public-tenant-branding", normalized],
@@ -35,17 +38,20 @@ export function usePublicTenantBranding(code: string | null | undefined) {
     retry: false,
   });
 
-  useEffect(() => {
-    applyTenantTheme(query.data ?? null);
-  }, [query.data]);
+  const branding = query.data ?? (query.isError ? null : cached);
+  useLayoutEffect(() => {
+    applyTenantTheme(branding);
+    applyBrowserBranding(branding);
+    if (branding) rememberBranding(branding);
+  }, [branding]);
 
-  const logoUrl = resolveLogoUrl(query.data ?? null);
+  const logoUrl = resolveLogoUrl(branding);
 
   return {
-    branding: query.data ?? null,
+    branding,
     logoUrl,
-    tenantName: query.data?.name ?? "FIN_FLOW",
-    tenantCode: query.data?.code ?? null,
+    tenantName: branding?.name ?? "FIN_FLOW",
+    tenantCode: branding?.code ?? null,
     isLoading: query.isFetching,
     isError: query.isError,
     notFound: Boolean(normalized) && query.isError,
@@ -56,8 +62,9 @@ export function usePublicTenantBranding(code: string | null | undefined) {
 export function useTenantBranding() {
   const { user, activeTenant } = useAuth();
   const tenantId = user?.is_group_level ? activeTenant : user?.tenant ?? null;
+  const cached = useMemo(() => readCachedBranding("id", tenantId), [tenantId]);
 
-  const { data: tenant } = useQuery({
+  const { data: tenant, isPending } = useQuery({
     queryKey: ["tenant-branding", tenantId],
     queryFn: async () =>
       tenantId
@@ -67,10 +74,13 @@ export function useTenantBranding() {
     staleTime: 60_000,
   });
 
-  const branding = tenant ?? user?.tenant_branding ?? null;
+  const profileBranding = user?.tenant_branding?.id === tenantId ? user.tenant_branding : null;
+  const branding = tenant?.id === tenantId ? tenant : cached ?? profileBranding;
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     applyTenantTheme(branding);
+    applyBrowserBranding(branding);
+    if (branding) rememberBranding(branding);
   }, [branding]);
 
   const logoUrl = resolveLogoUrl(branding);
@@ -80,5 +90,6 @@ export function useTenantBranding() {
     logoUrl,
     tenantName: branding?.name ?? "FIN_FLOW",
     tenantCode: branding?.code ?? null,
+    isLoading: Boolean(tenantId) && !branding && isPending,
   };
 }

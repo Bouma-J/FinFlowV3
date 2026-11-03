@@ -99,9 +99,31 @@ def test_policy_defaults_and_current_endpoint():
         format="json",
         HTTP_X_TENANT_ID=str(tenant.id),
     )
-    assert res_patch.status_code == 200
-    assert res_patch.json()["require_field_visit"] is True
-    assert res_patch.json()["collateral_coverage_mode"] == "BLOCK_SUBMIT"
+    assert res_patch.status_code == 400
+    assert "versionn" in str(res_patch.data)
+    # La même évolution doit passer par rédaction puis publication indépendante.
+    from django.contrib.auth.models import Permission
+    permissions = Permission.objects.filter(content_type__app_label="configuration")
+    admin.user_permissions.add(*permissions)
+    for cache in ("_perm_cache", "_group_perm_cache", "_user_perm_cache"):
+        admin.__dict__.pop(cache, None)
+    headers = {"HTTP_X_TENANT_ID": str(tenant.pk)}
+    created = client.post("/api/v1/configuration-profiles/", {
+        "code": "policy-recette", "name": "Politique recette", "reason": "Révision des contrôles",
+        "overrides": {"policy": {"require_field_visit": True, "collateral_coverage_mode": "BLOCK_SUBMIT"}},
+    }, format="json", **headers)
+    assert created.status_code == 201, created.content
+    url = f"/api/v1/configuration-profiles/{created.data['id']}/"
+    assert client.post(url + "submit/", {}, format="json", **headers).status_code == 200
+    reviewer = User.objects.create_user(username="pol_reviewer", is_group_level=True, is_staff=True)
+    reviewer.user_permissions.add(*permissions)
+    client.force_authenticate(reviewer)
+    published = client.post(url + "publish/", {}, format="json", **headers)
+    assert published.status_code == 200, published.content
+    resolved = client.get("/api/v1/credit-instruction-policy/current/", **headers)
+    assert resolved.status_code == 200
+    assert resolved.data["require_field_visit"] is True
+    assert resolved.data["collateral_coverage_mode"] == "BLOCK_SUBMIT"
 
 
 def test_unfavorable_blocked_when_policy_forbids(tenant_a, client_a, product_a):

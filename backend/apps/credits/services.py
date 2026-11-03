@@ -1,4 +1,4 @@
-"""Services métier des dossiers de crédit (simulation, soumission, décaissement)."""
+"""Services métier des dossiers de crédit (simulation, soumission, mise en place)."""
 import math
 from datetime import date, datetime, timedelta
 from decimal import ROUND_HALF_UP, Decimal
@@ -133,6 +133,7 @@ def compute_amortization_schedule(
     savings_rate=0,
     mechanism="DEGRESSIVE",
     tenant_id=None,
+    conventions=None,
 ):
     """
     Échéancier d'amortissement aligné sur la base core banking (ACT/365,
@@ -155,6 +156,18 @@ def compute_amortization_schedule(
     ``total`` = institution_due + savings (flux client global).
     """
     from .models import RepaymentMechanism
+
+    if conventions is not None:
+        from apps.configuration.simulation_catalog import normalize_conventions
+        from .simulation import configured_schedule
+        rules = normalize_conventions(conventions, allow_snapshot=True)
+        if rules["engine"] == "CONFIGURED":
+            return configured_schedule(
+                principal, annual_rate, duration_months, periodicity=periodicity,
+                start_date=start_date or timezone.localdate(), first_due_date=first_due_date,
+                savings_rate=savings_rate, mechanism=(mechanism or "DEGRESSIVE").upper(),
+                tenant_id=tenant_id, conventions=rules,
+            )
 
     principal = Decimal(principal)
     annual_rate = Decimal(annual_rate or 0)
@@ -260,6 +273,12 @@ def compute_amortization_schedule(
 @transaction.atomic
 def submit_application(application, user):
     """Soumet le dossier et démarre le circuit d'approbation."""
+    from apps.configuration.services import freeze_configuration
+    from apps.tenants.models import Tenant
+
+    Tenant.objects.select_for_update().get(pk=application.tenant_id)
+    CreditApplication.all_tenants.select_for_update().get(pk=application.pk, tenant_id=application.tenant_id)
+    application.refresh_from_db()
     if application.status not in (
         CreditApplication.Status.DRAFT,
         CreditApplication.Status.RETURNED,
@@ -302,10 +321,24 @@ def submit_application(application, user):
     if duration is None:
         raise WorkflowError("La durée demandée est obligatoire.")
 
+    freeze_configuration(application)
+    application.save(update_fields=["configuration_snapshot", "updated_at"])
+    from apps.clients.compliance import kyc_failures
+    from .exposure import assert_exposure
+    compliance_failures = kyc_failures(client, application=application)
+    if compliance_failures:
+        raise WorkflowError(" ".join(compliance_failures))
+    assert_exposure(application, "SUBMIT")
+    from .pricing import materialize_rates
+
+    materialize_rates(application)
     assert_product_bounds(application)
     refresh_reference_analysis(application)
     reference = assert_analysis_ready_for_submission(application)
     assert_policy_submit_gates(application)
+    from .eligibility import assert_configured_rules
+
+    assert_configured_rules(application, "SUBMIT")
     if not reference.is_reference:
         # Garantit qu'il existe toujours une référence explicite.
         FinancialAnalysis.objects.filter(application=application).update(
@@ -414,7 +447,8 @@ def cancel_submission(application, user=None):
 
     application.status = CreditApplication.Status.DRAFT
     application.submitted_at = None
-    application.save(update_fields=["status", "submitted_at", "updated_at"])
+    application.configuration_snapshot = {}
+    application.save(update_fields=["status", "submitted_at", "configuration_snapshot", "updated_at"])
 
     from apps.audit.events import CANCELLED, log_workflow_event
 
@@ -426,9 +460,8 @@ def cancel_submission(application, user=None):
 def cancel_application(application, user=None):
     """Annule formellement un dossier (statut CANCELLED) si la politique l'autorise."""
     from .instruction_policy import get_instruction_policy
-    from .models import CreditInstructionPolicy
 
-    policy = get_instruction_policy(application.tenant_id)
+    policy = get_instruction_policy(application.tenant_id, application=application)
     if not policy.enable_cancel_status:
         raise WorkflowError(
             "L'annulation formelle du dossier n'est pas activée pour cette filiale."
@@ -474,8 +507,8 @@ def cancel_application(application, user=None):
     return application
 
 
-def _assert_disbursement_prerequisites(application):
-    """Contrôles communs avant demande ou exécution du décaissement."""
+def _assert_disbursement_prerequisites(application, *, check_review=True):
+    """Contrôles communs avant demande ou exécution de la mise en place."""
     from apps.contracts.services import (
         missing_required_contracts,
         missing_surety_signed_contracts,
@@ -485,26 +518,38 @@ def _assert_disbursement_prerequisites(application):
         missing_formalizations_for_disbursement,
     )
     from apps.workflow.services import has_pending_conditions
+    from .governance import assert_setup_review
+    from apps.catalog.cbs_mapping import assert_application_cbs_mapping, lock_application_cbs_mapping
+    from apps.corebanking.services import CoreBankingError
+
+    try:
+        lock_application_cbs_mapping(application)
+        assert_application_cbs_mapping(application)
+    except CoreBankingError as exc:
+        raise WorkflowError(str(exc)) from exc
+
+    if check_review:
+        assert_setup_review(application)
 
     if has_pending_conditions(application):
         raise WorkflowError(
-            "Le décaissement est impossible : des réserves sont encore "
+            "La mise en place est impossible : des réserves sont encore "
             "en attente de validation."
         )
 
     missing = missing_required_contracts(application)
     if missing:
         raise WorkflowError(
-            "Le décaissement est impossible : contrats obligatoires non "
+            "La mise en place est impossible : contrats obligatoires non "
             "générés (" + ", ".join(missing) + ")."
         )
 
-    policy = get_instruction_policy(application.tenant_id)
-    if policy.require_surety_signed_contracts:
+    policy = get_instruction_policy(application.tenant_id, application=application)
+    if policy.require_surety_contracts:
         surety_missing = missing_surety_signed_contracts(application)
         if surety_missing:
             raise WorkflowError(
-                "Le décaissement est impossible : contrats de cautionnement "
+                "La mise en place est impossible : contrats de cautionnement "
                 "manquants ou non signés (" + ", ".join(surety_missing) + ")."
             )
 
@@ -512,14 +557,14 @@ def _assert_disbursement_prerequisites(application):
         form_missing = missing_formalizations_for_disbursement(application)
         if form_missing:
             raise WorkflowError(
-                "Le décaissement est impossible : formalisation de garanties "
+                "La mise en place est impossible : formalisation de garanties "
                 "non clôturée (" + ", ".join(form_missing) + ")."
             )
 
 
 @transaction.atomic
 def request_disbursement(application, user=None):
-    """Initie une demande de décaissement (validation par les opérations)."""
+    """Initie une demande de mise en place (validation par les opérations)."""
     application = (
         CreditApplication.objects.select_for_update()
         .select_related("client", "product")
@@ -531,7 +576,7 @@ def request_disbursement(application, user=None):
     ):
         raise WorkflowError(
             "Le dossier doit être approuvé (ou contrat généré) pour "
-            "demander le décaissement."
+            "demander la mise en place."
         )
     _assert_disbursement_prerequisites(application)
 
@@ -552,14 +597,14 @@ def request_disbursement(application, user=None):
 
 
 @transaction.atomic
-def cancel_disbursement_request(application):
-    """Annule une demande de décaissement et restaure le statut précédent."""
+def cancel_disbursement_request(application, user=None):
+    """Annule une demande de mise en place et restaure le statut précédent."""
     application = (
         CreditApplication.objects.select_for_update()
         .get(pk=application.pk)
     )
     if application.status != CreditApplication.Status.DISBURSEMENT_PENDING:
-        raise WorkflowError("Aucune demande de décaissement en attente.")
+        raise WorkflowError("Aucune demande de mise en place en attente.")
 
     previous = application.disbursement_previous_status
     if previous not in (
@@ -572,25 +617,29 @@ def cancel_disbursement_request(application):
     application.disbursement_previous_status = ""
     application.disbursement_requested_at = None
     application.disbursement_requested_by = None
+    from .setup_authorization import invalidate_authorization
+
+    invalidate_authorization(application, "Annulation de la demande de mise en place.", user=user)
     application.save(
         update_fields=[
             "status",
             "disbursement_previous_status",
             "disbursement_requested_at",
             "disbursement_requested_by",
+            "setup_authorization",
             "updated_at",
         ]
     )
     return application
 
 
-def disburse_application(application, disburse_date=None, *, skip_cbs=False):
+def disburse_application(application, disburse_date=None, *, skip_cbs=False, user=None):
     """Crée le prêt et l'échéancier après approbation, avec push CBS Perfect.
 
     Saga courte :
     1. Verrou + prérequis (transaction courte)
     2. Soumission CBS hors transaction (HTTP)
-    3. Création Loan + échéancier sous verrou (idempotent si déjà décaissé)
+    3. Création Loan + échéancier sous verrou (idempotent si déjà mis en place)
     """
     app_id = application.pk
 
@@ -604,6 +653,16 @@ def disburse_application(application, disburse_date=None, *, skip_cbs=False):
             existing = Loan.objects.filter(application_id=app_id).first()
             if existing:
                 return existing
+        from .instruction_policy import get_instruction_policy
+
+        policy = get_instruction_policy(application.tenant_id, application=application)
+        if policy.require_setup_request and application.status != CreditApplication.Status.DISBURSEMENT_PENDING:
+            raise WorkflowError("Une demande de mise en place préalable est obligatoire.")
+        if policy.require_setup_four_eyes:
+            if not user or not application.disbursement_requested_by_id:
+                raise WorkflowError("La séparation des acteurs exige une demande nominative préalable.")
+            if user.pk == application.disbursement_requested_by_id:
+                raise WorkflowError("L'initiateur ne peut exécuter sa propre demande de mise en place.")
         if application.status not in (
             CreditApplication.Status.APPROVED,
             CreditApplication.Status.CONTRACT_GENERATED,
@@ -611,11 +670,27 @@ def disburse_application(application, disburse_date=None, *, skip_cbs=False):
         ):
             raise WorkflowError(
                 "Le dossier doit être approuvé ou en attente de validation "
-                "du décaissement."
+                "de la mise en place."
             )
         _assert_disbursement_prerequisites(application)
+        from .setup_authorization import assert_setup_authorization
+
+        assert_setup_authorization(application, user=user)
+        authorization_at = application.setup_authorization.get("authorized_at")
+
+    # Éliminer les erreurs de conventions ou de dates avant tout effet dans
+    # le CBS. Le même résultat est réutilisé après confirmation de celui-ci.
+    disburse_date = disburse_date or date.today()
+    from .simulation import prepare_setup_schedule
+    from django.core.exceptions import ValidationError as DjangoValidationError
+    try:
+        prepared_schedule = prepare_setup_schedule(application, disburse_date)
+    except (ValueError, ArithmeticError, DjangoValidationError) as exc:
+        raise WorkflowError(f"L'échéancier doit être corrigé avant transmission au CBS : {exc}") from exc
 
     cbs_result = None
+    if skip_cbs:
+        raise WorkflowError("La mise en place exige un retour positif du CBS ; le contournement est interdit.")
     if not skip_cbs:
         try:
             from apps.corebanking.disbursement import submit_credit_to_cbs
@@ -624,9 +699,8 @@ def disburse_application(application, disburse_date=None, *, skip_cbs=False):
             cbs_result = submit_credit_to_cbs(application)
         except CoreBankingError as exc:
             raise WorkflowError(str(exc)) from exc
-
-    disburse_date = disburse_date or date.today()
-    from .amounts import reference_amount
+    if not isinstance(cbs_result, dict) or not cbs_result:
+        raise WorkflowError("Le CBS n'a pas confirmé la mise en place du dossier.")
 
     with transaction.atomic():
         application = (
@@ -642,7 +716,7 @@ def disburse_application(application, disburse_date=None, *, skip_cbs=False):
             if existing:
                 return existing
             raise WorkflowError(
-                "Dossier marqué décaissé sans prêt local — intervention requise."
+                "Dossier marqué mis en place sans prêt local — intervention requise."
             )
         if application.status not in (
             CreditApplication.Status.APPROVED,
@@ -651,17 +725,19 @@ def disburse_application(application, disburse_date=None, *, skip_cbs=False):
         ):
             raise WorkflowError(
                 "Le statut du dossier a changé pendant l'appel CBS. "
-                "Réessayez le décaissement."
+                "Réessayez la mise en place."
             )
 
-        principal = reference_amount(application) or application.amount_requested
-        rate = application.interest_rate or application.product.interest_rate
-        periodicity = application.periodicity
-        savings_rate = application.mandatory_savings_rate or 0
-        mechanism = application.repayment_mechanism or "DEGRESSIVE"
-        first_due = application.first_due_date or _next_business_day(
-            _add_periods(disburse_date, periodicity, 1)
-        )
+        # Une révocation ou modification pendant l'appel HTTP interdit une
+        # confirmation locale avec une autorisation devenue obsolète.
+        _assert_disbursement_prerequisites(application)
+        assert_setup_authorization(application, user=user)
+        if application.setup_authorization.get("authorized_at") != authorization_at:
+            raise WorkflowError("L'autorisation a changé pendant l'échange CBS. Le retour est conservé dans le journal d'intégration ; réexaminez la mise en place.")
+        principal = prepared_schedule["principal"]
+        rate = prepared_schedule["rate"]
+        savings_rate = prepared_schedule["savings_rate"]
+        first_due = prepared_schedule["first_due"]
 
         loan_kwargs = {
             "tenant_id": application.tenant_id,
@@ -696,13 +772,7 @@ def disburse_application(application, disburse_date=None, *, skip_cbs=False):
 
         loan = Loan.objects.create(**loan_kwargs)
 
-        schedule = compute_amortization_schedule(
-            principal, rate, application.duration_months,
-            periodicity=periodicity, start_date=disburse_date,
-            first_due_date=first_due, savings_rate=savings_rate,
-            mechanism=mechanism,
-            tenant_id=application.tenant_id,
-        )
+        schedule = prepared_schedule["schedule"]
         Installment.objects.bulk_create([
             Installment(
                 loan=loan,
@@ -720,14 +790,26 @@ def disburse_application(application, disburse_date=None, *, skip_cbs=False):
         application.status = CreditApplication.Status.DISBURSED
         application.disbursed_at = timezone.now()
         application.disbursement_previous_status = ""
+        application.setup_authorization = {
+            **application.setup_authorization,
+            "executed_by": str(user.pk),
+            "executed_by_display": str(user),
+            "executed_at": timezone.now().isoformat(),
+            "local_override": skip_cbs,
+        }
         app_update_fields = [
             "status",
             "disbursed_at",
             "disbursement_previous_status",
+            "setup_authorization",
             "updated_at",
         ]
         app_update_fields.extend(
             apply_cbs_disbursement_refs_to_application(application, cbs_result)
         )
         application.save(update_fields=list(dict.fromkeys(app_update_fields)))
+        from apps.audit.events import log_workflow_event
+
+        log_workflow_event(application, "SETUP_TRANSMITTED", user=user,
+            detail="Mise en place locale sans appel CBS." if skip_cbs else "Mise en place confirmée ; retour disponible dans le journal d'intégration CBS.")
         return loan

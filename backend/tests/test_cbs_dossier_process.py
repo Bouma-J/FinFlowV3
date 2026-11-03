@@ -22,7 +22,10 @@ pytestmark = pytest.mark.django_db
 @pytest.fixture
 def setup(tenant_a, product_a, client_a):
     ensure_catalog_defaults(tenant_a)
+    from apps.corebanking.models import CoreBankingConnector
     with tenant_context(tenant_a.id):
+        CoreBankingConnector.objects.create(tenant=tenant_a, name="CBS local", protocol="REST",
+            mapping_rules={"force_simulate": True, "disbursement": {"mode": "LOCAL"}}, is_active=True)
         agency = Agency.objects.create(
             tenant=tenant_a,
             code="AG-REF",

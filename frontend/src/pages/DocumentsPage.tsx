@@ -6,6 +6,8 @@ import { Link } from "react-router-dom";
 import { api } from "@/api/client";
 import type { DocumentCategory, GedDocument, Paginated } from "@/api/types";
 import { useAuth } from "@/auth/AuthContext";
+import { hasPerm } from "@/auth/permissions";
+import { DocumentVerification } from "@/components/DocumentVerification";
 import {
   PERM_ADMIN_REFERENTIALS,
   PERM_CLIENTS,
@@ -333,6 +335,7 @@ export function DocumentsPage() {
                     <th>Taille</th>
                     <th>Créé le</th>
                     <th>Expire</th>
+                    <th>Contrôle documentaire</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -392,6 +395,7 @@ export function DocumentsPage() {
                         <td>
                           {d.expiry_date ? formatDate(d.expiry_date) : "—"}
                         </td>
+                        <td onClick={(event) => event.stopPropagation()}><DocumentVerification document={d} canVerify={hasPerm(user, "documents.change_document")} /></td>
                       </tr>
                     );
                   })}

@@ -731,7 +731,7 @@ export function GuaranteeDetailPage({
             </dl>
             <p className="muted small" style={{ marginTop: 8 }}>
               La formalisation est parallèle au crédit et ne bloque pas le
-              décaissement.
+              mise en place.
             </p>
           </Section>
         )}

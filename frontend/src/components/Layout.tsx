@@ -1,4 +1,5 @@
 import { useQuery } from "@tanstack/react-query";
+import { Suspense, useEffect, useMemo, useRef, useState } from "react";
 import {
   Banknote,
   Boxes,
@@ -40,13 +41,13 @@ import {
   X,
   type LucideIcon,
 } from "lucide-react";
-import { useEffect, useMemo, useRef, useState } from "react";
 import { NavLink, Outlet, useLocation, useNavigate } from "react-router-dom";
 
 import { api } from "@/api/client";
 import type { CurrentUser, Paginated, Tenant } from "@/api/types";
 import { useAuth } from "@/auth/AuthContext";
 import { hasAnyPerm } from "@/auth/permissions";
+import { PageLoading } from "@/components/PageLoading";
 import {
   PERM_ADMIN_AGENCIES,
   PERM_ADMIN_ALERTS,
@@ -57,6 +58,7 @@ import {
   PERM_ADMIN_CONTRACTS,
   PERM_ADMIN_DELEGATIONS,
   PERM_ADMIN_POLICY,
+  PERM_ADMIN_CONFIGURATION,
   PERM_ADMIN_PRODUCTS,
   PERM_ADMIN_REFERENTIALS,
   PERM_ADMIN_ROLES,
@@ -234,7 +236,7 @@ const ADMIN_GROUPS: AdminGroup[] = [
         icon: Boxes,
         anyOf: [...PERM_PRODUCTS, ...PERM_ADMIN_PRODUCTS],
         resolveTo: (user) =>
-          hasAnyPerm(user, PERM_ADMIN_PRODUCTS)
+          isFinflowAdmin(user) && hasAnyPerm(user, PERM_ADMIN_PRODUCTS)
             ? "/admin/produits"
             : "/produits",
       },
@@ -268,6 +270,7 @@ const ADMIN_GROUPS: AdminGroup[] = [
         icon: SlidersHorizontal,
         anyOf: PERM_ADMIN_POLICY,
       },
+      { to: "/admin/configuration", label: "Centre de configuration", icon: SlidersHorizontal, anyOf: PERM_ADMIN_CONFIGURATION, finflowAdmin: true },
     ],
   },
   {
@@ -347,6 +350,7 @@ function itemMatchesPath(item: NavItem, pathname: string, resolvedTo: string) {
 }
 
 function canSeeNavItem(item: NavItem, user: CurrentUser | null) {
+  if (item.to.startsWith("/admin/") && !["/admin/audit", "/admin/consolidation", "/admin/intervenants-juridiques", "/admin/delegations", "/admin/roles", "/admin/alertes"].includes(item.to) && !isFinflowAdmin(user)) return false;
   if (item.to === "/admin/filiales" && !user?.is_group_level) return false;
   if (item.groupOnly && !user?.is_group_level) return false;
   if (item.finflowAdmin && !isFinflowAdmin(user)) return false;
@@ -385,13 +389,16 @@ function NavItems({
 function AdminGroupsNav({
   groups,
   user,
+  collapsed,
   onNavigate,
 }: {
   groups: AdminGroup[];
   user: CurrentUser | null;
+  collapsed: boolean;
   onNavigate?: () => void;
 }) {
   const location = useLocation();
+  const groupRefs = useRef(new Map<string, HTMLDivElement>());
   const [openIds, setOpenIds] = useState<string[]>(() =>
     groups
       .filter((g) =>
@@ -430,6 +437,34 @@ function AdminGroupsNav({
     );
   }
 
+  function positionFlyout(element: HTMLDivElement) {
+    const nav = element.closest(".nav");
+    const panel = element.querySelector<HTMLElement>(".nav-group-items");
+    if (!nav || !panel) return;
+    const anchor = element.getBoundingClientRect();
+    const viewport = nav.getBoundingClientRect();
+    const height = Math.min(panel.scrollHeight || 300, window.innerHeight - 16);
+    element.style.setProperty("--nav-flyout-top", `${Math.max(8, Math.min(anchor.top, window.innerHeight - height - 8))}px`);
+    element.style.setProperty("--nav-flyout-left", `${anchor.right - 1}px`);
+    element.style.setProperty("--nav-flyout-visibility", anchor.bottom <= viewport.top || anchor.top >= viewport.bottom ? "hidden" : "visible");
+  }
+
+  useEffect(() => {
+    const first = groupRefs.current.values().next().value;
+    const nav = first?.closest(".nav");
+    const sidebar = first?.closest(".sidebar");
+    const reposition = () => groupRefs.current.forEach(positionFlyout);
+    reposition();
+    nav?.addEventListener("scroll", reposition, { passive: true });
+    window.addEventListener("resize", reposition);
+    sidebar?.addEventListener("transitionend", reposition);
+    return () => {
+      nav?.removeEventListener("scroll", reposition);
+      window.removeEventListener("resize", reposition);
+      sidebar?.removeEventListener("transitionend", reposition);
+    };
+  }, [groups, openIds, collapsed]);
+
   return (
     <>
       {groups.map((group) => {
@@ -445,6 +480,9 @@ function AdminGroupsNav({
         return (
           <div
             key={group.id}
+            ref={(element) => { if (element) groupRefs.current.set(group.id, element); else groupRefs.current.delete(group.id); }}
+            onMouseEnter={(event) => positionFlyout(event.currentTarget)}
+            onFocus={(event) => positionFlyout(event.currentTarget)}
             className={`nav-group${open ? " open" : ""}${
               groupActive ? " has-active" : ""
             }`}
@@ -646,7 +684,7 @@ function UserMenu({
 
 export function Layout() {
   const { user, logout } = useAuth();
-  const { logoUrl, tenantName, tenantCode } = useTenantBranding();
+  const { logoUrl, tenantName, isLoading: brandingLoading } = useTenantBranding();
   const location = useLocation();
   const [collapsed, setCollapsed] = useState(
     () => localStorage.getItem("sidebar-collapsed") === "1",
@@ -687,6 +725,8 @@ export function Layout() {
 
   const closeMobileNav = () => setMobileNavOpen(false);
 
+  if (brandingLoading) return <div className="centered-loader">Chargement…</div>;
+
   return (
     <div
       className={`app-shell${collapsed ? " sidebar-collapsed" : ""}${
@@ -705,12 +745,7 @@ export function Layout() {
       <aside className="sidebar">
         <div className="brand">
           <img src={logoUrl} alt={tenantName} className="brand-logo" />
-          <span className="brand-name">
-            FIN_FLOW
-            <small>
-              {tenantCode ? `${tenantCode} — ${tenantName}` : "Thuin Tech"}
-            </small>
-          </span>
+          <span className="brand-name">Financial Workflow</span>
           <button
             type="button"
             className="sidebar-close-mobile"
@@ -728,6 +763,7 @@ export function Layout() {
               <AdminGroupsNav
                 groups={adminGroups}
                 user={user}
+                collapsed={collapsed}
                 onNavigate={closeMobileNav}
               />
             </>
@@ -783,7 +819,9 @@ export function Layout() {
           </div>
         </header>
         <main className="content">
-          <Outlet />
+          <Suspense fallback={<PageLoading />}>
+            <Outlet />
+          </Suspense>
         </main>
       </div>
     </div>

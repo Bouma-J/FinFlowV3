@@ -1,3 +1,4 @@
+from django.contrib.contenttypes.models import ContentType
 from django.db import transaction
 from rest_framework.decorators import action
 from rest_framework.exceptions import PermissionDenied, ValidationError
@@ -225,7 +226,7 @@ class GuaranteeViewSet(AgencyScopedViewSet):
 
     @action(detail=True, methods=["post"], url_path="initiate-formalization")
     def initiate_formalization(self, request, pk=None):
-        """Démarre une formalisation (ne bloque pas le décaissement)."""
+        """Démarre une formalisation (ne bloque pas la mise en place)."""
         if not (
             request.user.is_superuser
             or request.user.has_perm(
@@ -278,8 +279,33 @@ class GuaranteeReleaseRequestViewSet(TenantScopedViewSet):
         "generate_acte": ["guarantees.initiate_guaranteereleaserequest"],
         # Initiateur ou approbateur du circuit — contrôle dans la méthode.
         "upload_acte_signe": [],
-        "documents": ["guarantees.view_guaranteereleaserequest"],
-        "workflow": ["guarantees.view_guaranteereleaserequest"],
+    }
+    action_any_perms = {
+        "list": [
+            "guarantees.view_guaranteereleaserequest",
+            "guarantees.initiate_guaranteereleaserequest",
+        ],
+        "retrieve": [
+            "guarantees.view_guaranteereleaserequest",
+            "guarantees.initiate_guaranteereleaserequest",
+        ],
+        "workflow": [
+            "guarantees.view_guaranteereleaserequest",
+            "guarantees.initiate_guaranteereleaserequest",
+        ],
+    }
+    action_method_any_perms = {
+        "documents": {
+            "GET": [
+                "guarantees.view_guaranteereleaserequest",
+                "guarantees.initiate_guaranteereleaserequest",
+            ],
+        },
+    }
+    action_method_perms = {
+        "documents": {
+            "POST": ["guarantees.initiate_guaranteereleaserequest"],
+        },
     }
     filterset_fields = ["status", "guarantee", "application", "agency"]
     search_fields = [
@@ -624,9 +650,20 @@ class DationRequestViewSet(TenantScopedViewSet):
         "add_fee": ["guarantees.initiate_dationrequest"],
         "remove_fee": ["guarantees.initiate_dationrequest"],
         "update_draft": ["guarantees.initiate_dationrequest"],
-        "documents": ["guarantees.view_dationrequest"],
         "ensure_categories": ["guarantees.initiate_dationrequest"],
-        "workflow": ["guarantees.view_dationrequest"],
+    }
+    action_any_perms = {
+        "list": ["guarantees.view_dationrequest", "guarantees.initiate_dationrequest"],
+        "retrieve": ["guarantees.view_dationrequest", "guarantees.initiate_dationrequest"],
+        "workflow": ["guarantees.view_dationrequest", "guarantees.initiate_dationrequest"],
+    }
+    action_method_any_perms = {
+        "documents": {
+            "GET": ["guarantees.view_dationrequest", "guarantees.initiate_dationrequest"],
+        },
+    }
+    action_method_perms = {
+        "documents": {"POST": ["guarantees.initiate_dationrequest"]},
     }
     filterset_fields = ["status", "client", "application", "agency"]
     search_fields = [
@@ -897,6 +934,7 @@ class DationRequestViewSet(TenantScopedViewSet):
             if not (
                 request.user.is_superuser
                 or request.user.has_perm("guarantees.view_dationrequest")
+                or request.user.has_perm("guarantees.initiate_dationrequest")
             ):
                 raise PermissionDenied()
             from apps.documents.serializers import DocumentSerializer
@@ -1025,11 +1063,36 @@ class GuaranteeFormalizationRequestViewSet(TenantScopedViewSet):
         "complete": ["guarantees.initiate_guaranteeformalizationrequest"],
         "add_fee": ["guarantees.initiate_guaranteeformalizationrequest"],
         "remove_fee": ["guarantees.initiate_guaranteeformalizationrequest"],
-        "documents": ["guarantees.view_guaranteeformalizationrequest"],
         "ensure_categories": [
             "guarantees.initiate_guaranteeformalizationrequest"
         ],
-        "workflow": ["guarantees.view_guaranteeformalizationrequest"],
+    }
+    action_any_perms = {
+        "list": [
+            "guarantees.view_guaranteeformalizationrequest",
+            "guarantees.initiate_guaranteeformalizationrequest",
+        ],
+        "retrieve": [
+            "guarantees.view_guaranteeformalizationrequest",
+            "guarantees.initiate_guaranteeformalizationrequest",
+        ],
+        "workflow": [
+            "guarantees.view_guaranteeformalizationrequest",
+            "guarantees.initiate_guaranteeformalizationrequest",
+        ],
+    }
+    action_method_any_perms = {
+        "documents": {
+            "GET": [
+                "guarantees.view_guaranteeformalizationrequest",
+                "guarantees.initiate_guaranteeformalizationrequest",
+            ],
+        },
+    }
+    action_method_perms = {
+        "documents": {
+            "POST": ["guarantees.initiate_guaranteeformalizationrequest"],
+        },
     }
     filterset_fields = [
         "status", "legal_stage", "guarantee", "application", "agency",
@@ -1298,6 +1361,9 @@ class GuaranteeFormalizationRequestViewSet(TenantScopedViewSet):
                 request.user.is_superuser
                 or request.user.has_perm(
                     "guarantees.view_guaranteeformalizationrequest"
+                )
+                or request.user.has_perm(
+                    "guarantees.initiate_guaranteeformalizationrequest"
                 )
             ):
                 raise PermissionDenied()

@@ -48,6 +48,12 @@ export function AdminDelegationsPage() {
   const [startDate, setStartDate] = useState(todayISO);
   const [endDate, setEndDate] = useState(() => plusDaysISO(7));
   const [reason, setReason] = useState("");
+  const [maxAmount, setMaxAmount] = useState("");
+  const [product, setProduct] = useState("");
+  const [agency, setAgency] = useState("");
+  const [stepKind, setStepKind] = useState("");
+  const products = useQuery({ queryKey: ["delegation-products", activeTenant], enabled: !needsTenant, queryFn: async () => (await api.get<Paginated<{ id: string; label: string }>>("/credit-products/", { params: { page_size: 300 } })).data });
+  const agencies = useQuery({ queryKey: ["delegation-agencies", activeTenant], enabled: !needsTenant, queryFn: async () => (await api.get<Paginated<{ id: string; name: string }>>("/agencies/", { params: { page_size: 300 } })).data });
   const [error, setError] = useState<string | null>(null);
 
   const users = useQuery({
@@ -85,6 +91,7 @@ export function AdminDelegationsPage() {
           start_date: startDate,
           end_date: endDate,
           reason,
+          max_amount: maxAmount || null, product: product || null, agency: agency || null, step_kind: stepKind,
           is_active: true,
         })
       ).data,
@@ -105,6 +112,7 @@ export function AdminDelegationsPage() {
       qc.invalidateQueries({ queryKey: ["admin-delegations"] });
     },
   });
+  const approve = useMutation({ mutationFn: (id: string) => api.post(`/delegations/${id}/approve/`), onSuccess: () => qc.invalidateQueries({ queryKey: ["admin-delegations"] }), onError: (cause) => setError(apiErrorMessage(cause, "Approbation impossible.")) });
 
   function onCreate(e: FormEvent) {
     e.preventDefault();
@@ -142,6 +150,10 @@ export function AdminDelegationsPage() {
         <Card title="Nouvelle délégation">
           <form className="stack" onSubmit={onCreate}>
             <div className="form-grid two-col">
+              <label className="field"><span>Plafond délégué (vide : sans plafond supplémentaire)</span><input type="number" min={0} value={maxAmount} onChange={(event) => setMaxAmount(event.target.value)} /></label>
+              <label className="field"><span>Produit</span><select value={product} onChange={(event) => setProduct(event.target.value)}><option value="">Tous</option>{products.data?.results.map((row) => <option key={row.id} value={row.id}>{row.label}</option>)}</select></label>
+              <label className="field"><span>Agence</span><select value={agency} onChange={(event) => setAgency(event.target.value)}><option value="">Toutes les agences autorisées</option>{agencies.data?.results.map((row) => <option key={row.id} value={row.id}>{row.name}</option>)}</select></label>
+              <label className="field"><span>Nature d'acte</span><select value={stepKind} onChange={(event) => setStepKind(event.target.value)}><option value="">Toutes</option><option value="CONSULTATIVE">Avis consultatif</option><option value="DECISIONAL">Décision</option></select></label>
               <label className="field">
                 <span>Délégant *</span>
                 <select
@@ -245,7 +257,7 @@ export function AdminDelegationsPage() {
                   <td className="small">
                     {d.start_date} → {d.end_date}
                   </td>
-                  <td className="small">{d.reason || "—"}</td>
+                  <td className="small">{d.reason || "—"}{d.max_amount && <div>Plafond : {d.max_amount}</div>}{d.step_kind && <div>{d.step_kind}</div>}</td>
                   <td>
                     <Badge
                       value={
@@ -256,7 +268,7 @@ export function AdminDelegationsPage() {
                             : "info"
                       }
                       label={
-                        d.is_currently_valid
+                        d.approval_required && !d.approved_by ? "Approbation requise" : d.is_currently_valid
                           ? "En cours"
                           : d.is_active
                             ? "Planifiée / expirée"
@@ -265,6 +277,7 @@ export function AdminDelegationsPage() {
                     />
                   </td>
                   <td>
+                    {canChange && d.approval_required && !d.approved_by && user?.id !== d.delegator && user?.id !== d.delegate && <button className="btn btn-ghost btn-sm" type="button" disabled={approve.isPending} onClick={() => approve.mutate(d.id)}>Approuver</button>}
                     {canChange && d.is_active && (
                       <button
                         type="button"

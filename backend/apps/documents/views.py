@@ -39,6 +39,7 @@ class DocumentViewSet(TenantScopedViewSet):
         "upload_url": ["documents.add_document"],
         "expiring_soon": ["documents.view_document"],
         "restore": ["documents.change_document"],
+        "verify": ["documents.change_document"],
     }
     filterset_fields = ["category", "content_type", "object_id", "category__code"]
     search_fields = [
@@ -72,6 +73,35 @@ class DocumentViewSet(TenantScopedViewSet):
         # Soft-delete : rétention fichier + quota jusqu'à purge hard.
         instance.soft_delete(user=self.request.user)
 
+    def perform_update(self, serializer):
+        doc = serializer.save()
+        doc.verification_status = "PENDING"
+        doc.verified_by = None
+        doc.verified_at = None
+        doc.verification_comment = ""
+        doc.compute_hash()
+        doc.save()
+
+    @action(detail=True, methods=["post"])
+    def verify(self, request, pk=None):
+        from django.db import transaction
+
+        with transaction.atomic():
+            doc = self.get_object()
+            doc = Document.objects.select_for_update().get(pk=doc.pk)
+            state = request.data.get("status")
+            comment = str(request.data.get("comment") or "").strip()
+            if state not in ("VERIFIED", "REJECTED") or not comment:
+                raise ValidationError("Choisissez vérifié ou rejeté et précisez les contrôles effectués.")
+            if state == "VERIFIED" and (not doc.file or (doc.expiry_date and doc.expiry_date < timezone.now().date())):
+                raise ValidationError("Un document absent ou expiré ne peut être vérifié.")
+            doc.verification_status = state
+            doc.verified_by = request.user
+            doc.verified_at = timezone.now()
+            doc.verification_comment = comment
+            doc.save()
+            return Response(self.get_serializer(doc).data)
+
     @action(detail=True, methods=["post"])
     def restore(self, request, pk=None):
         """Restaure un document soft-deleted (droit change_document)."""
@@ -104,7 +134,8 @@ class DocumentViewSet(TenantScopedViewSet):
     def upload_url(self, request):
         """
         URL PUT présignée pour upload direct vers MinIO/S3.
-        Corps : {filename, content_type?, category?}
+        Corps : {filename, size, content_type?, category?}. La taille exacte est
+        exigée et signée pour que S3/MinIO refuse un PUT d'une autre taille.
         """
         if not is_s3_storage():
             raise ValidationError(
@@ -113,23 +144,28 @@ class DocumentViewSet(TenantScopedViewSet):
         filename = (request.data.get("filename") or "upload.bin").strip()
         size = request.data.get("size")
         try:
-            size_int = int(size) if size is not None and str(size).strip() != "" else None
+            if isinstance(size, bool) or size is None or str(size).strip() == "":
+                raise ValueError
+            size_int = int(size)
+            if str(size_int) != str(size).strip() or size_int <= 0:
+                raise ValueError
         except (TypeError, ValueError):
-            size_int = None
+            raise ValidationError(
+                {"size": "Indiquez la taille exacte du fichier en octets."}
+            )
         from apps.common.upload_validation import assert_upload_meta
 
         filename = assert_upload_meta(filename=filename, size=size_int)
         tenant_id = get_current_tenant_id() or "group"
-        if size_int:
-            from apps.documents.quotas import assert_ged_quota
-            from apps.tenants.models import Tenant
+        from apps.documents.quotas import assert_ged_quota
+        from apps.tenants.models import Tenant
 
-            tenant = (
-                Tenant.objects.filter(pk=tenant_id).first()
-                if tenant_id != "group"
-                else None
-            )
-            assert_ged_quota(tenant, size_int)
+        tenant = (
+            Tenant.objects.filter(pk=tenant_id).first()
+            if tenant_id != "group"
+            else None
+        )
+        assert_ged_quota(tenant, size_int)
         content_type = (
             request.data.get("content_type") or "application/octet-stream"
         )
@@ -139,7 +175,7 @@ class DocumentViewSet(TenantScopedViewSet):
         category = safe_filename(raw_category.replace("/", "_")) or "misc"
         key = f"documents/{tenant_id}/{category}/{uuid.uuid4().hex}_{filename}"
         payload = generate_presigned_upload(
-            key=key, content_type=content_type, expires=900
+            key=key, content_type=content_type, size_bytes=size_int, expires=900
         )
         if not payload:
             raise ValidationError("Impossible de générer l'URL présignée.")

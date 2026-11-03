@@ -1,4 +1,5 @@
 """Calcul et agrégation des frais d'un dossier de crédit."""
+
 from __future__ import annotations
 
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
@@ -25,19 +26,27 @@ def fees_base_amount(application) -> Decimal | None:
 
 
 def build_fees_breakdown(application) -> dict:
+    from .pricing import quote_pricing
+
+    return quote_pricing(application)["fees"]
+
+
+def build_legacy_fees_breakdown(application, manual_fees=None) -> dict:
     """
     Liste des frais (dossier + additionnels) avec montants calculés et total.
 
     Les frais sont exprimés pour information / contractualisation. Ils sont
-    prélevés par le CBS sur le montant décaissé (montant accordé) — Fin Flow
-    débourse le montant accordé intégral, sans soustraction locale.
+    prélevés par le CBS sur le montant mis en place (montant accordé) — Fin Flow
+    transmet le montant accordé intégral, sans soustraction locale.
     """
     base = fees_base_amount(application)
     lines = []
 
     dossier_rate = _dec(getattr(application, "fees_rate", None))
     if dossier_rate is not None:
-        amount = _money(base * dossier_rate / Decimal("100")) if base is not None else None
+        amount = (
+            _money(base * dossier_rate / Decimal("100")) if base is not None else None
+        )
         lines.append(
             {
                 "id": None,
@@ -49,19 +58,25 @@ def build_fees_breakdown(application) -> dict:
             }
         )
 
-    for fee in application.extra_fees.all():
-        value = _dec(fee.value) or Decimal("0")
-        if fee.mode == fee.Mode.PERCENT:
-            amount = (
-                _money(base * value / Decimal("100")) if base is not None else None
-            )
+    rows = (
+        manual_fees
+        if manual_fees is not None
+        else [
+            {"id": fee.id, "label": fee.label, "mode": fee.mode, "value": fee.value}
+            for fee in application.extra_fees.all()
+        ]
+    )
+    for fee in rows:
+        value = _dec(fee["value"]) or Decimal("0")
+        if fee["mode"] == "PERCENT":
+            amount = _money(base * value / Decimal("100")) if base is not None else None
         else:
             amount = _money(value)
         lines.append(
             {
-                "id": str(fee.id),
-                "label": fee.label,
-                "mode": fee.mode,
+                "id": str(fee["id"]) if fee.get("id") else None,
+                "label": fee["label"],
+                "mode": fee["mode"],
                 "value": str(value),
                 "amount": str(amount) if amount is not None else None,
                 "is_dossier": False,
@@ -87,12 +102,13 @@ def build_fees_breakdown(application) -> dict:
     }
 
 
-def sync_extra_fees(application, payload) -> None:
-    """Remplace les frais additionnels à partir d'une liste JSON."""
-    from .models import CreditApplicationFee
+def parse_extra_fees(payload):
+    """Valide toutes les lignes avant toute suppression ou écriture."""
+    from django.core.exceptions import ValidationError
+    from apps.configuration.pricing_catalog import number
 
     if payload is None:
-        return
+        return None
     if isinstance(payload, str):
         import json
 
@@ -100,27 +116,55 @@ def sync_extra_fees(application, payload) -> None:
             payload = json.loads(payload)
         except json.JSONDecodeError as exc:
             raise ValueError("Liste de frais invalide.") from exc
-    if not isinstance(payload, list):
-        raise ValueError("Une liste de frais est attendue.")
+    if not isinstance(payload, list) or len(payload) > 100:
+        raise ValueError("Une liste de 100 frais au maximum est attendue.")
+    cleaned = []
+    for raw in payload:
+        if not isinstance(raw, dict) or set(raw) - {
+            "label",
+            "mode",
+            "value",
+            "id",
+            "sort_order",
+        }:
+            raise ValueError("Ligne de frais invalide ou champs inconnus.")
+        label, mode = raw.get("label"), raw.get("mode", "AMOUNT")
+        if (
+            not isinstance(label, str)
+            or not label.strip()
+            or len(label) > 150
+            or not isinstance(mode, str)
+            or mode.upper() not in {"AMOUNT", "PERCENT"}
+        ):
+            raise ValueError("Libellé ou mode de frais invalide.")
+        mode = mode.upper()
+        try:
+            value = number(
+                raw.get("value"),
+                maximum="100" if mode == "PERCENT" else "999999999999999.999",
+                nullable=False,
+            )
+        except ValidationError as exc:
+            raise ValueError(" ".join(exc.messages)) from exc
+        cleaned.append({"label": label.strip(), "mode": mode, "value": value})
+    return cleaned
 
-    application.extra_fees.all().delete()
-    for idx, raw in enumerate(payload):
-        if not isinstance(raw, dict):
-            continue
-        label = (raw.get("label") or "").strip()
-        if not label:
-            continue
-        mode = (raw.get("mode") or CreditApplicationFee.Mode.AMOUNT).upper()
-        if mode not in CreditApplicationFee.Mode.values:
-            mode = CreditApplicationFee.Mode.AMOUNT
-        value = _dec(raw.get("value"))
-        if value is None:
-            continue
-        CreditApplicationFee.objects.create(
-            tenant_id=application.tenant_id,
-            application=application,
-            label=label[:150],
-            mode=mode,
-            value=value,
-            sort_order=idx,
-        )
+
+def sync_extra_fees(application, payload) -> None:
+    """Remplace les frais additionnels à partir d'une liste JSON valide."""
+    from django.db import transaction
+    from .models import CreditApplicationFee
+
+    rows = parse_extra_fees(payload)
+    if rows is None:
+        return
+    with transaction.atomic():
+        application.extra_fees.all().delete()
+        for idx, row in enumerate(rows):
+            CreditApplicationFee.objects.create(
+                tenant_id=application.tenant_id,
+                application=application,
+                **row,
+                sort_order=idx,
+            )
+    getattr(application, "_prefetched_objects_cache", {}).pop("extra_fees", None)

@@ -1,7 +1,9 @@
 from django.db import transaction
+from django.db.models.deletion import ProtectedError
 from django.utils import timezone
+from rest_framework import serializers
 from rest_framework.decorators import action
-from rest_framework.exceptions import ValidationError
+from rest_framework.exceptions import PermissionDenied, ValidationError
 from rest_framework.response import Response
 
 from apps.catalog.models import RejectReason
@@ -14,6 +16,7 @@ from .models import (
     ApprovalCondition,
     ApprovalStep,
     ApprovalTask,
+    BusinessCalendar,
     WorkflowDefinition,
     WorkflowInstance,
 )
@@ -21,6 +24,7 @@ from .serializers import (
     ApprovalConditionSerializer,
     ApprovalStepSerializer,
     ApprovalTaskSerializer,
+    BusinessCalendarSerializer,
     ConditionActionSerializer,
     DecisionSerializer,
     WorkflowDefinitionSerializer,
@@ -29,15 +33,32 @@ from .serializers import (
 from .services import (
     WorkflowError,
     assert_decision_coverage,
+    assert_workflow_structure,
     clone_workflow_definition,
     compute_decision_gaps,
     effective_group_ids,
     ensure_definition_editable,
     lift_condition,
     process_decision,
+    user_can_act,
     return_lift,
     validate_condition,
 )
+
+
+class BusinessCalendarViewSet(TenantScopedViewSet):
+    queryset = BusinessCalendar.objects.all()
+    serializer_class = BusinessCalendarSerializer
+    filterset_fields = ["is_active"]
+    search_fields = ["code", "name"]
+
+    def perform_destroy(self, instance):
+        if instance.workflow_definitions.exists():
+            raise ValidationError("Ce calendrier est associé à un circuit. Désactivez-le pour les futurs démarrages.")
+        try:
+            super().perform_destroy(instance)
+        except ProtectedError:
+            raise ValidationError("Ce calendrier est associé à un circuit et ne peut pas être supprimé.")
 
 
 class WorkflowDefinitionViewSet(TenantScopedViewSet):
@@ -51,6 +72,16 @@ class WorkflowDefinitionViewSet(TenantScopedViewSet):
         "clone": ["workflow.add_workflowdefinition"],
     }
 
+    @transaction.atomic
+    def perform_destroy(self, instance):
+        instance = WorkflowDefinition.all_tenants.select_for_update().get(pk=instance.pk, tenant_id=instance.tenant_id)
+        try:
+            ensure_definition_editable(instance)
+        except WorkflowError as exc:
+            raise ValidationError(str(exc))
+        super().perform_destroy(instance)
+
+    @transaction.atomic
     def perform_update(self, serializer):
         """Interdit d'activer un circuit laissant des montants sans décideur.
 
@@ -60,11 +91,13 @@ class WorkflowDefinitionViewSet(TenantScopedViewSet):
         sélection (montant / produit) ne sont modifiables que si le circuit
         n'a pas encore servi.
         """
+        serializer.instance = WorkflowDefinition.all_tenants.select_for_update().get(pk=serializer.instance.pk, tenant_id=serializer.instance.tenant_id)
         criteria_keys = {
             "min_amount",
             "max_amount",
             "product",
             "product_category",
+            "execution_mode", "business_calendar", "code", "version", "target_type",
         }
         if criteria_keys.intersection(serializer.validated_data.keys()):
             try:
@@ -76,20 +109,21 @@ class WorkflowDefinitionViewSet(TenantScopedViewSet):
             serializer.validated_data.get("is_active") is True
             and not serializer.instance.is_active
         )
-        if activating:
-            try:
-                assert_decision_coverage(serializer.instance)
-            except WorkflowError as exc:
-                raise ValidationError(str(exc))
         super().perform_update(serializer)
+        try:
+            if activating or (serializer.instance.is_active and criteria_keys.intersection(serializer.validated_data)):
+                assert_workflow_structure(serializer.instance)
+                assert_decision_coverage(serializer.instance)
+        except WorkflowError as exc:
+            raise ValidationError(str(exc))
 
     @action(detail=True, methods=["post"])
     def clone(self, request, pk=None):
         """Duplique le circuit en version N+1 (étapes incluses)."""
         source = self.get_object()
-        deactivate = request.data.get("deactivate_source", True)
-        if isinstance(deactivate, str):
-            deactivate = deactivate.lower() not in ("0", "false", "no")
+        deactivate = serializers.BooleanField().run_validation(request.data.get("deactivate_source", False))
+        if deactivate and not request.user.has_perm("workflow.change_workflowdefinition"):
+            raise PermissionDenied("La bascule immédiate exige le droit de modifier les circuits.")
         try:
             clone = clone_workflow_definition(
                 source,
@@ -125,17 +159,18 @@ class ApprovalStepViewSet(TenantScopedViewSet):
         Un circuit encore sans étape compte comme en construction, sans quoi
         l'ajout de sa première étape consultative serait refusé.
         """
-        existing = list(definition.steps.all())
-        had_gaps = not existing or bool(
-            compute_decision_gaps(definition, steps=existing)
-        )
         with transaction.atomic():
+            definition = WorkflowDefinition.all_tenants.select_for_update().get(pk=definition.pk, tenant_id=definition.tenant_id)
+            self._guard_editable(definition)
+            existing = list(definition.steps.all())
+            had_gaps = not existing or bool(compute_decision_gaps(definition, steps=existing))
             write()
-            if definition.is_active and not had_gaps:
-                try:
+            try:
+                assert_workflow_structure(definition)
+                if definition.is_active and not had_gaps:
                     assert_decision_coverage(definition)
-                except WorkflowError as exc:
-                    raise ValidationError(str(exc))
+            except WorkflowError as exc:
+                raise ValidationError(str(exc))
 
     def perform_create(self, serializer):
         definition = serializer.validated_data["definition"]
@@ -158,7 +193,17 @@ class ApprovalStepViewSet(TenantScopedViewSet):
 class WorkflowInstanceViewSet(TenantScopedReadOnlyViewSet):
     queryset = WorkflowInstance.objects.prefetch_related("tasks").all()
     serializer_class = WorkflowInstanceSerializer
-    filterset_fields = ["status", "definition"]
+    filterset_fields = ["status", "definition", "object_id"]
+
+    def get_queryset(self):
+        from apps.common.access import apply_workflow_credit_scope
+
+        queryset = apply_workflow_credit_scope(
+            super().get_queryset(), self.request.user
+        )
+        if not self.request.query_params.get("ordering"):
+            queryset = queryset.order_by("-created_at", "-pk")
+        return queryset
 
 
 class ApprovalConditionViewSet(TenantScopedReadOnlyViewSet):
@@ -174,6 +219,11 @@ class ApprovalConditionViewSet(TenantScopedReadOnlyViewSet):
         "return_lift": [],
     }
     filterset_fields = ["application", "status", "task"]
+
+    def get_queryset(self):
+        from apps.common.access import apply_related_data_scope
+
+        return apply_related_data_scope(super().get_queryset(), self.request.user, "application__agency")
 
     @action(detail=True, methods=["post"])
     def lift(self, request, pk=None):
@@ -239,20 +289,64 @@ class ApprovalTaskViewSet(TenantScopedReadOnlyViewSet):
         "my_pending": ["workflow.view_approvaltask"],
         "my_dossiers": ["workflow.view_approvaltask"],
         "decide": [],
+        "committee_participants": [],
     }
     filterset_fields = ["status", "instance", "step"]
+
+    def get_queryset(self):
+        from apps.common.access import apply_workflow_credit_scope
+
+        return apply_workflow_credit_scope(super().get_queryset(), self.request.user, prefix="instance__")
+
+    @action(detail=True, methods=["get"])
+    def committee_participants(self, request, pk=None):
+        """Choix nominatif réservé à l'acteur habilité de cette tâche."""
+        from django.db.models import Q
+        from apps.accounts.models import Delegation, User
+        from .services import _get_credit_application, is_credit_committee_step
+
+        task = self.get_object()
+        application = _get_credit_application(task.instance)
+        if not is_credit_committee_step(task.step) or not user_can_act(request.user, task.step, application, task.instance.amount):
+            raise PermissionDenied("Vous n'êtes pas habilité pour ce comité.")
+        today = timezone.localdate()
+        delegates = Delegation.objects.filter(
+            delegator__groups=task.step.required_group_id, is_active=True,
+            start_date__lte=today, end_date__gte=today,
+        ).values_list("delegate_id", flat=True)
+        candidates = User.objects.filter(is_active=True).filter(
+            Q(tenant_id=task.tenant_id) | Q(is_group_level=True)
+        ).filter(
+            Q(groups=task.step.required_group_id) | Q(pk__in=delegates) | Q(is_superuser=True) | Q(is_group_level=True)
+        ).distinct().order_by("last_name", "first_name", "username")
+        return Response([
+            {"id": str(member.pk), "display_name": member.get_full_name() or member.username}
+            for member in candidates if user_can_act(member, task.step, application, task.instance.amount)
+        ])
 
     @action(detail=False, methods=["get"])
     def my_pending(self, request):
         """Tâches en attente pour les rôles de l'utilisateur (y compris délégations)."""
         if request.user.is_superuser or getattr(request.user, "is_group_level", False):
-            qs = self.get_queryset().filter(status=ApprovalTask.Status.PENDING)
+            qs = self.get_queryset().filter(status=ApprovalTask.Status.PENDING, instance__status=WorkflowInstance.Status.IN_PROGRESS)
         else:
             group_ids = effective_group_ids(request.user)
             qs = self.get_queryset().filter(
                 status=ApprovalTask.Status.PENDING,
+                instance__status=WorkflowInstance.Status.IN_PROGRESS,
                 step__required_group_id__in=group_ids,
             )
+        # Une délégation peut être limitée au montant, au produit ou à l'agence.
+        # La boîte « à traiter » doit appliquer les mêmes règles que decide().
+        permitted_ids = []
+        from apps.credits.models import CreditApplication
+
+        for task in qs:
+            target = task.instance.target
+            application = target if isinstance(target, CreditApplication) else None
+            if task.step.order == task.instance.current_order and user_can_act(request.user, task.step, application, task.instance.amount):
+                permitted_ids.append(task.pk)
+        qs = qs.filter(pk__in=permitted_ids)
         page = self.paginate_queryset(qs)
         serializer = self.get_serializer(page or qs, many=True)
         if page is not None:
@@ -275,11 +369,9 @@ class ApprovalTaskViewSet(TenantScopedReadOnlyViewSet):
         - ``actionable=1`` : alias de queue=actionable
         - ``step_role`` / ``step`` : étape courante (rôle ou nom d'étape)
         """
-        from apps.accounts.services import (
-            CHARGE_AFFAIRE_ROLE_NAME,
-            CHEF_AGENCE_ROLE_NAME,
+        from apps.accounts.capabilities import (
+            AGENCY_MANAGER, RELATIONSHIP_MANAGER, user_has_capability,
         )
-        from apps.collections.access import user_role_names
         from apps.common.access import get_user_agency_ids
         from apps.common.list_filters import query_param
         from apps.common.pagination import DefaultPagination
@@ -294,10 +386,9 @@ class ApprovalTaskViewSet(TenantScopedReadOnlyViewSet):
         user = request.user
         group_ids = effective_group_ids(user)
         see_all = user.is_superuser or getattr(user, "is_group_level", False)
-        role_names = user_role_names(user)
-        is_chef = CHEF_AGENCE_ROLE_NAME in role_names
+        is_chef = user_has_capability(user, AGENCY_MANAGER)
         is_ca = (
-            CHARGE_AFFAIRE_ROLE_NAME in role_names
+            user_has_capability(user, RELATIONSHIP_MANAGER)
             and not is_chef
             and not see_all
         )
@@ -497,6 +588,8 @@ class ApprovalTaskViewSet(TenantScopedReadOnlyViewSet):
 
             is_actionable = bool(
                 my_task and my_task.status == ApprovalTask.Status.PENDING
+                and my_task.step.order == inst.current_order
+                and user_can_act(user, my_task.step, target if isinstance(target, CreditApplication) else None, inst.amount)
             )
             treated = bool(
                 my_task
@@ -684,6 +777,7 @@ class ApprovalTaskViewSet(TenantScopedReadOnlyViewSet):
                 opinion=data.get("opinion") or None,
                 reserves=data.get("reserves"),
                 return_to_submitter=data.get("return_to_submitter", False),
+                committee_record=data.get("committee_record"),
             )
         except WorkflowError as exc:
             raise ValidationError(str(exc))

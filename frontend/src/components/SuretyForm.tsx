@@ -417,6 +417,7 @@ function Text({
       <input
         type={type}
         value={value}
+        required={required}
         onChange={(e) => onChange(e.target.value)}
       />
     </label>

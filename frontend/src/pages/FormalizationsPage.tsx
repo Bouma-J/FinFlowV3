@@ -583,8 +583,8 @@ export function FormalizationNewPage() {
 
       <div className="callout callout-info" style={{ marginBottom: 14 }}>
         La formalisation concerne uniquement les garanties mises en place sur
-        un dossier de crédit. Elle est parallèle et ne bloque pas le
-        décaissement.
+        un dossier de crédit. Elle suit un circuit juridique parallèle et ne
+        bloque pas la mise en place du crédit.
       </div>
 
       <form

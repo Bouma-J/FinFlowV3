@@ -5,7 +5,7 @@ from datetime import timedelta
 from decimal import Decimal
 
 from django.contrib.contenttypes.models import ContentType
-from django.db import transaction
+from django.db import transaction, models
 from django.utils import timezone
 
 from .models import (
@@ -75,7 +75,7 @@ def select_definition(
 
 def definition_is_used(definition):
     """Indique si le circuit a déjà servi pour au moins un dossier."""
-    return WorkflowInstance.objects.filter(definition=definition).exists()
+    return WorkflowInstance.all_tenants.filter(tenant_id=definition.tenant_id, definition=definition).exists()
 
 
 def ensure_definition_editable(definition):
@@ -91,6 +91,31 @@ def ensure_definition_editable(definition):
 def _applicable_steps(definition, amount, risk_level):
     steps = definition.steps.order_by("order")
     return [s for s in steps if s.applies_to(amount, risk_level)]
+
+
+def assert_workflow_structure(definition, steps=None):
+    steps = list(steps if steps is not None else definition.steps.all())
+    if any(step.sla_mode == "BUSINESS" for step in steps):
+        if not definition.business_calendar_id:
+            raise WorkflowError("Le circuit nécessite un calendrier pour les délais ouvrés.")
+        calendar = definition.business_calendar
+        if calendar.tenant_id != definition.tenant_id or not calendar.is_active:
+            raise WorkflowError("Le calendrier doit être actif et appartenir à la filiale du circuit.")
+        from .calendars import capture_calendar
+        try:
+            capture_calendar(calendar)
+        except (ValueError, TypeError) as exc:
+            raise WorkflowError(str(exc))
+    if definition.execution_mode != "EXPLICIT_MODE":
+        return
+    for index, left in enumerate(steps):
+        for right in steps[index + 1:]:
+            if left.order != right.order or left.mode == right.mode == "PARALLEL":
+                continue
+            lower = max(value for value in [Decimal("0"), definition.min_amount, left.min_amount, right.min_amount] if value is not None)
+            uppers = [value for value in [definition.max_amount, left.max_amount, right.max_amount] if value is not None]
+            if not uppers or lower <= min(uppers):
+                raise WorkflowError(f"L'ordre {left.order} contient des étapes simultanées : elles doivent toutes être parallèles, ou avoir des tranches de montant disjointes.")
 
 
 # Plus petit écart de montant distinguable : sert à exprimer « juste au-dessus
@@ -121,18 +146,20 @@ def compute_decision_gaps(definition, steps=None):
         s
         for s in steps
         if s.step_kind == ApprovalStep.StepKind.DECISIONAL
-        and s.min_risk_level is None
+        and s.min_risk_level in (None, 0)
     ]
 
     # L'applicabilité d'une étape ne change qu'en deux points : à son
     # `min_amount` (elle devient applicable) et juste après son `max_amount`
     # (elle cesse de l'être). Ces bornes découpent l'axe des montants en
     # tranches sur lesquelles l'ensemble des étapes applicables est constant.
-    breakpoints = {Decimal("0")}
+    floor = max(Decimal("0"), definition.min_amount or Decimal("0"))
+    ceiling = definition.max_amount
+    breakpoints = {floor}
     for step in steps:
-        if step.min_amount is not None and step.min_amount > 0:
+        if step.min_amount is not None and step.min_amount > floor and (ceiling is None or step.min_amount <= ceiling):
             breakpoints.add(step.min_amount)
-        if step.max_amount is not None:
+        if step.max_amount is not None and step.max_amount + DECISION_GAP_EPSILON > floor and (ceiling is None or step.max_amount + DECISION_GAP_EPSILON <= ceiling):
             breakpoints.add(step.max_amount + DECISION_GAP_EPSILON)
     ordered = sorted(breakpoints)
 
@@ -141,7 +168,7 @@ def compute_decision_gaps(definition, steps=None):
         next_low = ordered[index + 1] if index + 1 < len(ordered) else None
         if any(d.applies_to(low, None) for d in deciders):
             continue
-        high = None if next_low is None else next_low - DECISION_GAP_EPSILON
+        high = ceiling if next_low is None else next_low - DECISION_GAP_EPSILON
         # Fusionne avec la tranche précédente si elles se touchent, pour ne pas
         # présenter à l'administrateur un trou unique découpé en morceaux.
         previous = gaps[-1] if gaps else None
@@ -175,6 +202,9 @@ def format_decision_gaps(gaps):
 
 def assert_decision_coverage(definition, steps=None):
     """Refuse un circuit laissant une tranche de montant sans décideur."""
+    steps = list(definition.steps.all() if steps is None else steps)
+    if not steps:
+        raise WorkflowError("Ajoutez au moins une étape décisionnelle avant d'activer ce circuit.")
     gaps = compute_decision_gaps(definition, steps=steps)
     if gaps:
         raise WorkflowError(
@@ -299,9 +329,21 @@ def start_workflow(target, amount, risk_level=None, definition=None, target_type
             "configurés."
         )
 
+    # Le même verrou protège l'édition structurelle et le premier démarrage.
+    definition = WorkflowDefinition.all_tenants.select_for_update().get(pk=definition.pk, tenant_id=tenant_id)
+    if definition.target_type != target_type or not definition.is_active or not definition.matches(amount, product):
+        raise WorkflowError("Ce circuit n'est plus applicable. Relancez la soumission.")
+    assert_workflow_structure(definition)
+    from .calendars import capture_calendar
+    try:
+        calendar_snapshot = capture_calendar(definition.business_calendar)
+    except (ValueError, TypeError) as exc:
+        raise WorkflowError(str(exc))
     steps = _applicable_steps(definition, amount, risk_level)
     if not steps:
         raise WorkflowError("Aucune étape applicable pour ce dossier.")
+    if not any(step.step_kind == ApprovalStep.StepKind.DECISIONAL for step in steps):
+        raise WorkflowError("Ce dossier ne dispose d'aucune étape décisionnelle applicable. Complétez le circuit.")
 
     instance = WorkflowInstance.objects.create(
         definition=definition,
@@ -311,6 +353,7 @@ def start_workflow(target, amount, risk_level=None, definition=None, target_type
         risk_level=risk_level,
         status=WorkflowInstance.Status.IN_PROGRESS,
         current_order=steps[0].order,
+        calendar_snapshot=calendar_snapshot,
     )
     _open_tasks_for_order(instance, steps, steps[0].order)
     return instance
@@ -375,7 +418,7 @@ def _sync_target_status(instance):
                 from apps.credits.models import CreditInstructionPolicy
 
                 target.decision_date = timezone.now().date()
-                policy = get_instruction_policy(target.tenant_id)
+                policy = get_instruction_policy(target.tenant_id, application=target)
                 forbid_early = (
                     policy.amount_approved_mode
                     == CreditInstructionPolicy.AmountApprovedMode.FORBID
@@ -387,6 +430,10 @@ def _sync_target_status(instance):
                 if target.interest_rate is None:
                     target.interest_rate = target.product.interest_rate
             target.save()
+            if new_status == CreditApplication.Status.APPROVED:
+                from apps.credits.governance import freeze_approval
+
+                freeze_approval(target)
         return
 
     if isinstance(target, GuaranteeReleaseRequest):
@@ -451,6 +498,8 @@ def _sync_target_status(instance):
 
 
 def _apply_proposed_amount(instance, proposed_amount):
+    if proposed_amount > instance.amount and instance.tasks.filter(status="APPROVED", step__step_kind="DECISIONAL").exists():
+        raise WorkflowError("Une augmentation après décision exige un retour et un nouveau circuit d'approbation.")
     target = instance.target
     if target is not None and hasattr(target, "amount_proposed"):
         target.amount_proposed = proposed_amount
@@ -467,7 +516,7 @@ def _apply_proposed_amount(instance, proposed_amount):
         refresh_reference_analysis(target)
 
 
-def user_can_act(user, step):
+def user_can_act(user, step, application=None, amount=None):
     """Indique si l'utilisateur est habilité à décider sur cette étape.
 
     Prend en compte les délégations actives : le délégataire peut agir si
@@ -479,26 +528,49 @@ def user_can_act(user, step):
     """
     if not (user and user.is_authenticated):
         return False
+    if not user.is_active:
+        return False
     if user.is_superuser:
         return True
+    if not user.is_group_level and user.tenant_id != step.tenant_id:
+        return False
+    if application is not None and application.agency_id and not user.is_group_level:
+        from apps.common.access import apply_data_scope
+        from apps.credits.models import CreditApplication
+
+        if not apply_data_scope(CreditApplication.all_tenants.filter(pk=application.pk), user).exists():
+            return False
     if step.required_group_id is None:
         return False
-    if step.required_group_id in effective_group_ids(user):
+    if user.groups.filter(pk=step.required_group_id).exists():
+        return True
+    from apps.accounts.models import Delegation
+    from django.db.models import Q
+
+    today = timezone.now().date()
+    delegated = Delegation.objects.filter(
+        delegate=user, delegator__is_active=True, is_active=True,
+        start_date__lte=today, end_date__gte=today,
+        delegator__groups__id=step.required_group_id,
+    ).filter(Q(approval_required=False) | Q(approved_by__isnull=False))
+    for grant in delegated:
+        if grant.step_kind and grant.step_kind != step.step_kind:
+            continue
+        if grant.max_amount is not None and (amount is None or amount > grant.max_amount):
+            continue
+        if grant.product_id and (application is None or application.product_id != grant.product_id):
+            continue
+        if grant.agency_id and (application is None or application.agency_id != grant.agency_id):
+            continue
         return True
 
-    from apps.accounts.services import (
-        CREDIT_COMMITTEE_GROUP_ROLE_NAME,
-        committee_role_name_for_group,
-        user_has_group_credit_committee_role,
-    )
-
-    role_name = committee_role_name_for_group(
-        getattr(step, "required_group", None)
+    from apps.accounts.capabilities import (
+        GROUP_CREDIT_COMMITTEE, group_has_capability, user_has_capability,
     )
     if (
         getattr(user, "is_group_level", False)
-        and role_name == CREDIT_COMMITTEE_GROUP_ROLE_NAME
-        and user_has_group_credit_committee_role(user)
+        and group_has_capability(getattr(step, "required_group", None), GROUP_CREDIT_COMMITTEE)
+        and user_has_capability(user, GROUP_CREDIT_COMMITTEE)
     ):
         return True
 
@@ -510,13 +582,13 @@ def user_can_act(user, step):
 
 def is_credit_committee_step(step) -> bool:
     """Étape dont le rôle habilité est un comité de crédit (filiale ou groupe)."""
-    from apps.accounts.services import (
-        committee_role_name_for_group,
-        is_credit_committee_role_name,
+    from apps.accounts.capabilities import (
+        CREDIT_COMMITTEE, GROUP_CREDIT_COMMITTEE, group_has_capability,
     )
-
-    return is_credit_committee_role_name(
-        committee_role_name_for_group(getattr(step, "required_group", None))
+    group = getattr(step, "required_group", None)
+    return step.committee_enabled or any(
+        group_has_capability(group, code)
+        for code in (CREDIT_COMMITTEE, GROUP_CREDIT_COMMITTEE)
     )
 
 
@@ -525,13 +597,20 @@ def application_has_committee_pv(application) -> bool:
     from apps.documents.models import Document
 
     ct = ContentType.objects.get_for_model(application.__class__)
-    return Document.all_tenants.filter(
+    documents = Document.all_tenants.filter(
         tenant_id=application.tenant_id,
         content_type=ct,
         object_id=application.pk,
         category__code="PV_COMITE",
         is_deleted=False,
-    ).exists()
+    ).exclude(file="")
+    today = timezone.localdate()
+    documents = documents.filter(models.Q(expiry_date__isnull=True) | models.Q(expiry_date__gte=today))
+    from apps.credits.instruction_policy import get_instruction_policy
+
+    if get_instruction_policy(application.tenant_id, application=application).require_verified_documents:
+        documents = documents.filter(verification_status="VERIFIED")
+    return documents.exists()
 
 
 def _require_committee_pv(task, application, decision):
@@ -541,6 +620,8 @@ def _require_committee_pv(task, application, decision):
     if application is None:
         return
     if not is_credit_committee_step(task.step):
+        return
+    if not task.step.committee_pv_required:
         return
     if application_has_committee_pv(application):
         return
@@ -558,30 +639,32 @@ def effective_group_ids(user) -> set[int]:
     Les membres du comité de crédit Groupe (groupe Django transverse) voient
     aussi les étapes filiales « Comité de crédit groupe ».
     """
-    if not (user and getattr(user, "is_authenticated", False)):
+    if not (user and getattr(user, "is_authenticated", False) and user.is_active):
         return set()
     ids = set(user.groups.values_list("id", flat=True))
     from apps.accounts.models import Delegation
-    from apps.accounts.services import (
-        CREDIT_COMMITTEE_GROUP_ROLE_NAME,
-        user_has_group_credit_committee_role,
+    from apps.accounts.capabilities import (
+        GROUP_CREDIT_COMMITTEE, user_has_capability,
     )
 
     today = timezone.now().date()
     delegated = Delegation.objects.filter(
         delegate_id=user.id,
+        delegator__is_active=True,
+        delegator__tenant_id=user.tenant_id,
         is_active=True,
         start_date__lte=today,
         end_date__gte=today,
-    ).values_list("delegator__groups__id", flat=True)
+    ).filter(models.Q(approval_required=False) | models.Q(approved_by__isnull=False)).values_list("delegator__groups__id", flat=True)
     ids.update(gid for gid in delegated if gid is not None)
 
-    if user_has_group_credit_committee_role(user):
+    if user.is_group_level and user_has_capability(user, GROUP_CREDIT_COMMITTEE):
         from apps.accounts.models import TenantRole
 
         ids.update(
             TenantRole.objects.filter(
-                name=CREDIT_COMMITTEE_GROUP_ROLE_NAME
+                group__permissions__content_type__app_label="accounts",
+                group__permissions__codename="business_group_credit_committee",
             ).values_list("group_id", flat=True)
         )
     return ids
@@ -613,11 +696,14 @@ def cancel_active_workflows_for_target(target) -> int:
 
 
 @transaction.atomic
-def clone_workflow_definition(source, *, user=None, deactivate_source=True):
+def clone_workflow_definition(source, *, user=None, deactivate_source=False):
     """Crée une nouvelle version du circuit avec copie des étapes."""
     from django.db.models import Max
 
     tenant_id = source.tenant_id
+    from apps.tenants.models import Tenant
+    Tenant.objects.select_for_update().get(pk=tenant_id)
+    source = WorkflowDefinition.all_tenants.select_for_update().get(pk=source.pk, tenant_id=tenant_id)
     max_version = (
         WorkflowDefinition.all_tenants.filter(
             tenant_id=tenant_id, code=source.code
@@ -630,7 +716,9 @@ def clone_workflow_definition(source, *, user=None, deactivate_source=True):
         name=source.name,
         target_type=source.target_type,
         version=max_version + 1,
-        is_active=True,
+        is_active=bool(deactivate_source),
+        execution_mode=source.execution_mode,
+        business_calendar_id=source.business_calendar_id,
         min_amount=source.min_amount,
         max_amount=source.max_amount,
         product_id=source.product_id,
@@ -654,7 +742,15 @@ def clone_workflow_definition(source, *, user=None, deactivate_source=True):
             min_risk_level=step.min_risk_level,
             sla_hours=step.sla_hours,
             allow_return=step.allow_return,
+            committee_quorum=step.committee_quorum,
+            **{name: getattr(step, name) for name in (
+                "sla_mode", "committee_enabled", "committee_majority", "committee_majority_numerator",
+                "committee_majority_denominator", "committee_abstentions", "committee_record_required", "committee_pv_required",
+            )},
         )
+    if clone.is_active:
+        assert_workflow_structure(clone)
+        assert_decision_coverage(clone)
     return (
         WorkflowDefinition.all_tenants.prefetch_related("steps")
         .get(pk=clone.pk)
@@ -685,14 +781,21 @@ def _check_self_validation(user, instance):
 
 
 def _open_tasks_for_order(instance, steps, order):
+    from .calendars import business_due_at
     now = timezone.now()
     for step in steps:
         if step.order == order:
+            due_at = None
+            if step.sla_hours or instance.definition.execution_mode == "LEGACY_ORDER":
+                try:
+                    due_at = business_due_at(now, step.sla_hours, instance.calendar_snapshot) if step.sla_mode == "BUSINESS" else now + timedelta(hours=step.sla_hours)
+                except (ValueError, TypeError, KeyError) as exc:
+                    raise WorkflowError(f"Calcul du délai impossible : {exc}")
             ApprovalTask.objects.create(
                 instance=instance,
                 step=step,
                 status=ApprovalTask.Status.PENDING,
-                due_at=now + timedelta(hours=step.sla_hours),
+                due_at=due_at,
             )
     try:
         from apps.notifications.services import schedule_step_notifications
@@ -906,8 +1009,11 @@ def process_decision(
     opinion=None,
     reserves=None,
     return_to_submitter=False,
+    committee_record=None,
 ):
     """Traite une décision sur une tâche d'approbation."""
+    # Sérialise les décisions des branches parallèles avant de verrouiller la tâche.
+    WorkflowInstance.all_tenants.select_for_update().get(pk=task.instance_id, tenant_id=task.tenant_id)
     task = (
         ApprovalTask.objects.select_for_update()
         .select_related("instance", "step", "instance__definition")
@@ -918,13 +1024,15 @@ def process_decision(
         raise WorkflowError("Cette tâche a déjà été traitée.")
 
     instance = task.instance
+    if task.step.order != instance.current_order:
+        raise WorkflowError("Cette tâche ne correspond plus à l'étape courante.")
     if instance.status not in (
         WorkflowInstance.Status.IN_PROGRESS,
         WorkflowInstance.Status.AWAITING_CONDITIONS,
     ):
         raise WorkflowError("Le circuit n'est plus en cours.")
 
-    if not user_can_act(user, task.step):
+    if not user_can_act(user, task.step, application=_get_credit_application(instance), amount=instance.amount):
         raise WorkflowError(
             "Vous n'êtes pas habilité à statuer sur cette étape."
         )
@@ -932,6 +1040,16 @@ def process_decision(
     application = _get_credit_application(instance)
     _check_self_validation(user, instance)
     _require_committee_pv(task, application, decision)
+    if application is not None:
+        from apps.credits.governance import snapshot
+
+        task.decision_snapshot = snapshot(application)
+    if is_credit_committee_step(task.step) and decision != "RETURNED":
+        from .committee import validate_committee
+
+        unfavorable = decision == "REJECTED" or opinion == ApprovalTask.Opinion.DEFAVORABLE
+        record = validate_committee(task, user, committee_record or {}, approve=not unfavorable, reject=unfavorable)
+        task.committee_record = record
 
     validated_opinion = _validate_opinion(task, decision, opinion, reserves)
     if (
@@ -959,6 +1077,9 @@ def process_decision(
         task.save()
         instance.status = WorkflowInstance.Status.REJECTED
         instance.save(update_fields=["status", "updated_at"])
+        for pending in instance.tasks.filter(status=ApprovalTask.Status.PENDING):
+            pending.status = ApprovalTask.Status.SKIPPED
+            pending.save(update_fields=["status", "updated_at"])
         _sync_target_status(instance)
         try:
             from apps.notifications.services import schedule_outcome_notification
@@ -1046,6 +1167,11 @@ def process_decision(
         application, "amount_proposed", None
     ) is not None:
         _apply_proposed_amount(instance, application.amount_proposed)
+    if application is not None:
+        application.refresh_from_db()
+        from apps.credits.governance import snapshot
+
+        task.decision_snapshot = snapshot(application)
     task.save()
 
     if (

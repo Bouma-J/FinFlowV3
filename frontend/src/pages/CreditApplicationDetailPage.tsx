@@ -1,4 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { CreditExposurePanel } from "@/components/CreditExposurePanel";
 import {
   ArrowLeft,
   Ban,
@@ -16,7 +17,6 @@ import {
   FilePenLine,
   FileSignature,
   FileText,
-  Gauge,
   Gavel,
   GitBranch,
   HandCoins,
@@ -53,7 +53,11 @@ import {
 import { Link, useNavigate, useParams } from "react-router-dom";
 
 import { api } from "@/api/client";
+import { ANALYSIS_TABLES, FinancialAnalysisDetails } from "@/components/FinancialAnalysisDetails";
+import { FinancialAnalysisReadout } from "@/components/FinancialAnalysisReadout";
+import { FINANCIAL_SUPPLEMENTS } from "@/components/FinancialAnalysisSupplements";
 import {
+  CLIENT_LABELS,
   CREDIT_LABELS,
   FINANCE_LABELS,
   GUARANTEE_LABELS,
@@ -63,6 +67,7 @@ import {
   type Client,
   type CreditApplication,
   type CreditReadiness,
+  type CreditSetupState,
   type DationRequest,
   type FieldVisit,
   type FinancialAnalysis,
@@ -88,6 +93,7 @@ import { PermLink } from "@/components/PermLink";
 import { ApprovalConditionsCard } from "@/components/ApprovalConditionsCard";
 import { CollateralSummaryCard } from "@/components/CollateralSummaryCard";
 import { DecisionPanel } from "@/components/DecisionPanel";
+import { CreditGovernancePanel } from "@/components/CreditGovernancePanel";
 import { RenewGuaranteesPanel } from "@/components/RenewGuaranteesPanel";
 import { SuretyEngagementActions } from "@/components/SuretyEngagementActions";
 import { Badge, ErrorState, Spinner, formatDate, formatMoney } from "@/components/ui";
@@ -141,6 +147,11 @@ const TIMELINE_LABELS: Record<string, string> = {
   CREATED: "Création du dossier",
   SUBMITTED: "Soumis au circuit d'approbation",
   RESUBMITTED: "Re-soumis après correction",
+  SETUP_REVIEWED: "Contrôle final validé",
+  SETUP_COMPLEMENTS_REQUESTED: "Compléments demandés par l'administration crédit",
+  SETUP_AUTHORIZED: "Mise en place autorisée par l'administration crédit",
+  SETUP_AUTHORIZATION_REVOKED: "Autorisation de mise en place retirée",
+  SETUP_TRANSMITTED: "Mise en place confirmée",
   CANCELLED: "Soumission annulée",
   RETURNED_STEP: "Renvoyé à l'étape précédente",
   RETURNED_SUBMITTER: "Renvoyé au soumissionnaire",
@@ -153,6 +164,11 @@ const TIMELINE_TONE: Record<string, string> = {
   CREATED: "muted",
   SUBMITTED: "info",
   RESUBMITTED: "info",
+  SETUP_REVIEWED: "info",
+  SETUP_COMPLEMENTS_REQUESTED: "warning",
+  SETUP_AUTHORIZED: "success",
+  SETUP_AUTHORIZATION_REVOKED: "warning",
+  SETUP_TRANSMITTED: "success",
   CANCELLED: "warning",
   RETURNED_STEP: "warning",
   RETURNED_SUBMITTER: "warning",
@@ -411,7 +427,7 @@ function scrollToSection(id: string) {
     ?.scrollIntoView({ behavior: "smooth", block: "start" });
 }
 
-function pct(value: string | null): string {
+function pct(value: string | number | null): string {
   if (value === null || value === undefined || value === "") return "—";
   return `${Number(value).toFixed(1)} %`;
 }
@@ -450,7 +466,9 @@ function ScorePanel({
   breakdown: NonNullable<FinancialAnalysis["score_breakdown"]>;
 }) {
   const total = breakdown.total ?? 0;
-  const tone = total >= 70 ? "ok" : total >= 50 ? "mid" : "low";
+  const cutoffs = breakdown.risk_cutoffs;
+  const tone = cutoffs ? (total >= Number(cutoffs[1]) ? "ok" : total >= Number(cutoffs[2]) ? "mid" : "low")
+    : total >= 70 ? "ok" : total >= 50 ? "mid" : "low";
   return (
     <div className={`score-panel score-${tone}`}>
       <div className="score-badge">
@@ -458,11 +476,14 @@ function ScorePanel({
         <span className="score-max">/100</span>
       </div>
       <div className="score-bars">
+        <p className="muted small">{breakdown.engine === "CUSTOM" ? "Grille configurée" : "Grille historique"} · poids disponible : {breakdown.effective_weight ?? 100}. Le score est une aide à la décision, pas une probabilité de défaut.</p>
+        {!!breakdown.missing_metrics?.length && <p className="muted small">Indicateurs manquants : {breakdown.missing_metrics.join(", ")}. {breakdown.missing_data === "ZERO" ? "Ils sont notés zéro." : "Le score utilise les indicateurs disponibles."}</p>}
         {breakdown.components.map((c) => (
           <div key={c.key} className="score-bar-row">
             <span className="score-bar-label">
               {c.label}
               <em>({c.weight}%)</em>
+              {c.raw_value != null && <small>Valeur : {c.raw_value} · borne défavorable {c.bad} / favorable {c.good}</small>}
             </span>
             <span className="score-bar-track">
               <span
@@ -722,19 +743,6 @@ function AnalysisDetail({
     analysis.env_permit_required ||
     analysis.eia_required ||
     !!analysis.jobs_created;
-  const debtTone: "ok" | "warn" | undefined = isCorp
-    ? flags?.leverage_ok === undefined
-      ? undefined
-      : flags.leverage_ok
-        ? "ok"
-        : "warn"
-    : flags?.debt_ratio_ok === undefined
-      ? undefined
-      : flags.debt_ratio_ok
-        ? "ok"
-        : "warn";
-  const dscrTone: "ok" | "warn" | undefined =
-    flags?.dscr_ok === undefined ? undefined : flags.dscr_ok ? "ok" : "warn";
 
   return (
     <div className="analysis-item">
@@ -756,8 +764,7 @@ function AnalysisDetail({
             <Badge
               value={analysis.recommendation}
               label={
-                FINANCE_LABELS.recommendation[analysis.recommendation] ||
-                analysis.recommendation
+                `Avis enregistré : ${FINANCE_LABELS.recommendation[analysis.recommendation] || analysis.recommendation}`
               }
             />
           )}
@@ -788,110 +795,45 @@ function AnalysisDetail({
         {` · enregistrée le ${formatDate(analysis.created_at)}`}
       </p>
 
-      <div className="metric-grid">
-        {isCorp ? (
-          <>
-            <Metric label="Chiffre d'affaires" value={formatMoney(analysis.turnover, cur)} />
-            <Metric
-              label="Marge brute"
-              value={`${formatMoney(analysis.gross_margin, cur)} (${pct(analysis.gross_margin_pct)})`}
-            />
-            <Metric label="EBE" value={formatMoney(analysis.ebe, cur)} />
-            <Metric
-              label="Résultat net"
-              value={`${formatMoney(analysis.net_result, cur)} (${pct(analysis.net_margin_pct)})`}
-            />
-            <Metric label="Cash-flow" value={formatMoney(analysis.cash_flow, cur)} />
-            <Metric label="Capitaux propres" value={formatMoney(analysis.equity, cur)} />
-            <Metric label="BFR" value={formatMoney(analysis.bfr, cur)} />
-            <Metric
-              label="DSCR (couverture dette)"
-              value={analysis.dscr ?? "—"}
-              tone={dscrTone}
-            />
-            <Metric
-              label="Ratio d'endettement"
-              value={pct(analysis.debt_ratio)}
-              tone={debtTone}
-            />
-          </>
-        ) : isGroupement ? (
-          <>
-            <Metric label="Membres" value={analysis.members_count ?? "—"} />
-            <Metric
-              label="Membres cotisants"
-              value={analysis.active_contributing_members ?? "—"}
-              tone={boolTone(flags?.members_ok)}
-            />
-            <Metric
-              label="Cotisations"
-              value={formatMoney(analysis.collective_contributions ?? null, cur)}
-            />
-            <Metric
-              label="CA collectif"
-              value={formatMoney(analysis.group_activity_turnover ?? null, cur)}
-            />
-            <Metric
-              label="Capacité collective"
-              value={
-                analysis.collective_capacity
-                  ? formatMoney(analysis.collective_capacity, cur)
-                  : "—"
-              }
-              tone={boolTone(flags?.capacity_ok)}
-            />
-            <Metric
-              label="Taux d'endettement"
-              value={pct(analysis.debt_ratio)}
-              tone={debtTone}
-            />
-            <Metric
-              label="Solidarité"
-              value={analysis.solidarity_commitment ? "Oui" : "Non"}
-              tone={boolTone(flags?.solidarity_ok)}
-            />
-          </>
-        ) : (
-          <>
-            <Metric
-              label="Profil"
-              value={
-                analysis.individual_profile === "SALARIE"
-                  ? "Salarié"
-                  : analysis.individual_profile === "INDEPENDANT"
-                    ? "Indépendant"
-                    : analysis.individual_profile === "MIXTE"
-                      ? "Mixte"
-                      : "—"
-              }
-            />
-            <Metric label="Total revenus" value={formatMoney(analysis.total_income, cur)} />
-            <Metric label="Total charges" value={formatMoney(analysis.total_household_charges, cur)} />
-            <Metric label="Reste à vivre" value={formatMoney(analysis.disposable_income, cur)} />
-            <Metric
-              label="Taux d'endettement"
-              value={pct(analysis.debt_ratio)}
-              tone={debtTone}
-            />
-          </>
-        )}
-        <Metric
-          label="Échéance institution (hors épargne)"
-          value={analysis.new_installment ? formatMoney(analysis.new_installment, cur) : "—"}
-        />
-        <Metric
-          label="Capacité de remboursement"
-          value={analysis.repayment_capacity ? formatMoney(analysis.repayment_capacity, cur) : "—"}
-        />
-      </div>
+      <FinancialAnalysisReadout analysis={analysis} currency={cur} />
+
+      <details className="subsection"><summary className="subsection-title">Fiabilité et reconstitution financière</summary>
+        <dl className="def-list two">
+          <Row term="Fiabilité des informations" value={({ DECLARED: "Déclarées", PARTIALLY_VERIFIED: "Partiellement vérifiées", VERIFIED: "Vérifiées", AUDITED: "Comptes audités" } as Record<string, string>)[analysis.information_quality] || "Non renseignée"} />
+          <Row term="Date d'arrêté" value={analysis.financial_statement_date ? formatDate(analysis.financial_statement_date) : undefined} />
+          <Row term="Source de remboursement" value={analysis.primary_repayment_source} />
+          <Row term="Pièces financières vérifiées" value={analysis.financial_documents_verified ? "Oui" : "Non"} />
+          <Row term="Mois de relevés examinés" value={analysis.bank_statement_months ?? undefined} />
+          <Row term="Employeur" value={analysis.employer_name} />
+          <Row term="Activité" value={analysis.activity_name} />
+        </dl>
+        {analysis.verification_comment && <p>{analysis.verification_comment}</p>}
+        <div className="metric-grid">
+          <Metric label="Effort mensuel équivalent du nouveau crédit" value={formatMoney(mNum(m, "installment"), cur)} />
+          <Metric label="Ventes reconstituées par produits" value={formatMoney(mNum(m, "reconstituted_sales"), cur)} />
+          <Metric label="Stock net inventorié" value={formatMoney(mNum(m, "inventory_net_value"), cur)} />
+          <Metric label="Mensualités détaillées" value={formatMoney(mNum(m, "detailed_debt_monthly"), cur)} />
+          <Metric label="Mois prévisionnels déficitaires" value={mNum(m, "forecast_deficit_months") ?? "—"} />
+          <Metric label="Trésorerie de clôture la plus basse" value={formatMoney(mNum(m, "forecast_lowest_balance"), cur)} />
+        </div>
+        {analysis.metrics.debt_service_reconciled === false && <p className="form-error">Les mensualités détaillées ne correspondent pas au total déclaré. Rapprocher les engagements avant décision.</p>}
+        {Object.entries(analysis.analysis_details || {}).filter(([key, value]) => !(key in FINANCIAL_SUPPLEMENTS) && !key.endsWith("_detail_mode") && typeof value === "string" && value).map(([key, value]) => <div key={key}>
+          <p className="subsection-label">{({ business_model: "Modèle économique", seasonality: "Saisonnalité", sales_verification: "Vérification du chiffre d'affaires", stock_risks: "Qualité du stock", receivables_quality: "Qualité des créances", asset_ownership: "Propriété des actifs", household_income_evidence: "Justificatifs des revenus", employment_outlook: "Perspectives de l'emploi", project_cost: "Coût du projet", own_contribution: "Apport propre", financing_plan: "Plan de financement", stress_assumptions: "Hypothèses défavorables", monitoring_plan: "Plan de suivi", bureau_reference: "Référence BIC", bureau_discrepancies: "Écarts BIC", banking_behavior: "Fonctionnement bancaire" } as Record<string, string>)[key] || key}</p>
+          <p>{typeof value === "string" ? value : ""}</p>
+        </div>)}
+        {Object.keys(ANALYSIS_TABLES).map((name) => <FinancialAnalysisDetails key={name} name={name} value={analysis.analysis_details || {}} currency={cur} />)}
+      </details>
 
       {analysis.score_breakdown &&
         analysis.score_breakdown.total !== null &&
         analysis.score_breakdown.total !== undefined && (
           <ScorePanel breakdown={analysis.score_breakdown} />
         )}
+      {analysis.score_breakdown?.total === null && !!analysis.score_breakdown.missing_metrics?.length && (
+        <p className="form-error">Score non calculable : {analysis.score_breakdown.missing_metrics.join(", ")}. Complétez les indicateurs exigés par la grille.</p>
+      )}
 
-      <SubSection icon={Gauge} title="Ratios approfondis (contre-analyse)">
+      <details className="subsection"><summary className="subsection-title">Ratios approfondis (contre-analyse)</summary>
         <div className="metric-grid">
           {isCorp ? (
             <>
@@ -901,48 +843,48 @@ function AnalysisDetail({
               <Metric label="Gearing (dettes fin./CP)" value={fRatio(mNum(m, "gearing"))} tone={boolTone(flags?.gearing_ok)} />
               <Metric label="Liquidité générale" value={fRatio(mNum(m, "current_ratio"))} tone={boolTone(flags?.current_ratio_ok)} />
               <Metric label="Liquidité réduite" value={fRatio(mNum(m, "quick_ratio"))} />
-              <Metric label="Fonds de roulement (FR)" value={formatMoney(mNum(m, "working_capital") ?? 0, cur)} />
-              <Metric label="Trésorerie nette (TN)" value={formatMoney(mNum(m, "treasury_net") ?? 0, cur)} />
+              <Metric label="Fonds de roulement (FR)" value={formatMoney(mNum(m, "working_capital"), cur)} />
+              <Metric label="Trésorerie nette (TN)" value={formatMoney(mNum(m, "treasury_net"), cur)} />
               <Metric label="BFR (jours de CA)" value={fDays(mNum(m, "bfr_days"))} />
               <Metric label="Délai clients (DSO)" value={fDays(mNum(m, "dso_days"))} />
               <Metric label="Délai fournisseurs (DPO)" value={fDays(mNum(m, "dpo_days"))} />
               <Metric label="Rotation stocks (DIO)" value={fDays(mNum(m, "dio_days"))} />
               <Metric label="Rentabilité financière (ROE)" value={fPct(mNum(m, "roe"))} />
               <Metric label="Rentabilité économique (ROA)" value={fPct(mNum(m, "roa"))} />
-              <Metric label="Point mort (seuil rentab.)" value={formatMoney(mNum(m, "break_even_turnover") ?? 0, cur)} />
+              <Metric label="Seuil rentabilité (ventilation validée)" value={formatMoney(mNum(m, "break_even_turnover"), cur)} />
               <Metric label="Croissance du CA" value={fPct(mNum(m, "turnover_growth"))} />
               <Metric label="Croissance du résultat" value={fPct(mNum(m, "result_growth"))} />
             </>
           ) : isGroupement ? (
             <>
               <Metric label="Taux d'endettement global" value={fPct(mNum(m, "debt_ratio"))} tone={boolTone(flags?.debt_ratio_ok)} />
-              <Metric label="Revenus collectifs" value={formatMoney(mNum(m, "collective_income") ?? 0, cur)} />
-              <Metric label="Charges collectives" value={formatMoney(mNum(m, "collective_charges") ?? 0, cur)} />
+              <Metric label="Revenus collectifs" value={formatMoney(mNum(m, "collective_income"), cur)} />
+              <Metric label="Charges collectives" value={formatMoney(mNum(m, "collective_charges"), cur)} />
               <Metric
                 label="Capacité nette"
-                value={formatMoney(mNum(m, "collective_net_capacity") ?? 0, cur)}
+                value={formatMoney(mNum(m, "collective_net_capacity"), cur)}
                 tone={boolTone(flags?.capacity_ok)}
               />
-              <Metric label="Concentration cotisants" value={fPct(mNum(m, "contribution_concentration"))} />
+              <Metric label="Participation des cotisants" value={fPct(mNum(m, "contribution_concentration"))} />
             </>
           ) : (
             <>
               <Metric label="Taux d'endettement global" value={fPct(mNum(m, "debt_ratio"))} tone={boolTone(flags?.debt_ratio_ok)} />
-              <Metric label="Revenu pondéré" value={formatMoney(mNum(m, "weighted_income") ?? 0, cur)} />
+              <Metric label="Revenu pondéré" value={formatMoney(mNum(m, "weighted_income"), cur)} />
               <Metric label="Taux d'effort (revenu pondéré)" value={fPct(mNum(m, "debt_ratio_weighted"))} />
-              <Metric label="Reste à vivre après crédit" value={formatMoney(mNum(m, "residual_after_loan") ?? 0, cur)} />
-              <Metric label="Reste à vivre / personne" value={formatMoney(mNum(m, "disposable_per_capita") ?? 0, cur)} tone={boolTone(flags?.living_wage_ok)} />
+              <Metric label="Reste à vivre après crédit" value={formatMoney(mNum(m, "residual_after_loan"), cur)} />
+              <Metric label="Reste à vivre / personne" value={formatMoney(mNum(m, "disposable_per_capita"), cur)} tone={boolTone(flags?.living_wage_ok)} />
               {Number(analysis.net_salary) > 0 && (
                 <>
-                  <Metric label="Quotité cessible disponible" value={formatMoney(mNum(m, "transferable_quota_available") ?? 0, cur)} tone={boolTone(flags?.quota_ok)} />
+                  <Metric label="Quotité cessible disponible" value={formatMoney(mNum(m, "transferable_quota_available"), cur)} tone={boolTone(flags?.quota_ok)} />
                 </>
               )}
             </>
           )}
           <Metric label="Couverture par garanties" value={fPct(mNum(m, "guarantee_coverage"))} tone={boolTone(flags?.guarantee_ok)} />
-          <Metric label="Marge de sécurité" value={formatMoney(mNum(m, "safety_margin") ?? 0, cur)} />
+          <Metric label="Marge de sécurité" value={formatMoney(mNum(m, "safety_margin"), cur)} />
         </div>
-      </SubSection>
+      </details>
 
       <SubSection icon={ShieldAlert} title="Stress test & sensibilité">
         <div className="metric-grid">
@@ -961,9 +903,9 @@ function AnalysisDetail({
           )}
         </div>
         <p className="muted small" style={{ marginTop: 8 }}>
-          Sensibilité calculée avec une baisse de{" "}
+          Scénario : baisse de{" "}
           {analysis.thresholds?.stress_pct ?? 20} % des{" "}
-          {isCorp ? "flux d'exploitation" : isGroupement ? "recettes collectives" : "revenus"}.
+          {isCorp ? "ventes" : isGroupement ? "recettes collectives" : "revenus / ventes d'activité"}, charges maintenues. Les hypothèses complémentaires sont détaillées dans les formules.
         </p>
       </SubSection>
 
@@ -1231,11 +1173,17 @@ function FinancialAnalysesSection({
   currency,
   appId,
   canContribute,
+  loading,
+  error,
+  onRetry,
 }: {
   analyses: FinancialAnalysis[];
   currency: string;
   appId: string;
   canContribute: boolean;
+  loading: boolean;
+  error: boolean;
+  onRetry: () => void;
 }) {
   return (
     <ViewSection
@@ -1259,7 +1207,7 @@ function FinancialAnalysesSection({
         ) : undefined
       }
     >
-      {analyses.length === 0 ? (
+      {error ? <div role="alert"><p className="form-error">Impossible de charger les analyses financières.</p><button type="button" className="btn btn-ghost btn-sm" onClick={onRetry}>Réessayer</button></div> : loading ? <p className="muted">Chargement des analyses financières…</p> : analyses.length === 0 ? (
         <p className="muted small">Aucune analyse financière enregistrée.</p>
       ) : (
         <div className="analysis-list">
@@ -1707,7 +1655,7 @@ function ContractsSection({
       id="sec-contracts"
       icon={FileSignature}
       title="Contrats"
-      description="Génération des contrats à signer avant décaissement."
+      description="Génération des contrats à signer avant mise en place."
     >
       <SubSection icon={FileText} title="Modèles disponibles">
         {templates.length === 0 ? (
@@ -1783,6 +1731,12 @@ export function CreditApplicationDetailPage() {
     enabled: !!id,
   });
 
+  const { data: setupGate } = useQuery({
+    queryKey: ["setup-review", id],
+    queryFn: async () => (await api.get<CreditSetupState>(`/credit-applications/${id}/setup-review/`)).data,
+    enabled: !!id && !!app && ["APPROVED", "CONTRACT_GENERATED", "DISBURSEMENT_PENDING"].includes(app.status),
+  });
+
   const { data: guarantees } = useQuery({
     queryKey: ["guarantees", id],
     queryFn: async () =>
@@ -1850,7 +1804,7 @@ export function CreditApplicationDetailPage() {
     enabled: !!id && canViewReleases,
   });
 
-  const { data: client } = useQuery({
+  const { data: client, isError: clientError, refetch: refetchClient } = useQuery({
     queryKey: ["client", app?.client],
     queryFn: async () =>
       (await api.get<Client>(`/clients/${app!.client}/`)).data,
@@ -1864,7 +1818,7 @@ export function CreditApplicationDetailPage() {
     enabled: !!app?.loan_id,
   });
 
-  const { data: financials } = useQuery({
+  const { data: financials, isLoading: financialLoading, isError: financialError, refetch: refetchFinancials } = useQuery({
     queryKey: ["financial-analysis", id],
     queryFn: async () =>
       (
@@ -1875,11 +1829,20 @@ export function CreditApplicationDetailPage() {
     enabled: !!id,
   });
 
-  const { data: instances } = useQuery({
-    queryKey: ["workflow-instances"],
+  const { data: instances, isLoading: workflowLoading, isError: workflowError, refetch: refetchWorkflow } = useQuery({
+    queryKey: ["workflow-instances", id],
     queryFn: async () =>
-      (await api.get<{ results: WorkflowInstance[] }>("/workflow-instances/"))
-        .data,
+      {
+        const results: WorkflowInstance[] = [];
+        let page = 1;
+        while (true) {
+          const { data } = await api.get<Paginated<WorkflowInstance>>("/workflow-instances/", { params: { object_id: id, page, page_size: 100 } });
+          results.push(...data.results);
+          if (!data.next) return { results };
+          page++;
+        }
+      },
+    enabled: !!id && hasPerm(user, "workflow.view_workflowinstance"),
   });
 
   const { data: myTasks } = useQuery({
@@ -1954,7 +1917,7 @@ export function CreditApplicationDetailPage() {
       qc.invalidateQueries({ queryKey: ["credit-application", id] });
     },
     onError: (e) =>
-      setActionError(extractApiError(e, "Le décaissement a échoué.")),
+      setActionError(extractApiError(e, "La mise en place a échoué.")),
   });
 
   const requestDisburseMutation = useMutation({
@@ -1966,7 +1929,7 @@ export function CreditApplicationDetailPage() {
     },
     onError: (e) =>
       setActionError(
-        extractApiError(e, "La demande de décaissement a échoué."),
+        extractApiError(e, "La demande de mise en place a échoué."),
       ),
   });
 
@@ -2043,9 +2006,9 @@ export function CreditApplicationDetailPage() {
     "sec-terms",
   );
 
-  // Accordéon : conditions du crédit + analyse + collatéral ouverts à l'arrivée.
+  // Les principales informations de décision sont ouvertes à l'arrivée.
   const [openSections, setOpenSections] = useState<Set<string>>(
-    () => new Set(["sec-terms", "sec-financial", "sec-patrimoine"]),
+    () => new Set(["sec-client-profile", "sec-terms", "sec-financial", "sec-patrimoine"]),
   );
 
   useEffect(() => {
@@ -2161,18 +2124,21 @@ export function CreditApplicationDetailPage() {
     app.status,
   );
   const canDisburse =
+    setupGate?.can_transmit === true &&
     (readyForDisburse || app.status === "DISBURSEMENT_PENDING") &&
+    (!(readiness?.policy.require_setup_request || readiness?.policy.require_setup_four_eyes) || app.status === "DISBURSEMENT_PENDING") &&
+    (!readiness?.policy.require_setup_four_eyes || (!!app.disbursement_requested_by && app.disbursement_requested_by !== user?.id)) &&
     hasPerm(user, "credits.disburse_creditapplication");
   const canRequestDisburse =
     readyForDisburse &&
-    hasPerm(user, "credits.initiate_disburse_creditapplication") &&
-    !hasPerm(user, "credits.disburse_creditapplication");
+    setupGate?.authorization_valid === true &&
+    hasPerm(user, "credits.initiate_disburse_creditapplication");
   const canCancelDisburseRequest =
     app.status === "DISBURSEMENT_PENDING" &&
     (hasPerm(user, "credits.initiate_disburse_creditapplication") ||
       hasPerm(user, "credits.disburse_creditapplication"));
   // Contractualisation : visible dès l'approbation ; génération réservée à
-  // l'initiateur (ou un profil privilégié) tant que le dossier n'est pas décaissé.
+  // l'initiateur (ou un profil privilégié) tant que le dossier n'est pas mis en place.
   const showContracts = [
     "APPROVED",
     "CONTRACT_GENERATED",
@@ -2197,7 +2163,7 @@ export function CreditApplicationDetailPage() {
   ].includes(app.status);
   const canContributeWindow =
     isSuper || ((isOwner && openForContribution) || !!myTask);
-  // Après décaissement : plus d'ajout d'analyse financière (lecture seule).
+  // Après mise en place : plus d'ajout d'analyse financière (lecture seule).
   const analysisLocked = [
     "DISBURSED",
     "CLOSED",
@@ -2287,8 +2253,10 @@ export function CreditApplicationDetailPage() {
       ),
       group: "Priorité",
     },
+    { id: "sec-client-profile", icon: UserRound, label: "Profil & conformité client", show: true, group: "Profil" },
     { id: "sec-terms", icon: Banknote, label: "Conditions du crédit", show: true, group: "Instruction" },
     { id: "sec-financial", icon: LineChart, label: "Analyse financière", show: true, group: "Instruction" },
+    { id: "sec-exposure", icon: Wallet, label: "Engagements & relations", show: hasPerm(user, "credits.view_creditexposureobservation"), group: "Instruction" },
     { id: "sec-patrimoine", icon: Landmark, label: "Garanties & cautions", show: true, group: "Instruction" },
     {
       id: "sec-aftersales",
@@ -2503,7 +2471,7 @@ export function CreditApplicationDetailPage() {
                   disabled={requestDisburseMutation.isPending}
                 >
                   <Wallet size={15} />
-                  Demander le décaissement
+                  Demander la mise en place
                 </button>
               )}
               {canDisburse && (
@@ -2514,9 +2482,7 @@ export function CreditApplicationDetailPage() {
                   disabled={disburseMutation.isPending}
                 >
                   <Wallet size={15} />
-                  {app.status === "DISBURSEMENT_PENDING"
-                    ? "Valider le décaissement"
-                    : "Décaisser"}
+                  Transmettre au CBS
                 </button>
               )}
               {canCancelDisburseRequest && (
@@ -2777,6 +2743,89 @@ export function CreditApplicationDetailPage() {
 
         <SectionCollapseContext.Provider value={collapseCtx}>
         <div className="credit-form-main stack">
+          <CreditGovernancePanel applicationId={app.id} status={app.status} />
+          <ViewSection
+            id="sec-client-profile"
+            icon={UserRound}
+            title="Profil & conformité client"
+            description="Identité, coordonnées et état KYC tels qu’enregistrés dans la fiche client."
+            action={
+              <PermLink
+                user={user}
+                anyOf={PERM_CLIENTS}
+                fallback={null}
+                className="btn btn-ghost btn-sm"
+                to={`/clients/${app.client}`}
+              >
+                Ouvrir la fiche client
+              </PermLink>
+            }
+          >
+            {clientError ? (
+              <div role="alert">
+                <p className="form-error">Impossible de charger le profil client. Les informations de conformité sont indisponibles.</p>
+                <button type="button" className="btn btn-ghost btn-sm" onClick={() => void refetchClient()}>Réessayer</button>
+              </div>
+            ) : !client ? (
+              <p className="muted small">Chargement du profil client…</p>
+            ) : (
+              <>
+                <div className="checklist-badges">
+                  <Badge
+                    value={client.kyc_status}
+                    label={
+                      ({
+                        PENDING: "KYC en attente",
+                        VALIDATED: "KYC validé",
+                        REJECTED: "KYC rejeté",
+                        EXPIRED: "KYC expiré",
+                      } as Record<string, string>)[client.kyc_status] || client.kyc_status
+                    }
+                  />
+                  <Badge
+                    value={client.is_active ? "ACTIVE" : "INACTIVE"}
+                    label={client.is_active ? "Client actif" : "Client inactif"}
+                  />
+                </div>
+                <dl className="def-list two">
+                  <Row term="Référence client" value={client.reference} />
+                  <Row term="Nom du client" value={client.display_name} />
+                  <Row term="Type de client" value={CLIENT_LABELS.client_type[client.client_type]} />
+                  <Row term="Téléphone" value={client.phone} />
+                  <Row term="E-mail" value={client.email} />
+                  <Row term="Adresse" value={[client.address, client.city].filter(Boolean).join(", ")} />
+                  {client.client_type === "INDIVIDUAL" ? (
+                    <>
+                      <Row term="Nationalité" value={client.nationality} />
+                      <Row term="Date de naissance" value={client.birth_date ? formatDate(client.birth_date) : undefined} />
+                      <Row term="Profession" value={client.profession} />
+                      <Row term="Situation matrimoniale" value={CLIENT_LABELS.marital_status[client.marital_status]} />
+                      <Row term="Pièce d’identité" value={[CLIENT_LABELS.id_document_type[client.id_document_type] || client.id_document_type, client.national_id].filter(Boolean).join(" · ")} />
+                      <Row term="Validité de la pièce" value={client.id_document_expiry_date ? formatDate(client.id_document_expiry_date) : undefined} />
+                    </>
+                  ) : (
+                    <>
+                      <Row term="Raison sociale" value={client.company_name || client.display_name} />
+                      <Row term="Forme juridique" value={CLIENT_LABELS.legal_form[client.legal_form] || client.legal_form} />
+                      <Row term="IFU" value={client.ifu} />
+                      <Row term="RCCM" value={client.rccm} />
+                      <Row term="Dirigeant" value={[client.manager_first_name, client.manager_last_name].filter(Boolean).join(" ")} />
+                      <Row term="Fonction du dirigeant" value={client.manager_position} />
+                      <Row term="Téléphone du dirigeant" value={client.manager_phone} />
+                      <Row term="Validité de la pièce du dirigeant" value={client.manager_id_document_expiry_date ? formatDate(client.manager_id_document_expiry_date) : undefined} />
+                    </>
+                  )}
+                  <Row term="KYC validé le" value={client.kyc_validated_at ? formatDate(client.kyc_validated_at) : undefined} />
+                  {client.agency === app.agency && <Row term="Agence de rattachement" value={app.agency_display || undefined} />}
+                </dl>
+                {client.kyc_status !== "VALIDATED" && (
+                  <p className="form-error" role="status">
+                    Le statut KYC du client est « {({ PENDING: "en attente", REJECTED: "rejeté", EXPIRED: "expiré" } as Record<string, string>)[client.kyc_status] || client.kyc_status} ». Vérifiez la conformité avant décision.
+                  </p>
+                )}
+              </>
+            )}
+          </ViewSection>
           {myTask && (
             <ViewSection
               id="sec-decision"
@@ -2810,7 +2859,7 @@ export function CreditApplicationDetailPage() {
             <ViewSection
               id="sec-readiness"
               icon={ClipboardCheck}
-              title="Ready à soumettre"
+              title="Préparation à la soumission"
               description="Contrôles selon la politique d'instruction de la filiale."
             >
               <ul className="readiness-list">
@@ -2828,7 +2877,7 @@ export function CreditApplicationDetailPage() {
                         <p className="muted small">{c.message}</p>
                       )}
                       {!c.blocking && !c.ok && (
-                        <span className="muted small">Alerte (non bloquant)</span>
+                        <span className="muted small">{c.key === "cbs_mapping" ? "Bloquant avant autorisation de mise en place" : "Alerte (non bloquant)"}</span>
                       )}
                     </div>
                   </li>
@@ -2883,10 +2932,11 @@ export function CreditApplicationDetailPage() {
               }
             />
             <Row term="Objet du financement" value={app.purpose_type && lbl(CREDIT_LABELS.purpose_type, app.purpose_type)} />
+            <Row term="Objet de financement CBS exact" value={app.cbs_refs?.financing_object?.label ? `${app.cbs_refs.financing_object.label} (${app.cbs_refs.financing_object.cbs_code})` : "À sélectionner"} />
             <Row term="Niveau de risque (circuit)" value={app.risk_level ?? undefined} />
           </dl>
           {app.cbs_refs && (
-            <SubSection icon={Cable} title="Mapping CBS (décaissement)">
+            <details className="subsection"><summary className="subsection-title">Informations de transmission au CBS</summary>
               <dl className="def-list two">
                 <Row
                   term="Périodicité"
@@ -2900,6 +2950,8 @@ export function CreditApplicationDetailPage() {
                   term="Type de crédit"
                   value={app.product_label || "—"}
                 />
+                <Row term="Produit de crédit CBS" value={app.cbs_refs.product_cbs_code || "Produit crédit à configurer"} />
+                <Row term="Référence de remboursement CBS" value={app.cbs_refs.product_repayment_cbs_code || "Référence CBS à renseigner"} />
                 <Row
                   term="Mécanisme de remboursement"
                   value={
@@ -2909,7 +2961,7 @@ export function CreditApplicationDetailPage() {
                   }
                 />
                 <Row
-                  term="codeDevise"
+                  term="Devise transmise"
                   value={
                     app.cbs_refs.currency?.cbs_code || app.currency || "—"
                   }
@@ -2931,13 +2983,14 @@ export function CreditApplicationDetailPage() {
                   value={app.agency_display || "—"}
                 />
               </dl>
-            </SubSection>
+              {!!app.cbs_refs.warnings?.length && <div className="form-error"><strong>Correspondances à compléter avant mise en place</strong><ul>{app.cbs_refs.warnings.map((message) => <li key={message}>{message}</li>)}</ul></div>}
+            </details>
           )}
           {(app.cbs_demande_number ||
             app.cbs_demande_ref ||
             app.cbs_contract_number ||
             app.cbs_operation_date) && (
-            <SubSection icon={Cable} title="Références CBS (décaissement)">
+            <SubSection icon={Cable} title="Références CBS (mise en place)">
               <dl className="def-list two">
                 <Row
                   term="N° demande (numDemande)"
@@ -2969,8 +3022,8 @@ export function CreditApplicationDetailPage() {
                 {app.fees_breakdown.base_amount
                   ? ` (${formatMoney(app.fees_breakdown.base_amount, cur)})`
                   : ""}
-                . Au décaissement, Fin Flow envoie le{" "}
-                <strong>montant accordé</strong> ; le CBS prélève les frais.
+                . À la mise en place, Fin Flow envoie le{" "}
+                <strong>montant accordé</strong> ; les prélèvements relèvent du CBS. Vérifier la concordance des frais avec ses conditions avant mise en place.
               </p>
               <div className="fees-breakdown">
                 <table className="table">
@@ -2984,7 +3037,7 @@ export function CreditApplicationDetailPage() {
                   <tbody>
                     {app.fees_breakdown.lines.map((line, idx) => (
                       <tr key={line.id || `fee-${idx}`}>
-                        <td>{line.label}</td>
+                        <td>{line.label}{line.tax_amount != null && Number(line.tax_amount) > 0 && <span className="muted small"> · dont taxe {formatMoney(line.tax_amount, cur)}</span>}</td>
                         <td>
                           {line.mode === "PERCENT"
                             ? `${line.value} %`
@@ -3004,7 +3057,7 @@ export function CreditApplicationDetailPage() {
                       {app.fees_breakdown.total != null && (
                         <tr>
                           <td colSpan={2}>
-                            <strong>Total des frais</strong>
+                            <strong>Total des frais{app.pricing_quote?.engine === "CONFIGURED" ? ", taxes sur frais comprises" : ""}</strong>
                           </td>
                           <td className="num">
                             <strong>
@@ -3066,7 +3119,19 @@ export function CreditApplicationDetailPage() {
             currency={cur}
             appId={app.id}
             canContribute={canContributeAnalysis}
+            loading={financialLoading}
+            error={financialError}
+            onRetry={() => void refetchFinancials()}
           />
+
+          {hasPerm(user, "credits.view_creditexposureobservation") && <ViewSection
+            id="sec-exposure"
+            icon={Wallet}
+            title="Engagements et relations économiques"
+            description="Endettement global du client et relations économiques déclarées."
+          >
+            <CreditExposurePanel key={app.id} applicationId={app.id} clientId={app.client} currency={app.currency} />
+          </ViewSection>}
 
           {showActivity && (
           <ViewSection
@@ -3441,6 +3506,8 @@ export function CreditApplicationDetailPage() {
             <dl className="def-list two">
               <Row term="Assurance décès-invalidité (ADI)" value={app.has_credit_insurance ? "Oui" : "Non"} />
               <Row term="Compagnie d'assurance" value={app.insurance_company} />
+              <Row term="Numéro de police" value={app.insurance_policy_number} />
+              <Row term="Fin de couverture" value={app.insurance_expiry_date ? formatDate(app.insurance_expiry_date) : undefined} />
               <Row
                 term="Prime d'assurance"
                 value={Number(app.insurance_premium) > 0 ? formatMoney(app.insurance_premium!, cur) : undefined}
@@ -3505,7 +3572,7 @@ export function CreditApplicationDetailPage() {
               périodicité) sur la base du montant{" "}
               {app.amount_proposed ? "proposé" : "demandé"}. Les échéances tombant
               un week-end sont reportées au lundi. L'échéancier définitif est
-              généré au décaissement.
+              généré à la mise en place.
             </p>
             <button
               className="btn btn-ghost btn-sm"
@@ -3706,8 +3773,15 @@ export function CreditApplicationDetailPage() {
             icon={GitBranch}
             title="Circuit d'approbation"
           >
-          {!instance ? (
-            <p className="muted small">Dossier non encore soumis.</p>
+          {!hasPerm(user, "workflow.view_workflowinstance") ? (
+            <p className="muted small">Vous n'êtes pas habilité à consulter le détail du circuit.</p>
+          ) : workflowLoading ? (
+            <p className="muted small">Chargement du circuit…</p>
+          ) : workflowError ? (
+            <div role="alert"><p className="form-error">Impossible de charger le circuit d'approbation.</p><button type="button" className="btn btn-ghost btn-sm" onClick={() => void refetchWorkflow()}>Réessayer</button></div>
+          ) : !instance ? (
+            app.status === "DRAFT" ? <p className="muted small">Dossier non encore soumis.</p>
+              : <p className="form-error" role="alert">Aucun historique de circuit disponible pour ce dossier au statut « {app.status_display || app.status} ». La traçabilité du circuit est à vérifier ; aucune étape de validation ne peut être déduite de ce seul statut.</p>
           ) : (
             <>
               <p className="muted small" style={{ marginTop: 0 }}>

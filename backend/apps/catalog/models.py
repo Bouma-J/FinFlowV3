@@ -1,6 +1,7 @@
 """Catalogue des produits de crédit et référentiels paramétrables."""
 from decimal import Decimal
 
+from django.conf import settings
 from django.core.validators import MinValueValidator
 from django.db import models
 
@@ -32,6 +33,8 @@ class CreditProduct(ReferenceModel):
     category = models.ForeignKey(
         ProductCategory,
         on_delete=models.PROTECT,
+        null=True,
+        blank=True,
         related_name="products",
         verbose_name="famille",
     )
@@ -70,6 +73,16 @@ class CreditProduct(ReferenceModel):
         blank=True,
         help_text="Identifiant Perfect / CBS du produit de remboursement "
         "(ex. compte courant).",
+    )
+    cbs_credit_product = models.ForeignKey(
+        "catalog.CbsProductReference", on_delete=models.PROTECT,
+        null=True, blank=True, related_name="credit_product_mappings",
+        verbose_name="produit crédit CBS confirmé",
+    )
+    cbs_repayment_product = models.ForeignKey(
+        "catalog.CbsProductReference", on_delete=models.PROTECT,
+        null=True, blank=True, related_name="repayment_product_mappings",
+        verbose_name="produit de remboursement CBS confirmé",
     )
 
     class Meta(ReferenceModel.Meta):
@@ -132,7 +145,7 @@ class LoanPeriodicity(CbsMappedReference):
 
 
 class RepaymentMethod(CbsMappedReference):
-    """Méthode / mécanisme de remboursement (mapping idProduitRemb)."""
+    """Mécanisme d'amortissement ; cbs_code est transmis comme idProduitRemb."""
 
     class Meta(CbsMappedReference.Meta):
         verbose_name = "méthode de remboursement"
@@ -170,7 +183,7 @@ class FinancingObject(CbsMappedReference):
         "type d'objet FinFlow",
         max_length=32,
         blank=True,
-        help_text="Code PurposeType (CONSUMPTION, REAL_ESTATE…) pour le mapping décaissement.",
+        help_text="Code PurposeType (CONSUMPTION, REAL_ESTATE…) pour le mapping mise en place.",
     )
 
     class Meta(CbsMappedReference.Meta):
@@ -213,6 +226,45 @@ class CbsManager(CbsMappedReference):
                 name="unique_cbsmanager_code_per_tenant",
             )
         ]
+
+
+class CbsProductReference(TenantScopedModel):
+    """Identifiant produit documenté pour un connecteur, confirmé par un admin.
+
+    La confirmation est documentaire tant que le CBS n'expose pas de catalogue
+    produit connu ; elle ne prétend pas effectuer une vérification distante.
+    """
+
+    class Kind(models.TextChoices):
+        CREDIT = "CREDIT", "Produit de crédit"
+        REPAYMENT = "REPAYMENT", "Produit de remboursement"
+
+    class VerificationStatus(models.TextChoices):
+        PENDING = "PENDING", "À confirmer"
+        VERIFIED = "VERIFIED", "Confirmé sur justificatif"
+
+    connector = models.ForeignKey("corebanking.CoreBankingConnector", on_delete=models.PROTECT)
+    kind = models.CharField(max_length=16, choices=Kind.choices)
+    cbs_code = models.CharField("identifiant produit CBS", max_length=64)
+    label = models.CharField("libellé", max_length=255)
+    currency = models.CharField("devise locale (facultative)", max_length=8, blank=True)
+    source_reference = models.TextField("référence documentaire ou preuve CBS", max_length=2000)
+    is_active = models.BooleanField(default=True)
+    verification_status = models.CharField(
+        max_length=16, choices=VerificationStatus.choices, default=VerificationStatus.PENDING,
+    )
+    verified_at = models.DateTimeField(null=True, blank=True)
+    verified_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.PROTECT, null=True, blank=True, related_name="+")
+
+    class Meta:
+        ordering = ["kind", "label", "cbs_code"]
+        verbose_name = "référence produit CBS"
+        constraints = [models.UniqueConstraint(
+            fields=["tenant", "connector", "kind", "cbs_code"], name="unique_cbs_product_reference",
+        )]
+
+    def __str__(self):
+        return f"{self.label} ({self.cbs_code})"
 
 
 class FinancingSource(CbsMappedReference):

@@ -89,7 +89,7 @@ Flux :
 
 L’adaptateur concret dépend du `protocol` ; les connecteurs « réels » institutionnels restent à brancher selon le CBS cible.
 
-Règle décaissement Fin Flow ↔ CBS :
+Règla mise en place Fin Flow ↔ CBS :
 - Fin Flow enregistre un prêt au **montant accordé**.
 - Les **frais** sont affichés dans Fin Flow mais **prélevés par le CBS**.
 

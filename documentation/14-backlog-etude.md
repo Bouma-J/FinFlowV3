@@ -16,7 +16,7 @@ Chaque fiche tient en une page : problème, état actuel, utilisateurs, dépenda
 | Complet | E08 | Escalade : règles vs tranches | 1 atelier | Aucune |
 | Ambitieux | E09 | Scorecard administrable + STP | 3–4 ateliers | Aucune |
 | Ambitieux | E10 | Notifications client + portail | 3–4 ateliers | Lecture |
-| Ambitieux | E11 | Décaissement par tranches | 3 ateliers | Structurante |
+| Ambitieux | E11 | Mise en place par tranches | 3 ateliers | Structurante |
 | Ambitieux | E12 | Pont comptable + provisions | 4 ateliers | À trancher |
 
 **Ordre d’ateliers recommandé :** E08 et E01 → E02, E03, E06 → E04, E07 → E05 / E11 (après point Perfect) → E09, E10 → E12.
@@ -67,7 +67,7 @@ Rend l’usine de crédit utilisable au quotidien, sans changer la philosophie C
 
 **Problème.** FinFlow refuse à juste titre de saisir un paiement, mais n’offre pas une lecture fiable des encaissements ni une fiche prêt complète. Les rôles Comptable ont des droits qui ne servent à rien.
 
-**Aujourd’hui.** `POST /repayments/` refusé ; prêts en liste ; échéancier local figé au décaissement ; impayés rafraîchis depuis le CBS.
+**Aujourd’hui.** `POST /repayments/` refusé ; prêts en liste ; échéancier local figé à la mise en place ; impayés rafraîchis depuis le CBS.
 
 **Utilisateurs.** Comptable, chargé d’affaires, chef d’agence, recouvrement.
 
@@ -109,7 +109,7 @@ Rend l’usine de crédit utilisable au quotidien, sans changer la philosophie C
 
 **Dépendance CBS.** À trancher. Perfect accepte-t-il plusieurs adhérents / un co-titulaire sur `crd/simple` ?
 
-**Livrable d’étude.** Modèle `ApplicationParty` (emprunteur / co-emprunteur) et impact contrat + décaissement.
+**Livrable d’étude.** Modèle `ApplicationParty` (emprunteur / co-emprunteur) et impact contrat + mise en place.
 
 **Hors scope.** Groupement membre par membre (méthode Grameen). Les cautions existent déjà.
 
@@ -119,17 +119,17 @@ Rend l’usine de crédit utilisable au quotidien, sans changer la philosophie C
 
 ### E06 — Conditions suspensives qui bloquent
 
-**Problème.** Le texte « conditions suspensives » n’empêche pas le décaissement. Seules les réserves du circuit sont structurées.
+**Problème.** Le texte « conditions suspensives » n’empêche pas la mise en place. Seules les réserves du circuit sont structurées.
 
 **Aujourd’hui.** `suspensive_conditions` texte libre ; `ApprovalCondition` ; checklist produit à l’instruction seulement.
 
-**Utilisateurs.** Comité, formalisation, middle-office, décaissement.
+**Utilisateurs.** Comité, formalisation, middle-office, mise en place.
 
-**Dépendance CBS.** Aucune. Gate FinFlow avant l’appel de décaissement.
+**Dépendance CBS.** Aucune. Gate FinFlow avant l’appel de mise en place.
 
 **Livrable d’étude.** Catalogue de CP par produit (assurance, inscription, nantissement) + preuve GED obligatoire.
 
-**Hors scope.** Covenants après décaissement (suivi DSCR annuel).
+**Hors scope.** Covenants après mise en place (suivi DSCR annuel).
 
 **Dépendances.** E04 si la BIC est une CP.
 
@@ -137,7 +137,7 @@ Rend l’usine de crédit utilisable au quotidien, sans changer la philosophie C
 
 ### E07 — Second regard pertes / restructuration
 
-**Problème.** Write-off et restructuration sont un clic permissionné. Le décaissement, lui, a initiateur + valideur.
+**Problème.** Write-off et restructuration sont un clic permissionné. La mise en place, lui, a initiateur + valideur.
 
 **Aujourd’hui.** Permissions `add_writeoff` / `add_loanrestructure` ; restructuration accrochée au dossier de recouvrement.
 
@@ -183,7 +183,7 @@ Positionne FinFlow comme système de décision et de preuve, pas comme ledger.
 
 **Utilisateurs.** Direction des risques, comité, admin politique crédit.
 
-**Dépendance CBS.** Aucune. Décision FinFlow avant décaissement.
+**Dépendance CBS.** Aucune. Décision FinFlow avant mise en place.
 
 **Livrable d’étude.** Grille éditable (poids, cut-off) ; quels tickets en auto-accord / auto-refus / comité.
 
@@ -211,9 +211,9 @@ Positionne FinFlow comme système de décision et de preuve, pas comme ledger.
 
 ---
 
-### E11 — Décaissement par tranches
+### E11 — Mise en place par tranches
 
-**Problème.** Un dossier = un décaissement = un prêt. Inutilisable pour un investissement par jalons (BTP, équipement).
+**Problème.** Un dossier = un mise en place = un prêt. Inutilisable pour un investissement par jalons (BTP, équipement).
 
 **Aujourd’hui.** `disburse_application()` unique ; champs coût projet / quota sans modèle de tranche.
 
@@ -239,7 +239,7 @@ Positionne FinFlow comme système de décision et de preuve, pas comme ledger.
 
 **Dépendance CBS.** À trancher. Soit export des événements FinFlow vers Sage / SAP, soit lecture des écritures CBS. **Pas un second grand livre.**
 
-**Livrable d’étude.** Catalogue d’événements à exporter (décaissement, perte, dation) ; matrice PAR → provision **indicative**.
+**Livrable d’étude.** Catalogue d’événements à exporter (mise en place, perte, dation) ; matrice PAR → provision **indicative**.
 
 **Hors scope.** Grand livre quotidien, ALM, liquidité institutionnelle, clôture de période, états BCEAO complets (chantier superviseur à part).
 

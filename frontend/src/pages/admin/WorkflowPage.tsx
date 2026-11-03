@@ -1,18 +1,20 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Copy, GitBranch, Pencil, Power, Trash2, X } from "lucide-react";
-import { useState, type FormEvent } from "react";
+import { useEffect, useState, type FormEvent } from "react";
 
 import { api } from "@/api/client";
 import type {
   CreditProduct,
   Paginated,
   ProductCategory,
-  Role,
+  RoleOption,
   WorkflowDefinition,
   WorkflowStep,
 } from "@/api/types";
 import { WORKFLOW_LABELS } from "@/api/types";
 import { useAuth } from "@/auth/AuthContext";
+import { hasPerm } from "@/auth/permissions";
+import { BusinessCalendarsEditor, WorkflowExecutionFields, WorkflowExecutionSettings } from "@/components/WorkflowSettings";
 import {
   Badge,
   Card,
@@ -21,7 +23,8 @@ import {
   TenantScopeNotice,
 } from "@/components/ui";
 
-type StepForm = {
+type StepForm = Pick<WorkflowStep, "mode" | "sla_mode" | "committee_enabled" | "committee_majority" | "committee_majority_numerator" | "committee_majority_denominator" | "committee_abstentions" | "committee_record_required" | "committee_pv_required"> & {
+  committee_quorum: number;
   name: string;
   order: number;
   required_group: string;
@@ -30,6 +33,7 @@ type StepForm = {
   min_amount: string;
   max_amount: string;
   allow_return: boolean;
+  min_risk_level: string;
 };
 
 type DefForm = {
@@ -41,9 +45,16 @@ type DefForm = {
   max_amount: string;
   product: string;
   product_category: string;
+  execution_mode: string;
+  business_calendar: string;
 };
 
 const EMPTY_STEP: StepForm = {
+  mode: "SEQUENTIAL", sla_mode: "CALENDAR", committee_enabled: false,
+  committee_majority: "SIMPLE", committee_majority_numerator: 2, committee_majority_denominator: 3,
+  committee_abstentions: "INCLUDE", committee_record_required: false, committee_pv_required: true,
+  min_risk_level: "",
+  committee_quorum: 1,
   name: "",
   order: 1,
   required_group: "",
@@ -55,6 +66,7 @@ const EMPTY_STEP: StepForm = {
 };
 
 const EMPTY_DEF: DefForm = {
+  execution_mode: "EXPLICIT_MODE", business_calendar: "",
   code: "",
   name: "",
   version: 1,
@@ -82,6 +94,12 @@ function parseApiError(err: unknown, fallback: string): string {
 
 function stepToForm(s: WorkflowStep): StepForm {
   return {
+    mode: s.mode, sla_mode: s.sla_mode, committee_enabled: s.committee_enabled,
+    committee_majority: s.committee_majority, committee_majority_numerator: s.committee_majority_numerator,
+    committee_majority_denominator: s.committee_majority_denominator, committee_abstentions: s.committee_abstentions,
+    committee_record_required: s.committee_record_required, committee_pv_required: s.committee_pv_required,
+    min_risk_level: s.min_risk_level == null ? "" : String(s.min_risk_level),
+    committee_quorum: s.committee_quorum ?? 1,
     name: s.name,
     order: s.order,
     required_group: s.required_group ? String(s.required_group) : "",
@@ -95,6 +113,8 @@ function stepToForm(s: WorkflowStep): StepForm {
 
 function formToPayload(form: StepForm) {
   return {
+    ...form,
+    committee_quorum: form.committee_quorum,
     name: form.name,
     order: form.order,
     required_group: Number(form.required_group),
@@ -103,11 +123,15 @@ function formToPayload(form: StepForm) {
     min_amount: form.min_amount || null,
     max_amount: form.max_amount || null,
     allow_return: form.allow_return,
+    min_risk_level: form.min_risk_level === "" ? null : Number(form.min_risk_level),
   };
 }
 
 function defToCreatePayload(form: DefForm) {
   return {
+    is_active: false,
+    execution_mode: form.execution_mode,
+    business_calendar: form.business_calendar || null,
     code: form.code,
     name: form.name,
     version: form.version,
@@ -145,6 +169,12 @@ export function AdminWorkflowPage() {
   const { user, activeTenant } = useAuth();
   const qc = useQueryClient();
   const needsTenant = user?.is_group_level && !activeTenant;
+  const canBootstrapRoles = Boolean(user?.is_superuser || (user?.is_group_level && user.is_staff));
+  const canAddDefinition = hasPerm(user, "workflow.add_workflowdefinition");
+  const canChangeDefinition = hasPerm(user, "workflow.change_workflowdefinition");
+  const canAddStep = hasPerm(user, "workflow.add_approvalstep");
+  const canChangeStep = hasPerm(user, "workflow.change_approvalstep");
+  const canDeleteStep = hasPerm(user, "workflow.delete_approvalstep");
 
   const [def, setDef] = useState<DefForm>({ ...EMPTY_DEF });
   const [selectedId, setSelectedId] = useState<string | null>(null);
@@ -158,11 +188,16 @@ export function AdminWorkflowPage() {
     product: "",
     product_category: "",
   });
+  useEffect(() => {
+    setSelectedId(null); setEditingStepId(null); setStepError(null);
+    setDef({ ...EMPTY_DEF }); setStep({ ...EMPTY_STEP }); setEditStep({ ...EMPTY_STEP });
+    setCriteriaDraft({ min_amount: "", max_amount: "", product: "", product_category: "" });
+  }, [activeTenant]);
 
   const defs = useQuery({
     queryKey: ["workflow-definitions", activeTenant],
     queryFn: async () =>
-      (await api.get<Paginated<WorkflowDefinition>>("/workflow-definitions/"))
+      (await api.get<Paginated<WorkflowDefinition>>("/workflow-definitions/", { params: { page_size: 200 } }))
         .data,
     enabled: !needsTenant,
   });
@@ -174,7 +209,7 @@ export function AdminWorkflowPage() {
   });
   const roles = useQuery({
     queryKey: ["admin-roles", activeTenant],
-    queryFn: async () => (await api.get<Paginated<Role>>("/roles/")).data,
+    queryFn: async () => (await api.get<Paginated<RoleOption>>("/roles/options/", { params: { page_size: 200 } })).data,
     enabled: !needsTenant,
   });
   const products = useQuery({
@@ -302,7 +337,7 @@ export function AdminWorkflowPage() {
       (
         await api.post<WorkflowDefinition>(
           `/workflow-definitions/${id}/clone/`,
-          { deactivate_source: true },
+          { deactivate_source: false },
         )
       ).data,
     onSuccess: (data) => {
@@ -358,6 +393,11 @@ export function AdminWorkflowPage() {
     setStepError(null);
   }
 
+  const selected = defs.data?.results.find((d) => d.id === selectedId);
+  useEffect(() => {
+    setCriteriaDraft({ min_amount: selected?.min_amount ?? "", max_amount: selected?.max_amount ?? "", product: selected?.product ?? "", product_category: selected?.product_category ?? "" });
+  }, [selected?.id, selected?.min_amount, selected?.max_amount, selected?.product, selected?.product_category]);
+
   if (needsTenant) {
     return (
       <div>
@@ -371,7 +411,6 @@ export function AdminWorkflowPage() {
     );
   }
 
-  const selected = defs.data?.results.find((d) => d.id === selectedId);
   const roleName = (id: number | null) =>
     roles.data?.results.find((r) => r.id === id)?.name ?? "—";
 
@@ -404,7 +443,7 @@ export function AdminWorkflowPage() {
             (Chargé d'affaire, Chef d'agence, Comité de crédit, etc.).
           </p>
           <div className="row-actions" style={{ marginTop: 8 }}>
-            {user?.is_group_level && (
+            {canBootstrapRoles && (
               <button
                 type="button"
                 className="btn btn-primary btn-sm"
@@ -421,6 +460,7 @@ export function AdminWorkflowPage() {
         </Card>
       )}
 
+      {canAddDefinition && (
       <form
         className="inline-form"
         onSubmit={(e: FormEvent) => {
@@ -547,15 +587,17 @@ export function AdminWorkflowPage() {
               </label>
             </>
           )}
+          <WorkflowExecutionFields mode={def.execution_mode} calendar={def.business_calendar} onChange={(mode, calendar) => setDef({ ...def, execution_mode: mode, business_calendar: calendar })} />
         </div>
         <p className="muted small" style={{ marginTop: 8 }}>
           Critères de sélection : montant seul, produit/famille seul, ou les
           deux. Laisser vide = circuit générique.
         </p>
         <button className="btn btn-primary btn-sm" disabled={createDef.isPending}>
-          Créer le circuit
+          Créer le circuit inactif
         </button>
       </form>
+      )}
 
       <div className="detail-grid stacked">
         <Card title="Circuits">
@@ -654,45 +696,31 @@ export function AdminWorkflowPage() {
                         >
                           Étapes
                         </button>
-                        <button
-                          type="button"
-                          className="btn btn-ghost btn-sm"
-                          title={
-                            d.is_active
-                              ? "Désactiver ce circuit"
-                              : "Activer ce circuit"
-                          }
-                          disabled={toggleActive.isPending}
-                          onClick={() =>
-                            toggleActive.mutate({
-                              id: d.id,
-                              is_active: !d.is_active,
-                            })
-                          }
-                        >
-                          <Power size={14} />
-                        </button>
-                        <button
-                          type="button"
-                          className="btn btn-ghost btn-sm"
-                          title="Dupliquer en nouvelle version"
-                          disabled={cloneDef.isPending}
-                          onClick={() => {
-                            if (
-                              !window.confirm(
-                                `Dupliquer « ${d.code} » en v${d.version + 1} ?` +
-                                  (d.is_active
-                                    ? " La version actuelle sera désactivée."
-                                    : ""),
-                              )
-                            ) {
-                              return;
-                            }
-                            cloneDef.mutate(d.id);
-                          }}
-                        >
-                          <Copy size={14} />
-                        </button>
+                        {canChangeDefinition && (
+                          <button
+                            type="button"
+                            className="btn btn-ghost btn-sm"
+                            title={d.is_active ? "Désactiver ce circuit" : "Activer ce circuit"}
+                            disabled={toggleActive.isPending}
+                            onClick={() => toggleActive.mutate({ id: d.id, is_active: !d.is_active })}
+                          >
+                            <Power size={14} />
+                          </button>
+                        )}
+                        {canAddDefinition && (
+                          <button
+                            type="button"
+                            className="btn btn-ghost btn-sm"
+                            title="Dupliquer en nouvelle version"
+                            disabled={cloneDef.isPending}
+                            onClick={() => {
+                              if (!window.confirm(`Créer une nouvelle version inactive de « ${d.code} » ? La version actuelle restera disponible.`)) return;
+                              cloneDef.mutate(d.id);
+                            }}
+                          >
+                            <Copy size={14} />
+                          </button>
+                        )}
                       </div>
                     </td>
                   </tr>
@@ -725,6 +753,7 @@ export function AdminWorkflowPage() {
                 )}
               </div>
 
+              <WorkflowExecutionSettings key={`${selected.id}:${selected.execution_mode}:${selected.business_calendar}`} definition={selected} />
               {selected.target_type === "CREDIT" && (
                 <div
                   className="card"
@@ -742,7 +771,7 @@ export function AdminWorkflowPage() {
                     le produit. En cas de chevauchement, le circuit le plus
                     spécifique gagne.
                   </p>
-                  {circuitEditable(selected) ? (
+                  {circuitEditable(selected) && canChangeDefinition ? (
                     <form
                       className="form-grid"
                       onSubmit={(e) => {
@@ -842,9 +871,7 @@ export function AdminWorkflowPage() {
               )}
 
               <p className="muted small" style={{ marginBottom: 12 }}>
-                Plusieurs étapes avec le <strong>même numéro d&apos;ordre</strong>{" "}
-                s&apos;ouvrent en parallèle ; le circuit avance quand toutes sont
-                traitées.
+                {selected.execution_mode === "LEGACY_ORDER" ? "Mode historique : les étapes d'un même ordre s'ouvrent ensemble." : "Mode explicite : les étapes d'un même ordre doivent toutes être parallèles ou concerner des tranches de montant disjointes."} Le circuit avance quand toutes les tâches de l'ordre courant sont traitées.
               </p>
 
               <ol className="workflow-steps">
@@ -864,13 +891,13 @@ export function AdminWorkflowPage() {
                             WORKFLOW_LABELS.step_kind[s.step_kind] || s.step_kind
                           }
                         />
-                        <span className="muted small">SLA {s.sla_hours}h</span>
+                        <span className="muted small">{s.mode === "PARALLEL" ? "Parallèle" : "Séquentielle"} · {s.sla_hours === 0 && selected.execution_mode !== "LEGACY_ORDER" ? "Sans échéance" : `SLA ${s.sla_hours}h ${s.sla_mode === "BUSINESS" ? "ouvrées" : "continues"}`}</span>
                         {!s.allow_return && (
                           <Badge value="warning" label="Sans retour" />
                         )}
-                        {circuitEditable(selected) && (
+                        {circuitEditable(selected) && (canChangeStep || canDeleteStep) && (
                           <span style={{ marginLeft: "auto", display: "flex", gap: 4 }}>
-                            <button
+                            {canChangeStep && <button
                               type="button"
                               className="btn btn-ghost btn-sm"
                               title="Modifier cette étape"
@@ -878,8 +905,8 @@ export function AdminWorkflowPage() {
                               onClick={() => startEdit(s)}
                             >
                               <Pencil />
-                            </button>
-                            <button
+                            </button>}
+                            {canDeleteStep && <button
                               type="button"
                               className="btn btn-ghost btn-sm"
                               title="Supprimer cette étape"
@@ -887,7 +914,7 @@ export function AdminWorkflowPage() {
                               onClick={() => removeStep(s.id, s.name)}
                             >
                               <Trash2 />
-                            </button>
+                            </button>}
                           </span>
                         )}
                       </div>
@@ -900,7 +927,7 @@ export function AdminWorkflowPage() {
 
               {stepError && <div className="form-error">{stepError}</div>}
 
-              {editingStepId && circuitEditable(selected) && (
+              {editingStepId && circuitEditable(selected) && canChangeStep && (
                 <Card title="Modifier l'étape">
                   <form
                     className="stack"
@@ -936,7 +963,7 @@ export function AdminWorkflowPage() {
                 </Card>
               )}
 
-              {circuitEditable(selected) && hasRoles && (
+              {circuitEditable(selected) && hasRoles && canAddStep && (
                 <form
                   className="stack"
                   style={{ marginTop: 12 }}
@@ -962,6 +989,7 @@ export function AdminWorkflowPage() {
             </>
           )}
         </Card>
+        <BusinessCalendarsEditor key={activeTenant ?? "current-tenant"} />
       </div>
     </div>
   );
@@ -974,7 +1002,7 @@ function StepFields({
 }: {
   form: StepForm;
   setForm: (f: StepForm) => void;
-  roles: Role[];
+  roles: RoleOption[];
 }) {
   return (
     <div className="page-shell form-grid">
@@ -1023,10 +1051,25 @@ function StepFields({
         <span>SLA (heures)</span>
         <input
           type="number"
+          min={0}
+          max={87600}
           value={form.sla_hours}
           onChange={(e) => setForm({ ...form, sla_hours: Number(e.target.value) })}
         />
       </label>
+      <label className="field"><span>Mode de l'étape</span><select value={form.mode} onChange={(e) => setForm({ ...form, mode: e.target.value })}><option value="SEQUENTIAL">Séquentielle</option><option value="PARALLEL">Parallèle (même ordre)</option></select></label>
+      <label className="field"><span>Calcul du SLA</span><select value={form.sla_mode} onChange={(e) => setForm({ ...form, sla_mode: e.target.value as StepForm["sla_mode"] })}><option value="CALENDAR">Heures continues</option><option value="BUSINESS">Heures ouvrées du calendrier</option></select><span className="muted small">0 = sans échéance en mode explicite.</span></label>
+      <label className="field"><span>Quorum du comité (hors conflits)</span><input type="number" min={1} max={100} value={form.committee_quorum} onChange={(event) => setForm({ ...form, committee_quorum: Number(event.target.value) })} /></label>
+      <label className="field"><span>Majorité du comité</span><select value={form.committee_majority} onChange={(e) => setForm({ ...form, committee_majority: e.target.value as StepForm["committee_majority"] })}><option value="SIMPLE">Stricte (plus de la moitié)</option><option value="QUALIFIED">Qualifiée (fraction)</option><option value="UNANIMOUS">Unanimité</option></select></label>
+      {form.committee_majority === "QUALIFIED" && <>
+        <label className="field"><span>Majorité : numérateur</span><input type="number" min={1} max={1000} value={form.committee_majority_numerator} onChange={(e) => setForm({ ...form, committee_majority_numerator: Number(e.target.value) })} /></label>
+        <label className="field"><span>Majorité : dénominateur</span><input type="number" min={1} max={1000} value={form.committee_majority_denominator} onChange={(e) => setForm({ ...form, committee_majority_denominator: Number(e.target.value) })} /></label>
+      </>}
+      <label className="field"><span>Abstentions dans la majorité</span><select value={form.committee_abstentions} onChange={(e) => setForm({ ...form, committee_abstentions: e.target.value as StepForm["committee_abstentions"] })}><option value="INCLUDE">Incluses dans la base de calcul</option><option value="EXCLUDE">Exclues de la base de calcul</option></select></label>
+      <label className="checkbox"><input type="checkbox" checked={form.committee_enabled} onChange={(e) => setForm({ ...form, committee_enabled: e.target.checked })} /><span>Traiter comme un comité (automatique pour les rôles comité existants)</span></label>
+      <label className="checkbox"><input type="checkbox" checked={form.committee_record_required} onChange={(e) => setForm({ ...form, committee_record_required: e.target.checked })} /><span>Imposer la saisie nominative même avec un quorum de 1</span></label>
+      <label className="checkbox"><input type="checkbox" checked={form.committee_pv_required} onChange={(e) => setForm({ ...form, committee_pv_required: e.target.checked })} /><span>Imposer le PV avant validation du comité de crédit</span></label>
+      <label className="field"><span>Risque minimal (optionnel)</span><input type="number" min={0} max={5} value={form.min_risk_level} onChange={(e) => setForm({ ...form, min_risk_level: e.target.value })} /></label>
       <label className="field">
         <span>Montant plancher</span>
         <input

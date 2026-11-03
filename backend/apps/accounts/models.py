@@ -11,6 +11,8 @@ from django.contrib.auth.models import AbstractUser, UserManager as DjangoUserMa
 from django.db import models
 from django.utils import timezone
 
+from .capabilities import CAPABILITY_PERMISSIONS
+
 
 class DataScope(models.TextChoices):
     OWN = "OWN", "Ses propres dossiers"
@@ -82,11 +84,11 @@ class User(AbstractUser):
     )
     phone = models.CharField("téléphone", max_length=50, blank=True)
     mfa_enabled = models.BooleanField("MFA activé", default=False)
-    mfa_secret = models.CharField(
+    mfa_secret_encrypted = models.CharField(
         "secret TOTP",
-        max_length=64,
+        max_length=256,
         blank=True,
-        help_text="Secret base32 pour l'authentification TOTP (vide si MFA inactif).",
+        help_text="Secret TOTP chiffré au repos (vide si MFA inactif).",
     )
     must_change_password = models.BooleanField(
         "doit changer le mot de passe",
@@ -100,9 +102,22 @@ class User(AbstractUser):
     class Meta:
         verbose_name = "utilisateur"
         verbose_name_plural = "utilisateurs"
+        permissions = CAPABILITY_PERMISSIONS
 
     def __str__(self):
         return self.get_full_name() or self.username
+
+    @property
+    def mfa_secret(self):
+        from apps.common.secret_crypto import decrypt_str
+
+        return decrypt_str(self.mfa_secret_encrypted)
+
+    @mfa_secret.setter
+    def mfa_secret(self, value):
+        from apps.common.secret_crypto import encrypt_str
+
+        self.mfa_secret_encrypted = encrypt_str(value)
 
     def clean(self):
         from django.core.exceptions import ValidationError
@@ -153,6 +168,13 @@ class Delegation(models.Model):
         verbose_name="délégataire",
     )
     reason = models.CharField("motif", max_length=255, blank=True)
+    max_amount = models.DecimalField(max_digits=18, decimal_places=2, null=True, blank=True)
+    approval_required = models.BooleanField(default=False)
+    product = models.ForeignKey("catalog.CreditProduct", null=True, blank=True, on_delete=models.PROTECT)
+    agency = models.ForeignKey("tenants.Agency", null=True, blank=True, on_delete=models.PROTECT)
+    step_kind = models.CharField(max_length=20, blank=True, choices=[("CONSULTATIVE", "Consultative"), ("DECISIONAL", "Décisionnelle")])
+    approved_by = models.ForeignKey(User, null=True, blank=True, on_delete=models.SET_NULL, related_name="approved_delegations")
+    approved_at = models.DateTimeField(null=True, blank=True)
     start_date = models.DateField("début")
     end_date = models.DateField("fin")
     is_active = models.BooleanField("active", default=True)
@@ -169,7 +191,7 @@ class Delegation(models.Model):
     @property
     def is_currently_valid(self):
         today = timezone.now().date()
-        return self.is_active and self.start_date <= today <= self.end_date
+        return self.is_active and self.start_date <= today <= self.end_date and (not self.approval_required or self.approved_by_id is not None)
 
 
 class TenantRole(models.Model):
@@ -183,6 +205,7 @@ class TenantRole(models.Model):
         verbose_name="filiale",
     )
     name = models.CharField("nom du rôle", max_length=150)
+    pack_code = models.CharField("code du profil standard", max_length=50, blank=True, editable=False)
     group = models.OneToOneField(
         "auth.Group",
         on_delete=models.CASCADE,
@@ -199,7 +222,8 @@ class TenantRole(models.Model):
             models.UniqueConstraint(
                 fields=["tenant", "name"],
                 name="unique_role_name_per_tenant",
-            )
+            ),
+            models.UniqueConstraint(fields=["tenant", "pack_code"], condition=~models.Q(pack_code=""), name="unique_role_pack_per_tenant"),
         ]
 
     def __str__(self):

@@ -8,7 +8,7 @@
 | **data_scope** | Périmètre de visibilité : OWN, AGENCY, TENANT |
 | **Montant demandé** | Montant sollicité par le client |
 | **Montant proposé** | Montant retenu par l’analyste |
-| **Montant accordé** | Montant décidé ; capital décaissé |
+| **Montant accordé** | Montant décidé ; capital mis en place |
 | **Frais** | Commission / frais dossier ; prélevés par le CBS |
 | **CBS** | Core Banking System de la filiale |
 | **Connecteur CBS** | Configuration d’accès (URL, protocole, auth, mapping) par filiale |

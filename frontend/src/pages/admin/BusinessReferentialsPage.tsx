@@ -1,6 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Library, Save, Trash2 } from "lucide-react";
-import { useEffect, useState, type FormEvent } from "react";
+import { Library, Trash2 } from "lucide-react";
+import { useState, type FormEvent } from "react";
+import { Link } from "react-router-dom";
 
 import { api } from "@/api/client";
 import type {
@@ -12,6 +13,7 @@ import type {
   RejectReason,
 } from "@/api/types";
 import { useAuth } from "@/auth/AuthContext";
+import { hasPerm } from "@/auth/permissions";
 import {
   Card,
   EmptyState,
@@ -29,6 +31,13 @@ const TABS: { key: TabKey; label: string }[] = [
   { key: "thresholds", label: "Seuils d'analyse" },
   { key: "ged", label: "Catégories GED" },
 ];
+
+const TAB_VIEW_PERMISSIONS: Record<TabKey, string> = {
+  rejects: "catalog.view_rejectreason",
+  checklists: "catalog.view_checklistitem",
+  thresholds: "credits.view_analysisthreshold",
+  ged: "documents.view_documentcategory",
+};
 
 const THRESHOLD_FIELDS: {
   key: keyof AnalysisThresholdConfig;
@@ -89,24 +98,24 @@ const THRESHOLD_FIELDS: {
 
 const EMPTY_THRESHOLD: AnalysisThresholdConfig = {
   id: "",
-  max_debt_ratio: "33",
-  min_dscr: "1.2",
-  max_leverage_ratio: "70",
-  min_living_wage_per_capita: "0",
-  min_interest_coverage: "1.5",
-  max_gearing: "2",
-  min_financial_autonomy: "20",
-  min_current_ratio: "1",
-  min_guarantee_coverage: "100",
-  stress_pct: "20",
-  transferable_quota_fraction: "33",
-  informal_income_weight: "50",
-  haircut_mortgage: "20",
-  haircut_vehicle: "30",
-  haircut_jewelry: "40",
-  haircut_financial_deposit: "10",
-  haircut_financial_security: "30",
-  haircut_other: "40",
+  max_debt_ratio: "",
+  min_dscr: "",
+  max_leverage_ratio: "",
+  min_living_wage_per_capita: "",
+  min_interest_coverage: "",
+  max_gearing: "",
+  min_financial_autonomy: "",
+  min_current_ratio: "",
+  min_guarantee_coverage: "",
+  stress_pct: "",
+  transferable_quota_fraction: "",
+  informal_income_weight: "",
+  haircut_mortgage: "",
+  haircut_vehicle: "",
+  haircut_jewelry: "",
+  haircut_financial_deposit: "",
+  haircut_financial_security: "",
+  haircut_other: "",
 };
 
 function errMsg(err: unknown, fallback: string) {
@@ -116,10 +125,33 @@ function errMsg(err: unknown, fallback: string) {
 export function AdminBusinessReferentialsPage() {
   const { user, activeTenant } = useAuth();
   const needsTenant = Boolean(user?.is_group_level && !activeTenant);
+  const canViewRejects = hasPerm(user, "catalog.view_rejectreason");
+  const canAddRejects = hasPerm(user, "catalog.add_rejectreason");
+  const canChangeRejects = hasPerm(user, "catalog.change_rejectreason");
+  const canDeleteRejects = hasPerm(user, "catalog.delete_rejectreason");
+  const canViewChecklists = hasPerm(user, "catalog.view_checklistitem");
+  const canViewProducts = hasPerm(user, "catalog.view_creditproduct");
+  const canAddChecklists =
+    hasPerm(user, "catalog.add_checklistitem") &&
+    canViewProducts;
+  const canChangeChecklists = hasPerm(user, "catalog.change_checklistitem");
+  const canDeleteChecklists = hasPerm(user, "catalog.delete_checklistitem");
+  const canViewThresholds = hasPerm(user, "credits.view_analysisthreshold");
+  const canViewGed = hasPerm(user, "documents.view_documentcategory");
+  const canAddGed = hasPerm(user, "documents.add_documentcategory");
+  const canChangeGed = hasPerm(user, "documents.change_documentcategory");
+  const canDeleteGed = hasPerm(user, "documents.delete_documentcategory");
+  const visibleTabs = TABS.filter((item) =>
+    hasPerm(user, TAB_VIEW_PERMISSIONS[item.key]),
+  );
   const qc = useQueryClient();
-  const [tab, setTab] = useState<TabKey>("rejects");
+  const [tab, setTab] = useState<TabKey>(
+    () => visibleTabs[0]?.key ?? "rejects",
+  );
+  const activeTab = visibleTabs.some((item) => item.key === tab)
+    ? tab
+    : visibleTabs[0]?.key ?? "rejects";
   const [error, setError] = useState<string | null>(null);
-  const [saved, setSaved] = useState(false);
 
   const [rejectForm, setRejectForm] = useState({
     code: "",
@@ -141,8 +173,6 @@ export function AdminBusinessReferentialsPage() {
     order: 0,
   });
   const [productFilter, setProductFilter] = useState("");
-  const [thresholds, setThresholds] =
-    useState<AnalysisThresholdConfig>(EMPTY_THRESHOLD);
 
   const rejects = useQuery({
     queryKey: ["admin-reject-reasons", activeTenant],
@@ -152,7 +182,7 @@ export function AdminBusinessReferentialsPage() {
           params: { page_size: 200 },
         })
       ).data,
-    enabled: !needsTenant && tab === "rejects",
+    enabled: !needsTenant && canViewRejects && activeTab === "rejects",
   });
 
   const products = useQuery({
@@ -163,7 +193,7 @@ export function AdminBusinessReferentialsPage() {
           params: { page_size: 200, is_active: true },
         })
       ).data,
-    enabled: !needsTenant && tab === "checklists",
+    enabled: !needsTenant && canViewChecklists && canViewProducts && activeTab === "checklists",
   });
 
   const checklists = useQuery({
@@ -177,7 +207,7 @@ export function AdminBusinessReferentialsPage() {
           },
         })
       ).data,
-    enabled: !needsTenant && tab === "checklists",
+    enabled: !needsTenant && canViewChecklists && activeTab === "checklists",
   });
 
   const gedCats = useQuery({
@@ -188,7 +218,7 @@ export function AdminBusinessReferentialsPage() {
           params: { page_size: 200 },
         })
       ).data,
-    enabled: !needsTenant && tab === "ged",
+    enabled: !needsTenant && canViewGed && activeTab === "ged",
   });
 
   const thresholdQuery = useQuery({
@@ -199,14 +229,13 @@ export function AdminBusinessReferentialsPage() {
           "/analysis-thresholds/current/",
         )
       ).data,
-    enabled: !needsTenant && tab === "thresholds",
+    enabled: !needsTenant && canViewThresholds && activeTab === "thresholds",
   });
 
-  useEffect(() => {
-    if (thresholdQuery.data) {
-      setThresholds({ ...EMPTY_THRESHOLD, ...thresholdQuery.data });
-    }
-  }, [thresholdQuery.data]);
+  const thresholds: AnalysisThresholdConfig = {
+    ...EMPTY_THRESHOLD,
+    ...thresholdQuery.data,
+  };
 
   const createReject = useMutation({
     mutationFn: async () =>
@@ -335,29 +364,6 @@ export function AdminBusinessReferentialsPage() {
       ),
   });
 
-  const saveThresholds = useMutation({
-    mutationFn: async () => {
-      const payload: Record<string, string> = {};
-      for (const f of THRESHOLD_FIELDS) {
-        payload[f.key] = String(thresholds[f.key] ?? "");
-      }
-      return (
-        await api.patch<AnalysisThresholdConfig>(
-          "/analysis-thresholds/current/",
-          payload,
-        )
-      ).data;
-    },
-    onSuccess: (data) => {
-      setThresholds({ ...EMPTY_THRESHOLD, ...data });
-      setError(null);
-      setSaved(true);
-      qc.invalidateQueries({ queryKey: ["analysis-thresholds-current"] });
-      setTimeout(() => setSaved(false), 2500);
-    },
-    onError: (e) => setError(errMsg(e, "Enregistrement impossible.")),
-  });
-
   if (needsTenant) {
     return (
       <div className="page-shell">
@@ -380,15 +386,14 @@ export function AdminBusinessReferentialsPage() {
       />
 
       <div className="tabs" style={{ marginBottom: 16, display: "flex", gap: 8, flexWrap: "wrap" }}>
-        {TABS.map((t) => (
+        {visibleTabs.map((t) => (
           <button
             key={t.key}
             type="button"
-            className={`btn btn-sm ${tab === t.key ? "btn-primary" : "btn-ghost"}`}
+            className={`btn btn-sm ${activeTab === t.key ? "btn-primary" : "btn-ghost"}`}
             onClick={() => {
               setTab(t.key);
               setError(null);
-              setSaved(false);
             }}
           >
             {t.label}
@@ -397,15 +402,9 @@ export function AdminBusinessReferentialsPage() {
       </div>
 
       {error && <div className="form-error">{error}</div>}
-      {saved && (
-        <div className="notice-info" style={{ marginBottom: 12 }}>
-          Seuils enregistrés.
-        </div>
-      )}
-
-      {tab === "rejects" && (
+      {activeTab === "rejects" && (
         <>
-          <Card title="Ajouter un motif de rejet">
+          {canAddRejects && <Card title="Ajouter un motif de rejet">
             <form
               className="inline-form"
               onSubmit={(e: FormEvent) => {
@@ -455,7 +454,7 @@ export function AdminBusinessReferentialsPage() {
                 Ajouter
               </button>
             </form>
-          </Card>
+          </Card>}
 
           <Card title="Motifs existants">
             {rejects.isLoading ? (
@@ -483,6 +482,7 @@ export function AdminBusinessReferentialsPage() {
                         <input
                           type="checkbox"
                           checked={r.is_active}
+                          disabled={!canChangeRejects}
                           onChange={(e) =>
                             patchReject.mutate({
                               id: r.id,
@@ -492,7 +492,7 @@ export function AdminBusinessReferentialsPage() {
                         />
                       </td>
                       <td>
-                        <button
+                        {canDeleteRejects && <button
                           type="button"
                           className="btn btn-ghost btn-sm"
                           onClick={() => {
@@ -506,7 +506,7 @@ export function AdminBusinessReferentialsPage() {
                           }}
                         >
                           <Trash2 size={14} />
-                        </button>
+                        </button>}
                       </td>
                     </tr>
                   ))}
@@ -517,9 +517,9 @@ export function AdminBusinessReferentialsPage() {
         </>
       )}
 
-      {tab === "checklists" && (
+      {activeTab === "checklists" && (
         <>
-          <Card title="Ajouter une pièce de checklist">
+          {canAddChecklists && <Card title="Ajouter une pièce de checklist">
             <form
               className="inline-form"
               onSubmit={(e: FormEvent) => {
@@ -602,10 +602,10 @@ export function AdminBusinessReferentialsPage() {
                 Ajouter
               </button>
             </form>
-          </Card>
+          </Card>}
 
           <Card title="Pièces par produit">
-            <label className="field" style={{ marginBottom: 12, maxWidth: 360 }}>
+            {canViewProducts && <label className="field" style={{ marginBottom: 12, maxWidth: 360 }}>
               <span>Filtrer par produit</span>
               <select
                 value={productFilter}
@@ -618,7 +618,7 @@ export function AdminBusinessReferentialsPage() {
                   </option>
                 ))}
               </select>
-            </label>
+            </label>}
             {checklists.isLoading ? (
               <Spinner />
             ) : (checklists.data?.results.length ?? 0) === 0 ? (
@@ -644,6 +644,7 @@ export function AdminBusinessReferentialsPage() {
                         <input
                           type="checkbox"
                           checked={c.is_mandatory}
+                          disabled={!canChangeChecklists}
                           onChange={(e) =>
                             patchChecklist.mutate({
                               id: c.id,
@@ -653,7 +654,7 @@ export function AdminBusinessReferentialsPage() {
                         />
                       </td>
                       <td>
-                        <button
+                        {canDeleteChecklists && <button
                           type="button"
                           className="btn btn-ghost btn-sm"
                           onClick={() => {
@@ -663,7 +664,7 @@ export function AdminBusinessReferentialsPage() {
                           }}
                         >
                           <Trash2 size={14} />
-                        </button>
+                        </button>}
                       </td>
                     </tr>
                   ))}
@@ -674,17 +675,13 @@ export function AdminBusinessReferentialsPage() {
         </>
       )}
 
-      {tab === "thresholds" && (
+      {activeTab === "thresholds" && (
         <Card title="Seuils d'analyse financière (filiale)">
+          <p className="muted">Les seuils se modifient dans le <Link to="/admin/configuration">Centre de configuration</Link>, avec validation par un autre utilisateur. Les valeurs ci-dessous représentent le socle applicable sans ciblage.</p>
           {thresholdQuery.isLoading ? (
             <Spinner />
           ) : (
-            <form
-              onSubmit={(e: FormEvent) => {
-                e.preventDefault();
-                saveThresholds.mutate();
-              }}
-            >
+            <fieldset disabled style={{ border: 0, padding: 0, margin: 0, minWidth: 0 }}><div>
               {(["Ratios", "Collatéral", "Revenus", "Haircuts"] as const).map(
                 (group) => (
                   <div key={group} style={{ marginBottom: 18 }}>
@@ -698,12 +695,6 @@ export function AdminBusinessReferentialsPage() {
                               type="number"
                               step="0.01"
                               value={String(thresholds[f.key] ?? "")}
-                              onChange={(e) =>
-                                setThresholds({
-                                  ...thresholds,
-                                  [f.key]: e.target.value,
-                                })
-                              }
                             />
                           </label>
                         ),
@@ -712,23 +703,14 @@ export function AdminBusinessReferentialsPage() {
                   </div>
                 ),
               )}
-              <button
-                className="btn btn-primary"
-                disabled={saveThresholds.isPending}
-              >
-                <Save size={16} />
-                {saveThresholds.isPending
-                  ? "Enregistrement…"
-                  : "Enregistrer les seuils"}
-              </button>
-            </form>
+            </div></fieldset>
           )}
         </Card>
       )}
 
-      {tab === "ged" && (
+      {activeTab === "ged" && (
         <>
-          <Card title="Ajouter une catégorie GED">
+          {canAddGed && <Card title="Ajouter une catégorie GED">
             <form
               className="inline-form"
               onSubmit={(e: FormEvent) => {
@@ -788,7 +770,7 @@ export function AdminBusinessReferentialsPage() {
                 Ajouter
               </button>
             </form>
-          </Card>
+          </Card>}
 
           <Card title="Catégories existantes">
             {gedCats.isLoading ? (
@@ -817,6 +799,7 @@ export function AdminBusinessReferentialsPage() {
                         <input
                           type="checkbox"
                           checked={c.tracks_expiry}
+                          disabled={!canChangeGed}
                           onChange={(e) =>
                             patchGed.mutate({
                               id: c.id,
@@ -829,6 +812,7 @@ export function AdminBusinessReferentialsPage() {
                         <input
                           type="checkbox"
                           checked={c.is_active}
+                          disabled={!canChangeGed}
                           onChange={(e) =>
                             patchGed.mutate({
                               id: c.id,
@@ -838,7 +822,7 @@ export function AdminBusinessReferentialsPage() {
                         />
                       </td>
                       <td>
-                        <button
+                        {canDeleteGed && <button
                           type="button"
                           className="btn btn-ghost btn-sm"
                           onClick={() => {
@@ -852,7 +836,7 @@ export function AdminBusinessReferentialsPage() {
                           }}
                         >
                           <Trash2 size={14} />
-                        </button>
+                        </button>}
                       </td>
                     </tr>
                   ))}

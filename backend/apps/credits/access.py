@@ -22,7 +22,7 @@ _OPEN_STATUSES = {
     CreditApplication.Status.RETURNED,
 }
 
-# Plus d'ajout / modification d'analyse financière après décaissement.
+# Plus d'ajout / modification d'analyse financière après mise en place.
 ANALYSIS_LOCKED_STATUSES = {
     CreditApplication.Status.DISBURSED,
     CreditApplication.Status.CLOSED,
@@ -44,11 +44,11 @@ def has_pending_task(application, user):
     """L'utilisateur a-t-il une tâche en attente sur le circuit actif du dossier ?"""
     if not user or not user.is_authenticated:
         return False
-    group_ids = set(user.groups.values_list("id", flat=True))
-    if not group_ids:
-        return False
+    from apps.workflow.services import user_can_act
+
     content_type = ContentType.objects.get_for_model(application.__class__)
-    return ApprovalTask.all_tenants.filter(
+    tasks = ApprovalTask.all_tenants.filter(
+        tenant_id=application.tenant_id,
         instance__content_type=content_type,
         instance__object_id=application.pk,
         instance__status__in=[
@@ -56,8 +56,12 @@ def has_pending_task(application, user):
             WorkflowInstance.Status.AWAITING_CONDITIONS,
         ],
         status=ApprovalTask.Status.PENDING,
-        step__required_group_id__in=group_ids,
-    ).exists()
+    ).select_related("step__required_group", "instance")
+    return any(
+        task.step.order == task.instance.current_order
+        and user_can_act(user, task.step, application, task.instance.amount)
+        for task in tasks
+    )
 
 
 def can_contribute(application, user):
@@ -73,7 +77,7 @@ def can_contribute(application, user):
 
 
 def can_add_financial_analysis(application, user):
-    """Droit d'ajouter une analyse financière (fermé après décaissement)."""
+    """Droit d'ajouter une analyse financière (fermé après mise en place)."""
     if application is not None and application.status in ANALYSIS_LOCKED_STATUSES:
         return False
     return can_contribute(application, user)
@@ -81,21 +85,9 @@ def can_add_financial_analysis(application, user):
 
 def is_controle_permanent(user):
     """Responsable / assistant contrôle interne (lecture + sortie terrain)."""
-    from apps.accounts.models import TenantRole
-    from apps.accounts.services import (
-        ASSISTANT_CONTROLE_INTERNE_ROLE_NAME,
-        RESP_CONTROLE_INTERNE_ROLE_NAME,
-    )
+    from apps.accounts.capabilities import INTERNAL_CONTROL, user_has_capability
 
-    if not user or not user.is_authenticated:
-        return False
-    return TenantRole.objects.filter(
-        group__in=user.groups.all(),
-        name__in=(
-            RESP_CONTROLE_INTERNE_ROLE_NAME,
-            ASSISTANT_CONTROLE_INTERNE_ROLE_NAME,
-        ),
-    ).exists()
+    return user_has_capability(user, INTERNAL_CONTROL)
 
 
 def can_add_field_visit(application, user):
@@ -120,7 +112,7 @@ def can_attach_collateral(application, user=None):
     try:
         from .instruction_policy import get_instruction_policy
 
-        policy = get_instruction_policy(application.tenant_id)
+        policy = get_instruction_policy(application.tenant_id, application=application)
         if policy.allow_collateral_during_approval:
             allowed.add(CreditApplication.Status.IN_APPROVAL)
             allowed.add(CreditApplication.Status.SUBMITTED)

@@ -5,6 +5,7 @@ from django.contrib.auth.models import Group, Permission
 from django.db import transaction
 
 FILIALE_ADMIN_ROLE_NAME = "Administrateur filiale"
+CREDIT_ADMIN_ROLE_NAME = "Administrateur crédit"
 
 # Rôles métier bootstrap (créés / synchronisés à chaque filiale).
 CHARGE_AFFAIRE_ROLE_NAME = "Chargé d'affaire"
@@ -68,6 +69,7 @@ FILIALE_ADMIN_APP_LABELS = (
     "audit",
     "notifications",
     "reporting",
+    "configuration",
 )
 
 # Permissions custom hors CRUD standard
@@ -89,6 +91,7 @@ _VIEW_CLIENTS = (
 
 _VIEW_CREDIT = (
     ("credits", "view_creditapplication"),
+    ("credits", "view_creditinstructionpolicy"),
     ("credits", "view_financialanalysis"),
     ("credits", "view_fieldvisit"),
     ("credits", "view_creditdocument"),
@@ -231,6 +234,7 @@ _WRITE_ANALYSIS = (
 )
 
 _WRITE_OPERATIONS = (
+    ("credits", "execute_setup_operations"),
     ("contracts", "add_generatedcontract"),
     ("contracts", "change_generatedcontract"),
     ("documents", "add_document"),
@@ -601,6 +605,19 @@ _RESP_ADMIN_FINANCIER_PERMS = (
 
 # Packs appliqués aux rôles métier bootstrap (hors admin filiale).
 DEFAULT_ROLE_PACKS = {
+    CREDIT_ADMIN_ROLE_NAME: (
+        *_READ_METIER,
+        ("credits", "review_setup_creditapplication"),
+        ("credits", "authorize_setup_creditapplication"),
+        ("credits", "execute_setup_creditadmin"),
+        ("credits", "disburse_creditapplication"),
+        ("credits", "initiate_disburse_creditapplication"),
+        ("credits", "change_creditapplication"),
+        ("documents", "add_document"),
+        ("documents", "change_document"),
+        ("contracts", "add_generatedcontract"),
+        ("contracts", "change_generatedcontract"),
+    ),
     CHARGE_AFFAIRE_ROLE_NAME: _CHARGE_AFFAIRE_PERMS,
     CHEF_AGENCE_ROLE_NAME: _CHEF_AGENCE_PERMS,
     RESP_EXPLOITATION_ROLE_NAME: _RESP_EXPLOITATION_PERMS,
@@ -627,6 +644,19 @@ DEFAULT_ROLE_PACKS = {
 }
 
 
+_EXPOSURE_READ_WRITE = (
+    ("credits", "view_creditexposureobservation"),
+    ("credits", "add_creditexposureobservation"),
+    ("credits", "change_creditexposureobservation"),
+    ("credits", "view_borrowergroup"),
+)
+for _exposure_role in (CHARGE_AFFAIRE_ROLE_NAME, ANALYSTE_CREDIT_RISQUE_ROLE_NAME, RESP_CREDIT_RISQUE_ROLE_NAME, CREDIT_ADMIN_ROLE_NAME):
+    DEFAULT_ROLE_PACKS[_exposure_role] = (*DEFAULT_ROLE_PACKS[_exposure_role], *_EXPOSURE_READ_WRITE)
+DEFAULT_ROLE_PACKS[CREDIT_ADMIN_ROLE_NAME] = (
+    *DEFAULT_ROLE_PACKS[CREDIT_ADMIN_ROLE_NAME], ("credits", "verify_creditexposureobservation"),
+)
+
+
 def create_tenant_role(tenant, name, permissions=None):
     """Crée un rôle filiale et le groupe Django technique associé."""
     from .models import TenantRole
@@ -636,6 +666,66 @@ def create_tenant_role(tenant, name, permissions=None):
     if permissions:
         group.permissions.set(permissions)
     return TenantRole.objects.create(tenant=tenant, name=name, group=group)
+
+
+# Codes techniques stables : un changement de libellé ne crée pas un nouveau
+# pack et un rôle personnalisé portant l'ancien libellé n'est jamais promu.
+DEFAULT_PACK_CODES = {
+    FILIALE_ADMIN_ROLE_NAME: "tenant_admin", CREDIT_ADMIN_ROLE_NAME: "credit_admin",
+    CHARGE_AFFAIRE_ROLE_NAME: "relationship_manager", CHEF_AGENCE_ROLE_NAME: "agency_manager",
+    RESP_EXPLOITATION_ROLE_NAME: "operations_manager", RESP_CREDIT_RISQUE_ROLE_NAME: "credit_risk_manager",
+    ANALYSTE_CREDIT_RISQUE_ROLE_NAME: "credit_analyst", CREDIT_COMMITTEE_FILIALE_ROLE_NAME: "credit_committee",
+    CREDIT_COMMITTEE_GROUP_ROLE_NAME: "group_credit_committee", RESP_RETAILS_ROLE_NAME: "retail_manager",
+    DIRECTEUR_GENERAL_ROLE_NAME: "general_manager", RESP_JURIDIQUE_ROLE_NAME: "legal_manager",
+    ASSISTANT_JURIDIQUE_ROLE_NAME: "legal_assistant", RESP_OPERATIONS_ROLE_NAME: "operations",
+    ASSISTANT_OPERATIONS_ROLE_NAME: "operations_assistant", RESP_CONTROLE_INTERNE_ROLE_NAME: "internal_control",
+    ASSISTANT_CONTROLE_INTERNE_ROLE_NAME: "control_assistant", ASSISTANT_AUDIT_ROLE_NAME: "audit_assistant",
+    RESP_AUDIT_ROLE_NAME: "audit", ASSISTANT_RECOUVREMENT_ROLE_NAME: "collection_assistant",
+    RESP_RECOUVREMENT_ROLE_NAME: "collection_manager", RESP_ADMIN_FINANCIER_ROLE_NAME: "finance_manager",
+    CHEF_COMPTABLE_ROLE_NAME: "chief_accountant", COMPTABLE_ROLE_NAME: "accountant", LECTEUR_ROLE_NAME: "reader",
+}
+
+DEFAULT_PACK_CAPABILITIES = {
+    "tenant_admin": {"tenant_admin"}, "credit_admin": {"credit_admin"},
+    "relationship_manager": {"relationship_manager"}, "agency_manager": {"agency_manager"},
+    "credit_analyst": {"credit_analyst"}, "credit_committee": {"credit_committee"},
+    "group_credit_committee": {"credit_committee", "group_credit_committee"},
+    "general_manager": {"credit_decision", "collection_broad_view"},
+    "operations": {"operations"}, "operations_assistant": {"operations"},
+    "internal_control": {"internal_control"}, "control_assistant": {"internal_control"},
+    "audit": {"audit"}, "audit_assistant": {"audit"},
+    "collection_assistant": {"collection_officer", "collection_broad_view"},
+    "collection_manager": {"collection_officer", "collection_broad_view"},
+    "legal_manager": {"legal_officer", "collection_broad_view"},
+    "legal_assistant": {"legal_officer", "collection_broad_view"},
+    "operations_manager": {"collection_manager", "collection_broad_view"},
+    "finance_manager": {"collection_broad_view"},
+}
+
+
+def capability_permissions(codes):
+    return Permission.objects.filter(content_type__app_label="accounts", content_type__model="user", codename__in=[f"business_{code}" for code in codes])
+
+
+@transaction.atomic
+def _get_or_create_pack_role(tenant, name):
+    from .models import TenantRole
+    from apps.tenants.models import Tenant
+
+    Tenant.objects.select_for_update().get(pk=tenant.pk)
+    code = DEFAULT_PACK_CODES[name]
+    existing = TenantRole.objects.filter(tenant=tenant, pack_code=code).first()
+    if existing:
+        return existing.group, False
+    label, suffix = name, 1
+    while TenantRole.objects.filter(tenant=tenant, name=label).exists():
+        label = f"{name} (standard {suffix})"
+        suffix += 1
+    role = create_tenant_role(tenant, label)
+    role.pack_code = code
+    role.save(update_fields=["pack_code"])
+    role.group.permissions.add(*capability_permissions(DEFAULT_PACK_CAPABILITIES.get(code, set())))
+    return role.group, True
 
 
 def tenant_groups_queryset(tenant_id):
@@ -688,29 +778,22 @@ def validate_sod_role_assignment(groups):
     """
     Refuse les combinaisons de rôles qui violent la séparation des tâches.
     """
-    from .models import TenantRole
+    from .capabilities import group_capabilities, validate_capability_combination
 
-    names = set()
+    capabilities = set()
     for group in groups:
-        tr = getattr(group, "tenant_role", None)
-        if tr is None:
-            tr = TenantRole.objects.filter(group_id=group.id).first()
-        if tr:
-            names.add(tr.name)
-    for pair in SOD_INCOMPATIBLE_ROLE_PAIRS:
-        if pair.issubset(names):
-            a, b = sorted(pair)
-            raise ValueError(
-                f"Séparation des tâches : les rôles « {a} » et « {b} » "
-                f"sont incompatibles sur le même utilisateur."
-            )
+        capabilities.update(group_capabilities(group))
+    validate_capability_combination(capabilities)
 
 
 def get_or_create_tenant_role(tenant, name):
     """Retourne le groupe Django d'un rôle filiale (création si absent)."""
     from .models import TenantRole
 
-    existing = TenantRole.objects.filter(tenant=tenant, name=name).first()
+    existing = None
+    if name in DEFAULT_PACK_CODES:
+        existing = TenantRole.objects.filter(tenant=tenant, pack_code=DEFAULT_PACK_CODES[name]).first()
+    existing = existing or TenantRole.objects.filter(tenant=tenant, name=name).first()
     if existing:
         return existing.group, False
     role = create_tenant_role(tenant, name)
@@ -748,7 +831,7 @@ def filiale_admin_permissions():
     perms = list(
         Permission.objects.filter(
             content_type__app_label__in=FILIALE_ADMIN_APP_LABELS
-        )
+        ).exclude(content_type__app_label="accounts", codename__startswith="business_")
     )
     perms.extend(permissions_from_spec(FILIALE_ADMIN_EXTRA_PERMS))
     return _dedupe_permissions(perms)
@@ -759,8 +842,9 @@ def ensure_filiale_admin_role(tenant):
     Garantit le rôle « Administrateur filiale » avec le pack de permissions.
     Retourne le groupe Django associé.
     """
-    group, _ = get_or_create_tenant_role(tenant, FILIALE_ADMIN_ROLE_NAME)
-    group.permissions.set(filiale_admin_permissions())
+    group, _ = _get_or_create_pack_role(tenant, FILIALE_ADMIN_ROLE_NAME)
+    capabilities = list(group.permissions.filter(content_type__app_label="accounts", codename__startswith="business_"))
+    group.permissions.set([*filiale_admin_permissions(), *capabilities])
     return group
 
 
@@ -770,7 +854,7 @@ def ensure_role_pack(tenant, role_name, spec):
     Les droits ajoutés manuellement (hors pack) sont conservés : on n'écrase
     pas le jeu avec ``set()``.
     """
-    group, _ = get_or_create_tenant_role(tenant, role_name)
+    group, _ = _get_or_create_pack_role(tenant, role_name)
     desired = permissions_from_spec(spec)
     current = set(group.permissions.all())
     missing = [perm for perm in desired if perm not in current]
@@ -804,7 +888,9 @@ def migrate_legacy_committee_role(tenant):
 
 def ensure_group_credit_committee_role():
     """Groupe Django transverse pour le comité de crédit Groupe."""
-    group, _ = Group.objects.get_or_create(name=GROUP_CREDIT_COMMITTEE_DJANGO_GROUP)
+    group, created = Group.objects.get_or_create(name=GROUP_CREDIT_COMMITTEE_DJANGO_GROUP)
+    if created:
+        group.permissions.add(*capability_permissions({"credit_committee", "group_credit_committee"}))
     desired = permissions_from_spec(_COMMITTEE_PERMS)
     current = set(group.permissions.all())
     missing = [perm for perm in desired if perm not in current]
@@ -832,9 +918,8 @@ def is_credit_committee_role_name(name: str | None) -> bool:
 
 
 def user_has_group_credit_committee_role(user) -> bool:
-    if not (user and getattr(user, "is_authenticated", False)):
-        return False
-    return user.groups.filter(name=GROUP_CREDIT_COMMITTEE_DJANGO_GROUP).exists()
+    from .capabilities import GROUP_CREDIT_COMMITTEE, user_has_capability
+    return user_has_capability(user, GROUP_CREDIT_COMMITTEE)
 
 
 def retire_legacy_bootstrap_roles(tenant):
@@ -866,12 +951,10 @@ def ensure_default_role_packs(tenant):
     - Comités de crédit filiale + groupe
     - Anciens rôles (Analyste crédit, Responsable agence) : retirés si inutilisés
     """
-    migrate_legacy_committee_role(tenant)
     ensure_filiale_admin_role(tenant)
     for role_name, spec in DEFAULT_ROLE_PACKS.items():
         ensure_role_pack(tenant, role_name, spec)
     ensure_group_credit_committee_role()
-    retire_legacy_bootstrap_roles(tenant)
     from apps.collections.services import (
         ensure_default_escalation_rules,
         ensure_default_tranches,

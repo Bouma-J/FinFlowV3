@@ -79,31 +79,12 @@ export function CollectionsPage() {
     (isFinflowAdmin(user) ||
       canManageCase ||
       Boolean(
-        user?.roles?.some((r) =>
-          [
-            "Responsable recouvrement",
-            "Assistant recouvrement",
-            "Responsable exploitation",
-            "Chef d'agence",
-            "Responsable juridique",
-            "Assistant juridique",
-            "Directeur général",
-            "RAF",
-            "Lecteur",
-            "Comptable",
-            "Analyste crédit",
-            "Responsable audit",
-            "Assistant audit",
-          ].includes(r),
-        ),
+        user?.capabilities?.includes("collection_broad_view"),
       ));
   const canRefreshCbs =
     isFinflowAdmin(user) ||
     Boolean(
-      user?.roles?.some(
-        (r) =>
-          r === "Responsable recouvrement" || r === "Assistant recouvrement",
-      ),
+      user?.capabilities?.includes("collection_officer"),
     );
   const [page, setPage] = useState(1);
   const [parClass, setParClass] = useState("");

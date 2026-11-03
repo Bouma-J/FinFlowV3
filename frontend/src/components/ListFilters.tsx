@@ -225,8 +225,8 @@ export const CREDIT_STATUS_OPTIONS = [
   ["REJECTED", "Rejeté"],
   ["RETURNED", "Retourné pour correction"],
   ["CONTRACT_GENERATED", "Contrat généré"],
-  ["DISBURSEMENT_PENDING", "Décaissement en attente"],
-  ["DISBURSED", "Décaissé"],
+  ["DISBURSEMENT_PENDING", "Mise en place en attente"],
+  ["DISBURSED", "Mis en place"],
   ["CLOSED", "Clôturé"],
   ["CANCELLED", "Annulé"],
 ] as const;

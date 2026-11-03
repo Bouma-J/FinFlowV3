@@ -33,6 +33,12 @@ def assert_analysis_ready_for_submission(application):
             "Une analyse financière de référence est obligatoire avant soumission."
         )
 
+    from apps.configuration.services import analysis_requirement_failures
+
+    failures = analysis_requirement_failures(application, reference)
+    if failures:
+        raise WorkflowError(" ".join(failures))
+
     if not reference.recommendation:
         raise WorkflowError(
             "L'analyse de référence doit porter une recommandation "
@@ -72,6 +78,7 @@ def assert_analysis_ready_for_submission(application):
         profile = getattr(reference, "individual_profile", "") or ""
         has_salary = (
             _dec(reference.salary_income) > 0 or _dec(reference.net_salary) > 0
+            or _dec(reference.pension_income) > 0
         )
         has_activity_ca = _dec(reference.activity_turnover) > 0
         if not profile:
@@ -88,7 +95,7 @@ def assert_analysis_ready_for_submission(application):
         ):
             if not has_salary:
                 raise WorkflowError(
-                    "Analyse salarié incomplète : indiquez le salaire net du demandeur."
+                    "Analyse salarié incomplète : indiquez les revenus de salaire net ou de pension du demandeur."
                 )
         if profile in (
             FinancialAnalysis.IndividualProfile.INDEPENDANT,
@@ -111,6 +118,17 @@ def assert_analysis_ready_for_submission(application):
                 "(ou de l'activité) doivent être renseignés."
             )
 
+    from .analysis_details import detail_metrics
+
+    detailed = detail_metrics(reference)
+    if detailed.get("debt_service_reconciled") is False:
+        raise WorkflowError(
+            "Rapprochez les mensualités des engagements détaillés avec le total consolidé avant soumission."
+        )
+    if detailed.get("forecast_deficit_months", 0) > 0 and not reference.recommended_conditions.strip():
+        raise WorkflowError(
+            "Le plan de trésorerie présente des mois déficitaires : précisez les mesures ou conditions proposées."
+        )
     product = application.product
     if product and getattr(product, "requires_guarantee", False):
         has_g = application.guarantees.filter(
@@ -131,8 +149,6 @@ def assert_analysis_ready_for_submission(application):
 
 def refresh_reference_analysis(application):
     """Recalcule l'analyse de référence à partir des conditions actuelles."""
-    from .models import FinancialAnalysis
-
     if application is None or not getattr(application, "pk", None):
         return None
     reference = (

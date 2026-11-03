@@ -288,6 +288,8 @@ class CollectionCaseViewSet(TenantScopedViewSet):
                     filter=Q(promises__status=PaymentPromise.Status.PENDING),
                 )
             )
+            if not self.request.query_params.get("ordering"):
+                qs = qs.order_by("-days_overdue", "-pk")
         return qs
 
     @action(detail=False, methods=["get"], url_path="agent-dashboard")
@@ -862,9 +864,9 @@ class CollectionTrancheViewSet(TenantScopedViewSet):
     filterset_fields = ["is_active", "owner_kind"]
     ordering_fields = ["position", "min_days_overdue"]
     action_perms = {
-        "list": ["collections.view_collectioncase"],
-        "retrieve": ["collections.view_collectioncase"],
-        "replace": ["collections.view_collectiontranche"],
+        "list": ["collections.view_collectiontranche"],
+        "retrieve": ["collections.view_collectiontranche"],
+        "replace": ["collections.change_collectiontranche"],
     }
 
     def list(self, request, *args, **kwargs):

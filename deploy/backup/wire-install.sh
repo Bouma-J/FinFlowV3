@@ -33,7 +33,12 @@ exec "${SCRIPT_SRC}/backup.sh" "\$@"
 EOF
 chmod +x "${DIR}/scripts/backup-db.sh"
 
-PASS_FILE="/root/.finflow-backup-pass"
+PASS_FILE="${BACKUP_PASSPHRASE_FILE:-/root/.finflow-backup-pass}"
+install -d -m 0700 "$(dirname "$PASS_FILE")"
+[[ ! -L "$PASS_FILE" ]] || {
+  echo "[ERR] Le fichier de phrase de passe est un lien symbolique : ${PASS_FILE}" >&2
+  exit 1
+}
 if [[ ! -f "$PASS_FILE" ]]; then
   if command -v openssl >/dev/null 2>&1; then
     openssl rand -base64 32 > "$PASS_FILE"
@@ -42,11 +47,13 @@ if [[ ! -f "$PASS_FILE" ]]; then
   fi
   chmod 600 "$PASS_FILE"
   echo "[OK] Phrase de chiffrement créée : ${PASS_FILE}"
+  echo "[WARN] Copiez cette phrase dans un coffre sécurisé hors de ce serveur."
 fi
+chmod 600 "$PASS_FILE"
 
 if [[ -d /etc/cron.d ]]; then
   cat > /etc/cron.d/finflow-backup <<EOF
-# FinFlow — snapshot quotidien 02:30 (Postgres + MinIO + secrets)
+# FinFlow — archive chiffrée quotidienne 02:30 (Postgres + MinIO + secrets)
 # Destination : ${BACKUP_ROOT}/snapshots (hors du projet ${DIR})
 SHELL=/bin/bash
 PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin

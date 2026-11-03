@@ -6,8 +6,17 @@ from apps.workflow.services import WorkflowError
 from .models import CreditInstructionPolicy, FinancialAnalysis
 
 
-def get_instruction_policy(tenant_id) -> CreditInstructionPolicy:
-    return CreditInstructionPolicy.for_tenant(tenant_id)
+def get_instruction_policy(tenant_id, *, application=None) -> CreditInstructionPolicy:
+    if application is not None:
+        from apps.configuration.services import effective_policy
+
+        return effective_policy(application)
+    from apps.configuration.services import resolve_context
+
+    policy = CreditInstructionPolicy.for_tenant(tenant_id)
+    for key, value in resolve_context(tenant_id, {})["policy"].items():
+        setattr(policy, key, CreditInstructionPolicy._meta.get_field(key).to_python(value))
+    return policy
 
 
 def _checklist_provided(application) -> set[str]:
@@ -44,7 +53,7 @@ def _coverage_ok(application) -> bool | None:
     from .models import AnalysisThreshold
 
     summary = build_collateral_summary(
-        application, AnalysisThreshold.for_tenant(application.tenant_id)
+        application, AnalysisThreshold.for_application(application)
     )
     ok = summary.get("guarantee_ok")
     if ok is None:
@@ -60,7 +69,7 @@ def build_readiness(application) -> dict:
 
     from .models import FieldVisit
 
-    policy = get_instruction_policy(application.tenant_id)
+    policy = get_instruction_policy(application.tenant_id, application=application)
     checks: list[dict] = []
 
     def add(key, label, ok, *, blocking=True, message=""):
@@ -82,14 +91,21 @@ def build_readiness(application) -> dict:
         message="" if client else "Sélectionnez un client.",
     )
     if client is not None:
-        kyc_ok = client.kyc_status == Client.KycStatus.VALIDATED
+        from apps.clients.compliance import kyc_failures
+        configured_kyc_failures = kyc_failures(client, application=application)
+        kyc_ok = client.kyc_status == Client.KycStatus.VALIDATED and not configured_kyc_failures
         add(
             "kyc",
             "KYC client validé",
             kyc_ok,
             blocking=True,
-            message="" if kyc_ok else "Validez le KYC du client avant soumission.",
+            message="" if kyc_ok else " ".join(configured_kyc_failures) or "Validez le KYC du client avant soumission.",
         )
+    from .exposure import exposure_assessment, exposure_failures
+    exposure = exposure_assessment(application)
+    if exposure["enabled"]:
+        add("exposure", "Engagements et plafonds consolidés", not exposure["failures"],
+            blocking=bool(exposure_failures(application, "SUBMIT")), message=" ".join(exposure["failures"]))
 
     product = application.product
     add(
@@ -243,7 +259,7 @@ def build_readiness(application) -> dict:
             else "Pièces manquantes : " + ", ".join(missing),
         )
 
-    # Mapping CBS (référentiels) — informatif / alerte avant décaissement
+    # Mapping CBS (référentiels) — informatif / alerte avant mise en place
     from apps.catalog.cbs_resolve import application_cbs_refs
 
     cbs = application_cbs_refs(application)
@@ -261,7 +277,7 @@ def build_readiness(application) -> dict:
         message="" if cbs_ok else cbs_msg,
     )
 
-    # Contrats de cautionnement — informatif avant décaissement
+    # Contrats de cautionnement — informatif avant mise en place
     active_sureties = SuretyEngagement.objects.filter(
         application=application,
         status=SuretyEngagement.Status.ACTIVE,
@@ -279,7 +295,7 @@ def build_readiness(application) -> dict:
             message=""
             if surety_ok
             else (
-                "Avant décaissement : "
+                "Avant mise en place : "
                 + " ; ".join(surety_missing)
                 + (
                     " — exigé par la politique filiale."
@@ -289,38 +305,55 @@ def build_readiness(application) -> dict:
             ),
         )
 
+    if policy.require_verified_documents:
+        from .governance import verified_checklist
+
+        missing = verified_checklist(application)
+        add("verified_documents", "Pièces réelles vérifiées et valides", not missing, message=", ".join(missing))
+    from apps.configuration.services import analysis_requirement_failures, application_configuration
+    from .eligibility import assess_rules
+
+    configured_failures = analysis_requirement_failures(application, reference)
+    add("configured_analysis", "Exigences d'analyse du produit et du profil", not configured_failures,
+        message=" ".join(configured_failures))
+    evaluation = assess_rules(application, reference=reference)
+    for check in evaluation["checks"]:
+        effect_label = {"ALERT": "Alerte uniquement", "BLOCK_SUBMIT": "Blocage à la soumission",
+                        "BLOCK_APPROVE": "Blocage à l'approbation", "BLOCK_SETUP": "Blocage avant mise en place"}[check["effect"]]
+        add("eligibility_" + check["id"], check["label"], check["passed"] is not False,
+            blocking=check["effect"] == "BLOCK_SUBMIT", message=(check["message"] + " " + effect_label) if check["message"] else "")
+    add("configured_scoring", "Complétude de la grille de scoring", not evaluation["scoring_failures"],
+        message=" ".join(evaluation["scoring_failures"]))
+    from .pricing import quote_pricing
+    pricing = quote_pricing(application)
+    add("configured_pricing", "Conformité au barème tarifaire", not pricing["failures"], message=" ".join(pricing["failures"]))
     blocking_failed = [c for c in checks if c["blocking"] and not c["ok"]]
     return {
         "ready": len(blocking_failed) == 0,
+        "cbs_mapping_ready": cbs_ok,
         "show_checklist": policy.show_readiness_checklist,
         "checks": checks,
         "cbs_refs": cbs,
+        "configuration": application_configuration(application),
+        "rule_evaluation": evaluation,
+        "pricing_quote": pricing,
         "policy": {
-            "collateral_coverage_mode": policy.collateral_coverage_mode,
-            "require_field_visit": policy.require_field_visit,
-            "allow_unfavorable_analysis_submit": (
-                policy.allow_unfavorable_analysis_submit
-            ),
-            "require_product_checklist": policy.require_product_checklist,
-            "match_product_client_type": policy.match_product_client_type,
-            "kyc_gate": policy.kyc_gate,
-            "product_bounds_gate": policy.product_bounds_gate,
-            "amount_approved_mode": policy.amount_approved_mode,
-            "show_readiness_checklist": policy.show_readiness_checklist,
-            "enable_cancel_status": policy.enable_cancel_status,
-            "allow_collateral_during_approval": (
-                policy.allow_collateral_during_approval
-            ),
-            "require_surety_signed_contracts": (
-                policy.require_surety_signed_contracts
-            ),
+            field.name: getattr(policy, field.name)
+            for field in policy._meta.fields
+            if field.name not in {"id", "tenant", "created_at", "updated_at"}
         },
     }
 
 
 def assert_policy_submit_gates(application):
     """Contrôles politiques additionnels à la soumission (après gates de base)."""
-    policy = get_instruction_policy(application.tenant_id)
+    policy = get_instruction_policy(application.tenant_id, application=application)
+    if policy.require_verified_documents:
+        from .governance import verified_checklist
+
+        missing = verified_checklist(application)
+        if missing:
+            raise WorkflowError("Pièces vérifiées manquantes : " + ", ".join(missing))
 
     if policy.match_product_client_type and not _product_client_type_ok(
         application
@@ -387,7 +420,14 @@ def assert_policy_submit_gates(application):
 
 def assert_coverage_for_approval(application):
     """Bloque l'approbation finale si la politique l'exige."""
-    policy = get_instruction_policy(application.tenant_id)
+    from .exposure import assert_exposure
+    assert_exposure(application, "APPROVE")
+    from .eligibility import assert_configured_rules
+
+    assert_configured_rules(application, "APPROVE")
+    from .pricing import assert_pricing
+    assert_pricing(application)
+    policy = get_instruction_policy(application.tenant_id, application=application)
     if (
         policy.collateral_coverage_mode
         != CreditInstructionPolicy.CoverageMode.BLOCK_APPROVE
@@ -441,10 +481,14 @@ def assert_kyc_validated(application):
         raise WorkflowError(
             "Le KYC du client doit être validé."
         )
+    from apps.clients.compliance import kyc_failures
+    failures = kyc_failures(client, application=application)
+    if failures:
+        raise WorkflowError(" ".join(failures))
 
 
 def amount_approved_writable(application) -> bool:
-    policy = get_instruction_policy(application.tenant_id)
+    policy = get_instruction_policy(application.tenant_id, application=application)
     if (
         policy.amount_approved_mode
         == CreditInstructionPolicy.AmountApprovedMode.ALLOW

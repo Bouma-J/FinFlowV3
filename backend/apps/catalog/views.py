@@ -1,11 +1,14 @@
-from django.conf import settings
+from django.db import transaction
+from django.utils import timezone
+from rest_framework.decorators import action
+from rest_framework.exceptions import ValidationError
 from rest_framework.response import Response
 
-from apps.common.cache_utils import cache_key, cached_get
 from apps.common.tenancy import get_current_tenant_id
 from apps.common.viewsets import TenantScopedReadOnlyViewSet, TenantScopedViewSet
 
 from .models import (
+    CbsProductReference,
     CbsManager,
     CbsProfession,
     ChecklistItem,
@@ -21,6 +24,7 @@ from .models import (
     ServicePoint,
 )
 from .serializers import (
+    CbsProductReferenceSerializer,
     CbsManagerSerializer,
     CbsProfessionSerializer,
     ChecklistItemSerializer,
@@ -50,25 +54,47 @@ class CreditProductViewSet(TenantScopedViewSet):
     filterset_fields = ["category", "client_type", "currency", "is_active"]
     search_fields = ["code", "label"]
 
-    def list(self, request, *args, **kwargs):
-        tenant_id = get_current_tenant_id()
-        qs_key = "&".join(
-            f"{k}={','.join(request.query_params.getlist(k))}"
-            for k in sorted(request.query_params.keys())
-        )
-        key = cache_key("credit-products", tenant_id, qs_key)
-        ttl = getattr(settings, "CATALOG_CACHE_TTL", 120)
+class CbsProductReferenceViewSet(TenantScopedViewSet):
+    queryset = CbsProductReference.objects.select_related("connector").all()
+    serializer_class = CbsProductReferenceSerializer
+    filterset_fields = ["kind", "is_active", "verification_status", "connector"]
+    search_fields = ["cbs_code", "label", "source_reference"]
+    http_method_names = ["get", "post", "patch", "head", "options"]
+    action_perms = {
+        "list": ["catalog.view_creditproduct"], "retrieve": ["catalog.view_creditproduct"],
+        "create": ["catalog.change_creditproduct"], "partial_update": ["catalog.change_creditproduct"],
+        "confirm": ["catalog.change_creditproduct"],
+    }
 
-        def _produce():
-            queryset = self.filter_queryset(self.get_queryset())
-            page = self.paginate_queryset(queryset)
-            if page is not None:
-                serializer = self.get_serializer(page, many=True)
-                return self.get_paginated_response(serializer.data).data
-            serializer = self.get_serializer(queryset, many=True)
-            return serializer.data
+    def get_queryset(self):
+        qs = super().get_queryset()
+        if self.request.query_params.get("for_active_connector") == "true":
+            from apps.corebanking.services import CoreBankingError, resolve_active_connector
+            try:
+                connector = resolve_active_connector(get_current_tenant_id())
+            except CoreBankingError:
+                return qs.none()
+            return qs.filter(connector=connector)
+        return qs
 
-        return Response(cached_get(key, _produce, timeout=ttl))
+    @action(detail=True, methods=["post"])
+    @transaction.atomic
+    def confirm(self, request, pk=None):
+        from .cbs_resolve import is_demo_product_code
+
+        if request.data.get("document_checked") is not True:
+            raise ValidationError({"document_checked": "Confirmez avoir vérifié cet identifiant dans la source documentaire indiquée."})
+        ref = self.get_queryset().select_related(None).select_for_update().get(pk=self.get_object().pk)
+        if not ref.is_active or not ref.connector.is_active or not ref.source_reference.strip():
+            raise ValidationError("La référence, le connecteur et le justificatif doivent être actifs et renseignés.")
+        if is_demo_product_code(ref.cbs_code):
+            raise ValidationError({"cbs_code": "Cet identifiant est une valeur de démonstration connue. Renseignez l'identifiant réel du CBS."})
+        if ref.verification_status != "VERIFIED":
+            ref.verification_status = "VERIFIED"
+            ref.verified_at = timezone.now()
+            ref.verified_by = request.user
+            ref.save(update_fields=["verification_status", "verified_at", "verified_by", "updated_at"])
+        return Response(self.get_serializer(ref).data)
 
 
 class RejectReasonViewSet(TenantScopedViewSet):

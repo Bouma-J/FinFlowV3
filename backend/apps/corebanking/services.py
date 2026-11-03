@@ -817,7 +817,7 @@ class RestAdapter(BaseAdapter):
         missing = [k for k in required if payload.get(k) in (None, "")]
         if missing:
             raise CoreBankingError(
-                "Payload décaissement CBS incomplet : " + ", ".join(missing)
+                "Payload mise en place CBS incomplet : " + ", ".join(missing)
             )
         if not (
             payload.get("codeAdherent")
@@ -848,7 +848,7 @@ class RestAdapter(BaseAdapter):
             )
         except requests.RequestException as exc:
             raise CoreBankingError(
-                f"Impossible de joindre le CBS pour le décaissement ({exc})."
+                f"Impossible de joindre le CBS pour la mise en place ({exc})."
             ) from exc
 
         try:
@@ -859,14 +859,14 @@ class RestAdapter(BaseAdapter):
             ) from exc
 
         if not isinstance(data, dict):
-            raise CoreBankingError("Réponse CBS décaissement invalide.")
+            raise CoreBankingError("Réponse CBS mise en place invalide.")
 
         code_http = int(data.get("responseCode") or resp.status_code or 0)
         if resp.status_code >= 400 or code_http >= 400:
             raise CoreBankingError(
                 str(
                     data.get("message")
-                    or f"Échec décaissement CBS (HTTP {resp.status_code})."
+                    or f"Échec mise en place CBS (HTTP {resp.status_code})."
                 )
             )
 
@@ -1162,16 +1162,31 @@ def _to_decimal(value, field_name="montant") -> Decimal:
 
 
 @transaction.atomic
-def send_operation(connector, operation, payload, idempotency_key=""):
+def send_operation(connector, operation, payload, idempotency_key="", *, authorized_application=None):
     """
     Envoie une opération au Core Banking de manière idempotente et journalisée.
 
     Si une opération avec la même clé d'idempotence a déjà réussi, elle est
-    renvoyée sans nouvel envoi (évite les doublons, ex. double décaissement).
+    renvoyée sans nouvel envoi (évite les doublons, ex. doubla mise en place).
 
     Les lignes RETRY / FAILED / PENDING existantes sont **réutilisées** (pas de
     second INSERT) pour respecter ``unique_idempotency_per_connector``.
     """
+    if operation == OP_SUBMIT_CREDIT:
+        from .disbursement import disbursement_mode, build_credit_disbursement_payload
+        from apps.catalog.cbs_mapping import cbs_mapping_snapshot, lock_application_cbs_mapping
+
+        if disbursement_mode(connector) == "CBS":
+            if authorized_application is None:
+                raise CoreBankingError("La création d'un crédit doit passer par le dossier et son autorisation de mise en place ; le rejeu générique est interdit.")
+            app = authorized_application.__class__.all_tenants.get(pk=authorized_application.pk)
+            lock_application_cbs_mapping(app)
+            authorization = app.setup_authorization or {}
+            if (app.tenant_id != connector.tenant_id or idempotency_key != f"disburse:{app.pk}"
+                    or authorization.get("status") != "AUTHORIZED"
+                    or authorization.get("cbs_mapping") != cbs_mapping_snapshot(app)
+                    or payload != build_credit_disbursement_payload(app, connector=connector)):
+                raise CoreBankingError("La requête CBS ne correspond pas au dossier et aux références autorisés. Reprenez le contrôle final du dossier.")
     log = None
     if idempotency_key:
         existing = (

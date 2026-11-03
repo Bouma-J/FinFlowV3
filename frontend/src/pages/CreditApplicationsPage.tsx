@@ -94,7 +94,7 @@ export function CreditApplicationsPage() {
         <PageHeader
           icon={FileText}
           title="Dossiers de crédit"
-          subtitle="Instruction, approbation et décaissement"
+          subtitle="Instruction, approbation et mise en place"
           actions={
             canCreate ? (
               <Link className="btn btn-primary" to="/dossiers/nouveau">

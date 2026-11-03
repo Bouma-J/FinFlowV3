@@ -6,6 +6,7 @@ import { api } from "@/api/client";
 import type { ApprovalTask, Paginated, RejectReason } from "@/api/types";
 import { WORKFLOW_LABELS } from "@/api/types";
 import { formatMoney } from "@/components/ui";
+import { useAuth } from "@/auth/AuthContext";
 
 type Decision = "APPROVED" | "REJECTED" | "RETURNED";
 type Opinion = "FAVORABLE" | "FAVORABLE_SOUS_RESERVE" | "DEFAVORABLE";
@@ -36,6 +37,9 @@ export function DecisionPanel({
   onDone?: () => void;
 }) {
   const qc = useQueryClient();
+  const { user } = useAuth();
+  const [participants, setParticipants] = useState<{ user: string; vote: string; conflict: boolean }[]>([]);
+  const colleagues = useQuery({ queryKey: ["committee-participants", task.id], enabled: Boolean(task.is_committee), queryFn: async () => (await api.get<{ id: string; display_name: string }[]>(`/approval-tasks/${task.id}/committee_participants/`)).data });
   const [comment, setComment] = useState("");
   const [amount, setAmount] = useState("");
   const [opinion, setOpinion] = useState<Opinion | "">("");
@@ -67,6 +71,7 @@ export function DecisionPanel({
       returnToSubmitter?: boolean;
     }) => {
       const payload: Record<string, unknown> = { decision, comment };
+      if (task.is_committee && participants.length) payload.committee_record = { participants };
       if (opinion) payload.opinion = opinion;
       if (isCredit && decision === "APPROVED" && amount) {
         payload.proposed_amount = amount;
@@ -119,6 +124,10 @@ export function DecisionPanel({
 
   function act(decision: Decision, returnToSubmitter = false) {
     setError(null);
+    if (task.is_committee && decision !== "RETURNED" && task.committee_record_required && !participants.length) {
+      setError("Renseignez les participants et les votes du comité.");
+      return;
+    }
 
     if (decision === "APPROVED") {
       if (!opinion) {
@@ -162,6 +171,19 @@ export function DecisionPanel({
 
   return (
     <div className="decision-panel">
+      {task.is_committee && <div className="stack">
+        <p className="subsection-label">Comité : quorum {task.committee_quorum ?? 1} hors conflits d'intérêts</p>
+        <p className="muted small">Retranscrire les présences et votes du comité.{isCredit && task.committee_pv_required !== false ? " Le PV doit être déposé au dossier avant validation." : ""}</p>
+        <p className="muted small">{task.committee_majority === "QUALIFIED" ? `Majorité qualifiée : au moins ${task.committee_majority_numerator}/${task.committee_majority_denominator}` : task.committee_majority === "UNANIMOUS" ? "Unanimité" : "Majorité stricte : plus de la moitié"} · Abstentions {task.committee_abstentions === "EXCLUDE" ? "exclues" : "incluses"} dans la base de calcul. Les personnes en conflit ne comptent ni dans le quorum ni dans la majorité.</p>
+        {participants.map((participant, index) => <div className="form-grid two-col" key={index}>
+          <label className="field"><span>Participant</span><select value={participant.user} onChange={(event) => setParticipants(participants.map((row, i) => i === index ? { ...row, user: event.target.value } : row))}><option value="">Choisir</option>{colleagues.data?.map((person) => <option key={person.id} value={person.id}>{person.display_name}{person.id === user?.id ? " (vous)" : ""}</option>)}</select></label>
+          <label className="field"><span>Vote</span><select value={participant.vote} onChange={(event) => setParticipants(participants.map((row, i) => i === index ? { ...row, vote: event.target.value } : row))}><option value="FOR">Pour</option><option value="AGAINST">Contre</option><option value="ABSTAIN">Abstention</option></select></label>
+          <label className="checkbox"><input type="checkbox" checked={participant.conflict} onChange={(event) => setParticipants(participants.map((row, i) => i === index ? { ...row, conflict: event.target.checked, vote: event.target.checked ? "ABSTAIN" : row.vote } : row))} /><span>Conflit d'intérêts déclaré</span></label>
+          <button type="button" className="btn btn-ghost" onClick={() => setParticipants(participants.filter((_, i) => i !== index))}>Retirer</button>
+        </div>)}
+        <button type="button" className="btn btn-ghost" onClick={() => setParticipants([...participants, { user: "", vote: "FOR", conflict: false }])}>Ajouter un participant</button>
+        {colleagues.isError && <p className="form-error">Chargement des participants habilités impossible. <button type="button" className="btn btn-ghost btn-sm" onClick={() => colleagues.refetch()}>Réessayer</button></p>}
+      </div>}
       {appli && (
         <div className="task-amounts">
           <span>

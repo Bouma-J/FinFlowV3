@@ -1,6 +1,7 @@
 from rest_framework.routers import DefaultRouter
 
 from .views import (
+    CbsProductReferenceViewSet,
     CbsManagerViewSet,
     CbsProfessionViewSet,
     ChecklistItemViewSet,
@@ -17,6 +18,7 @@ from .views import (
 )
 
 router = DefaultRouter()
+router.register("cbs-product-references", CbsProductReferenceViewSet, basename="cbs-product-reference")
 router.register("product-categories", ProductCategoryViewSet, basename="product-category")
 router.register("credit-products", CreditProductViewSet, basename="credit-product")
 router.register("reject-reasons", RejectReasonViewSet, basename="reject-reason")

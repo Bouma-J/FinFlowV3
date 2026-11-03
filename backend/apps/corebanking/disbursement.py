@@ -1,13 +1,12 @@
-"""Décaissement crédit via API Perfect (POST …/crd/simple)."""
+"""Mise en place crédit via API Perfect (POST …/crd/simple)."""
 from __future__ import annotations
 
 import logging
-from decimal import Decimal
 
 from django.conf import settings
+from django.db import transaction
 
 from .models import CoreBankingConnector, IntegrationLog
-from .perfect_defaults import PERIODICITY_CBS
 from .services import (
     CoreBankingError,
     OP_SUBMIT_CREDIT,
@@ -43,6 +42,17 @@ def disbursement_mode(connector: CoreBankingConnector) -> str:
     return "CBS"
 
 
+def requires_financing_object(tenant_id) -> bool:
+    """Return whether this branch's active mode requires an exact CBS object."""
+    try:
+        connector = resolve_active_connector(tenant_id)
+    except CoreBankingError:
+        # This matches serializer validation: without an active CBS connector,
+        # saving a local draft does not require a CBS-only reference.
+        return False
+    return disbursement_mode(connector) == "CBS"
+
+
 def build_callback_url(application) -> str:
     base = (
         getattr(settings, "PUBLIC_API_BASE_URL", None)
@@ -57,169 +67,14 @@ def build_callback_url(application) -> str:
 
 def build_credit_disbursement_payload(application, *, connector=None) -> dict:
     """Construit le corps Perfect ``crd/simple`` à partir du dossier."""
-    from apps.credits.amounts import reference_amount
-    from apps.credits.services import period_count
+    from .disbursement_payload import build_payload
 
-    client = application.client
-    product = application.product
-    if client is None:
-        raise CoreBankingError("Client manquant pour le décaissement CBS.")
-    if product is None:
-        raise CoreBankingError("Produit manquant pour le décaissement CBS.")
-
-    connector = connector or resolve_active_connector(application.tenant_id)
-    rules = _disbursement_rules(connector)
-    defaults = rules.get("defaults") or {}
-    # Maps syncées du connecteur uniquement (pas de re-fusion PURPOSE_CBS legacy)
-    purpose_map = dict(rules.get("purpose_map") or {})
-    periodicity_map = dict(rules.get("periodicity_map") or {})
-    if not periodicity_map:
-        periodicity_map = dict(PERIODICITY_CBS)
-
-    code_adherent = (client.cbs_client_id or "").strip()
-    num_manuel = (client.cbs_account_number or "").strip()
-    num_piece = (getattr(client, "national_id", None) or "").strip()
-    if not (code_adherent or num_manuel or num_piece):
-        raise CoreBankingError(
-            "Identifiant adhérent CBS manquant sur le client "
-            "(cbs_client_id / cbs_account_number / pièce d'identité). "
-            "Importez ou renseignez la situation CBS avant décaissement."
-        )
-
-    agency = application.agency
-    id_point = (
-        (getattr(agency, "cbs_point_of_service_id", None) or "").strip()
-        or str(defaults.get("idPointService") or "").strip()
-    )
-    if not id_point:
-        raise CoreBankingError(
-            "Point de service CBS manquant : renseignez "
-            "cbs_point_of_service_id sur l'agence, ou "
-            "mapping_rules.disbursement.defaults.idPointService."
-        )
-
-    id_produit_crd = (
-        (product.cbs_product_code or "").strip()
-        or str(defaults.get("idProduitCrd") or product.code or "").strip()
-    )
-    if not id_produit_crd:
-        raise CoreBankingError(
-            "Code produit crédit CBS (idProduitCrd) manquant sur le produit."
-        )
-
-    from apps.catalog.cbs_resolve import (
-        resolve_currency_cbs,
-        resolve_periodicity_cbs,
-        resolve_repayment_cbs,
-    )
-
-    id_produit_remb = (
-        (product.cbs_repayment_product_code or "").strip()
-        or resolve_repayment_cbs(
-            application.tenant_id, application.repayment_mechanism or ""
-        )
-        or str(defaults.get("idProduitRemb") or "").strip()
-    )
-    if not id_produit_remb:
-        raise CoreBankingError(
-            "Code produit remboursement CBS (idProduitRemb) manquant "
-            "(méthode de remboursement, produit ou "
-            "mapping_rules.disbursement.defaults)."
-        )
-
-    id_gestionnaire = ""
-    for actor in (
-        getattr(application, "submitted_by", None),
-        getattr(application, "created_by", None),
-    ):
-        if actor is None:
-            continue
-        # Uniquement l'id gestionnaire CBS (pas le matricule RH)
-        id_gestionnaire = (getattr(actor, "cbs_id", None) or "").strip()
-        if id_gestionnaire:
-            break
-    if not id_gestionnaire:
-        id_gestionnaire = str(defaults.get("idGestionnaire") or "").strip()
-    if not id_gestionnaire:
-        raise CoreBankingError(
-            "Identifiant gestionnaire CBS (idGestionnaire) manquant : "
-            "associez un gestionnaire CBS à l'utilisateur soumissionnaire, "
-            "ou mapping_rules.disbursement.defaults.idGestionnaire."
-        )
-
-    periodicity = application.periodicity or "MONTHLY"
-    id_periodicite = resolve_periodicity_cbs(
-        application.tenant_id,
-        periodicity,
-        fallback_map=periodicity_map,
-    )
-    purpose_type = application.purpose_type or "OTHER"
-    from apps.catalog.cbs_resolve import resolve_financing_object_cbs
-
-    id_objet = resolve_financing_object_cbs(
-        application.tenant_id,
-        purpose_type,
-        purpose_map=purpose_map,
-        default=str(defaults.get("idObjetFinancement") or ""),
-    )
-    if not id_objet:
-        raise CoreBankingError(
-            "Objet de financement CBS (idObjetFinancement) manquant : "
-            "importez les objets Perfect et associez un PurposeType, "
-            "ou renseignez purpose_map / defaults.idObjetFinancement."
-        )
-
-    amount = reference_amount(application) or application.amount_requested
-    if amount is None:
-        raise CoreBankingError("Montant à décaisser introuvable.")
-
-    rate = application.interest_rate
-    if rate is None and product.interest_rate is not None:
-        rate = product.interest_rate
-    if rate is None:
-        raise CoreBankingError("Taux d'intérêt manquant pour le décaissement CBS.")
-
-    n_echeances = int(
-        period_count(
-            application.duration_months or 1,
-            periodicity,
-            tenant_id=application.tenant_id,
-        )
-    )
-    external_id = (application.reference or str(application.pk)).strip()
-    currency = resolve_currency_cbs(
-        application.tenant_id,
-        application.currency
-        or getattr(product, "currency", None)
-        or "XOF",
-    )
-
-    payload = {
-        "externalId": external_id,
-        "callbackUrl": build_callback_url(application),
-        "idPointService": id_point,
-        "idPeriodicite": id_periodicite,
-        "taux": float(Decimal(rate)),
-        "nombreEcheance": n_echeances,
-        "idObjetFinancement": id_objet,
-        "idGestionnaire": id_gestionnaire,
-        "idProduitCrd": id_produit_crd,
-        "idProduitRemb": id_produit_remb,
-        "montantDemande": float(Decimal(amount)),
-        "codeDevise": currency,
-    }
-    if code_adherent:
-        payload["codeAdherent"] = code_adherent
-    if num_manuel:
-        payload["numManuel"] = num_manuel
-    if num_piece:
-        payload["numPieceIdentite"] = num_piece
-    return payload
+    return build_payload(application, connector=connector)
 
 
 def submit_credit_to_cbs(application, *, connector=None) -> dict:
     """
-    Envoie la demande de crédit / décaissement au CBS (Perfect crd/simple).
+    Envoie la demande de crédit / mise en place au CBS (Perfect crd/simple).
 
     Retour normalisé :
     {
@@ -229,6 +84,11 @@ def submit_credit_to_cbs(application, *, connector=None) -> dict:
     """
     connector = connector or resolve_active_connector(application.tenant_id)
     mode = disbursement_mode(connector)
+    if not getattr(settings, "ALLOW_SIMULATED_CBS_SETUP", False) and (
+        mode != "CBS" or connector.protocol != "REST" or not connector.base_url.strip()
+        or (connector.mapping_rules or {}).get("force_simulate")
+    ):
+        raise CoreBankingError("La mise en place réelle exige un connecteur CBS REST actif avec une URL et une réponse positive. La simulation est réservée aux environnements de développement et de test.")
 
     if mode == "LOCAL":
         payload = build_credit_disbursement_payload(
@@ -299,14 +159,25 @@ def submit_credit_to_cbs(application, *, connector=None) -> dict:
             "payload_sent": payload,
         }
 
-    payload = build_credit_disbursement_payload(application, connector=connector)
-    idem = f"disburse:{application.pk}"
-    log = send_operation(
-        connector,
-        OP_SUBMIT_CREDIT,
-        payload,
-        idempotency_key=idem,
-    )
+    from apps.catalog.cbs_mapping import cbs_mapping_snapshot, lock_application_cbs_mapping
+
+    with transaction.atomic():
+        # Le service crédit relâche son verrou dossier avant l'appel réseau.
+        # Relire et stabiliser ici les références évite d'envoyer un mapping
+        # différent de celui autorisé entre les deux phases.
+        application = application.__class__.all_tenants.get(pk=application.pk)
+        lock_application_cbs_mapping(application)
+        current = cbs_mapping_snapshot(application)
+        authorization = application.setup_authorization or {}
+        if (authorization.get("status") != "AUTHORIZED"
+                or authorization.get("cbs_mapping") != current
+                or current["connector_id"] != str(connector.pk)):
+            raise CoreBankingError("Les correspondances CBS ne sont pas couvertes par une autorisation à jour. Refaites le contrôle final et l'autorisation.")
+        payload = build_credit_disbursement_payload(application, connector=connector)
+        idem = f"disburse:{application.pk}"
+        log = send_operation(connector, OP_SUBMIT_CREDIT, payload, idempotency_key=idem, authorized_application=application)
+    # Un refus CBS reste journalisé : ne pas lever l'erreur dans le bloc qui
+    # a persisté le journal de cette tentative.
     response = _require_success(log, OP_SUBMIT_CREDIT)
     raw = response.get("raw") or response
     return {

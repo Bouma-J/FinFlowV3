@@ -205,9 +205,9 @@ def _group_role_name(group) -> str:
 
 
 def _group_is_chef_agence(group) -> bool:
-    from apps.accounts.services import CHEF_AGENCE_ROLE_NAME
+    from apps.accounts.capabilities import AGENCY_MANAGER, group_has_capability
 
-    return _group_role_name(group) == CHEF_AGENCE_ROLE_NAME
+    return group_has_capability(group, AGENCY_MANAGER)
 
 
 def _target_agency_id(instance):

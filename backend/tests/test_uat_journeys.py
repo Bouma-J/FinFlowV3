@@ -6,6 +6,7 @@ Les encaissements restent refusés (CBS only).
 """
 from datetime import date, timedelta
 from decimal import Decimal
+from unittest.mock import patch
 
 import pytest
 from django.contrib.auth.models import Group
@@ -22,7 +23,7 @@ from apps.collections.services import (
 )
 from apps.common.tenancy import tenant_context
 from apps.credits.models import CreditApplication, Loan
-from apps.guarantees.models import DocumentType, Guarantee
+from apps.guarantees.models import DocumentType
 from apps.workflow.models import ApprovalStep, ApprovalTask, WorkflowDefinition
 
 pytestmark = pytest.mark.django_db
@@ -152,15 +153,24 @@ def test_uat_credit_pipeline_to_local_loan(tenant_a, product_a):
     assert detail.status_code == 200
     assert detail.json()["status"] == "APPROVED"
 
-    disbursed = api.post(
-        f"/api/v1/credit-applications/{app_id}/disburse/",
-        {"skip_cbs": True},
-        format="json",
-        **headers,
-    )
+    from tests.setup_helpers import configure_local_cbs, prepare_setup
+    application = CreditApplication.all_tenants.get(pk=app_id)
+    configure_local_cbs(application)
+    executor = prepare_setup(application)
+    execution_api, execution_headers = _auth(executor, tenant_a)
+    with patch("apps.corebanking.disbursement.submit_credit_to_cbs", return_value={
+        "external_id": application.reference, "num_contrat": "UAT-CONTRACT",
+        "num_demande": "UAT-DEMANDE", "ref_demande": "UAT-REF", "raw": {"responseCode": 200},
+    }) as submit_cbs:
+        disbursed = execution_api.post(
+            f"/api/v1/credit-applications/{app_id}/disburse/",
+            {}, format="json", **execution_headers,
+        )
+    submit_cbs.assert_called_once()
     assert disbursed.status_code == 200, disbursed.content
     loan_id = disbursed.json()["id"]
     assert disbursed.json()["status"] == "ACTIVE"
+    assert disbursed.json()["cbs_contract_number"] == "UAT-CONTRACT"
     assert Decimal(str(disbursed.json()["principal"])) == Decimal("2000000")
 
     loan_detail = api.get(f"/api/v1/loans/{loan_id}/", **headers)

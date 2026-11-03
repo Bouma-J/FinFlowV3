@@ -9,6 +9,8 @@ from rest_framework.response import Response
 from apps.common.permissions import (
     HasModelPermission,
     IsGroupLevel,
+    IsGroupAdministrator,
+    IsConfigurationAdministrator,
     MustChangePasswordGate,
 )
 from apps.common.tenancy import get_current_tenant_id, is_group_context
@@ -38,16 +40,20 @@ class TenantViewSet(TenantContextMixin, viewsets.ModelViewSet):
             # Logo / charte pour l'écran de connexion (sans JWT).
             return [AllowAny()]
         if self.action in ("retrieve", "current"):
-            return [IsAuthenticated()]
-        if self.action in ("update", "partial_update"):
             return [IsAuthenticated(), MustChangePasswordGate()]
-        return [IsAuthenticated(), IsGroupLevel()]
+        if self.action in ("update", "partial_update"):
+            return [IsAuthenticated(), MustChangePasswordGate(), IsConfigurationAdministrator()]
+        if self.action == "list":
+            return [IsAuthenticated(), MustChangePasswordGate(), IsGroupLevel()]
+        return [IsAuthenticated(), MustChangePasswordGate(), IsGroupAdministrator()]
 
     def perform_update(self, serializer):
         user = self.request.user
-        if getattr(user, "is_group_level", False) or user.is_superuser:
+        if user.is_superuser or (user.is_group_level and user.is_staff):
             serializer.save()
             return
+        if user.is_group_level:
+            raise PermissionDenied("Accès réservé aux administrateurs Groupe.")
         if str(serializer.instance.id) != str(user.tenant_id):
             raise PermissionDenied(
                 "Vous ne pouvez modifier que votre propre filiale."

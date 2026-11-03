@@ -161,7 +161,7 @@ def test_deleting_tenant_detaches_audit_entries(tenant_b):
 
 def _group_admin_client(username):
     admin = User.objects.create_user(
-        username=username, password="FinFlow2026!", is_group_level=True
+        username=username, password="FinFlow2026!", is_group_level=True, is_staff=True
     )
     api = APIClient()
     api.force_authenticate(admin)
