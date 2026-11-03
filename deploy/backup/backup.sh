@@ -92,7 +92,8 @@ if [[ "${SKIP_MINIO:-0}" != "1" ]]; then
     --network "$NETWORK" \
     -e MC_HOST_src="http://${MINIO_USER}:${MINIO_PASS}@minio:9000" \
     -v "$(host_path "${SNAP}/minio"):/backup" \
-    minio/mc:latest \
+    --entrypoint mcli \
+    pgsty/silo:RELEASE.2026-10-26T00-00-00Z \
     mirror --overwrite "src/${BUCKET}" /backup
 else
   warn "MinIO ignoré (SKIP_MINIO=1)"

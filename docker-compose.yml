@@ -84,7 +84,9 @@ services:
     restart: unless-stopped
 
   minio:
-    image: minio/minio:latest
+    # minio/minio a été retiré de Docker Hub (sept. 2026). Silo est un
+    # serveur compatible, image publique, même commande et mêmes variables.
+    image: pgsty/silo:RELEASE.2026-10-26T00-00-00Z
     command: server /data --console-address ":9001"
     environment:
       MINIO_ROOT_USER: minioadmin

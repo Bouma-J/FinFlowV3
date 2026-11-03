@@ -96,11 +96,11 @@ SQL
     network="$(compose_network "$dir")"
     docker run --rm --network "$network" \
       -e MC_HOST_dst="http://${minio_user}:${minio_pass}@minio:9000" \
-      minio/mc:latest mb -p "dst/${BUCKET}" || true
+      --entrypoint mcli pgsty/silo:RELEASE.2026-10-26T00-00-00Z mb -p "dst/${BUCKET}" || true
     docker run --rm --network "$network" \
       -e MC_HOST_dst="http://${minio_user}:${minio_pass}@minio:9000" \
       -v "$(host_path "${SNAP}/minio"):/backup:ro" \
-      minio/mc:latest mirror --overwrite /backup "dst/${BUCKET}"
+      --entrypoint mcli pgsty/silo:RELEASE.2026-10-26T00-00-00Z mirror --overwrite /backup "dst/${BUCKET}"
   fi
 
   if [[ "$RESTORE_SECRETS" -eq 1 && -f "${SNAP}/secrets.env.enc" ]]; then
@@ -203,7 +203,7 @@ restore_drill() {
     postgres:16-alpine >/dev/null
   docker run -d --name "$minio" --network "$net" \
     -e MINIO_ROOT_USER=drill -e MINIO_ROOT_PASSWORD=drilldrill \
-    minio/minio:latest server /data --console-address ":9001" >/dev/null
+    pgsty/silo:RELEASE.2026-10-26T00-00-00Z server /data --console-address ":9001" >/dev/null
 
   local i
   for i in $(seq 1 30); do
@@ -231,16 +231,16 @@ restore_drill() {
   if [[ -d "${SNAP}/minio" ]] && [[ "$(count_files "${SNAP}/minio")" -gt 0 ]]; then
     docker run --rm --network "$net" \
       -e MC_HOST_dst="http://drill:drilldrill@${minio}:9000" \
-      minio/mc:latest mb -p "dst/${BUCKET}" || true
+      --entrypoint mcli pgsty/silo:RELEASE.2026-10-26T00-00-00Z mb -p "dst/${BUCKET}" || true
     docker run --rm --network "$net" \
       -e MC_HOST_dst="http://drill:drilldrill@${minio}:9000" \
       -v "$(host_path "${SNAP}/minio"):/backup:ro" \
-      minio/mc:latest mirror --overwrite /backup "dst/${BUCKET}"
+      --entrypoint mcli pgsty/silo:RELEASE.2026-10-26T00-00-00Z mirror --overwrite /backup "dst/${BUCKET}"
     local objects
     objects="$(
       docker run --rm --network "$net" \
         -e MC_HOST_dst="http://drill:drilldrill@${minio}:9000" \
-        minio/mc:latest ls --recursive "dst/${BUCKET}" | wc -l | tr -d ' '
+        --entrypoint mcli pgsty/silo:RELEASE.2026-10-26T00-00-00Z ls --recursive "dst/${BUCKET}" | wc -l | tr -d ' '
     )"
     ok "Bucket drill : ${objects} objets"
   else
