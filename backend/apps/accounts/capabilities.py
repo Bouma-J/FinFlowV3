@@ -96,6 +96,11 @@ def user_has_capability(user, code):
     return code in CAPABILITIES and code in user_capabilities(user)
 
 
+def is_tenant_administrator(user):
+    """Administrateur filiale : tous les droits d'action dans sa filiale."""
+    return user_has_capability(user, TENANT_ADMIN)
+
+
 def users_with_capability(queryset, *codes):
     """Présélection SQL, puis contrôle exact via user_capabilities à l'usage."""
     names = [f"business_{code}" for code in codes if code in CAPABILITIES]

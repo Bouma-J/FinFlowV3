@@ -2449,6 +2449,15 @@ h3 {
   border-collapse: collapse;
   background: var(--surface);
 }
+.table caption {
+  caption-side: top;
+  text-align: left;
+  font-weight: 650;
+  padding: 4px 2px 8px;
+  color: var(--ink);
+  text-transform: none;
+  letter-spacing: 0;
+}
 table.card {
   overflow: hidden;
 }
@@ -3422,6 +3431,64 @@ table.card > tbody {
   gap: 8px;
   flex-shrink: 0;
   max-width: 52%;
+}
+.dossier-menu {
+  position: relative;
+}
+.dossier-menu-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+}
+.dossier-menu-btn:hover,
+.dossier-menu-btn[aria-expanded="true"] {
+  background: var(--surface);
+  color: var(--text);
+  border-color: var(--border);
+}
+.dossier-menu-panel {
+  position: fixed;
+  z-index: 40;
+  min-width: 240px;
+  padding: 4px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+.dossier-menu-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 8px 10px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+}
+.dossier-menu-item:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--brand-soft) 55%, var(--surface));
+}
+.dossier-menu-item:disabled {
+  opacity: 0.7;
+  cursor: wait;
+}
+.dossier-menu-error {
+  margin: 4px 8px 6px;
+  color: var(--danger, #9b2c2c);
+  font-size: 12px;
 }
 .credit-hero-actions .btn-banner,
 .detail-banner-page .client-banner-actions .btn-banner,
@@ -6112,7 +6179,11 @@ code {
 }
 
 /* ---------- Analyses financières & visites (multi-auteurs) ---------- */
-.analysis-list,
+.analysis-list {
+  display: flex;
+  flex-direction: column;
+  gap: 40px;
+}
 .visit-list {
   display: flex;
   flex-direction: column;
@@ -6122,12 +6193,162 @@ code {
 .visit-item {
   border: 1px solid var(--border);
   border-radius: var(--radius);
-  padding: 16px 16px 14px;
-  background: var(--surface-2, var(--surface));
+  padding: 22px 22px 18px;
+  background: var(--surface);
 }
-.analysis-item + .analysis-item,
-.visit-item + .visit-item {
-  margin-top: 0;
+.analysis-item + .analysis-item {
+  border-top: 4px solid var(--brand);
+  padding-top: 28px;
+}
+.analysis-chapter + .analysis-chapter,
+.analysis-theme + .analysis-theme {
+  margin-top: 28px;
+  padding-top: 22px;
+  border-top: 1px solid var(--border);
+}
+.analysis-item > .analysis-chapter {
+  margin-top: 32px;
+  padding-top: 22px;
+  border-top: 1px solid var(--border);
+}
+.analysis-chapter-title {
+  margin: 0 0 16px;
+  font-size: 18px;
+  letter-spacing: 0;
+}
+.analysis-note {
+  margin-top: 12px;
+  padding: 10px 14px;
+  border-left: 3px solid var(--brand);
+  background: color-mix(in srgb, var(--brand) 7%, var(--surface));
+  border-radius: 0 8px 8px 0;
+}
+.analysis-note .subsection-label,
+.analysis-note p {
+  margin: 0;
+}
+.analysis-note .subsection-label {
+  margin-bottom: 4px;
+}
+.external-credit-list {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  margin: 4px 0 12px;
+}
+.external-credit,
+.external-credit-read {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 14px 16px 8px;
+  background: var(--surface);
+}
+.external-credit-read {
+  margin-top: 14px;
+}
+.external-credit-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 8px;
+}
+.external-credit-head h4,
+.external-credit-read h5 {
+  margin: 0 0 8px;
+  font-size: 15px;
+}
+.product-sheet-add {
+  margin-top: 12px;
+}
+.product-sheet-comment {
+  margin-top: 16px;
+}
+.product-sheet .table th,
+.product-sheet .table td {
+  padding: 8px 10px;
+  vertical-align: middle;
+}
+.product-sheet .table input {
+  width: 100%;
+  min-width: 6.5rem;
+  padding: 6px 8px;
+}
+.external-credit-checks {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 32px;
+  margin: 12px 0 4px;
+}
+.external-credit-checks .checkbox-field {
+  width: auto;
+  margin: 0;
+}
+.statement-list {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+.statement-exercise .statement-piece {
+  margin-top: 14px;
+  border-top: 1px solid var(--border);
+  padding-top: 10px;
+}
+.statement-exercise .statement-piece summary {
+  cursor: pointer;
+  font-weight: 650;
+  margin-bottom: 10px;
+}
+.statement-badge {
+  margin-right: auto;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--brand) 14%, var(--surface));
+  color: var(--brand);
+  font-size: 12px;
+}
+.statement-figures {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 8px;
+  margin: 12px 0;
+}
+.statement-figure {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+.statement-figure span {
+  color: var(--text-muted);
+  font-size: 12px;
+}
+.statement-file {
+  margin-top: 8px;
+}
+.statement-compare {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.statement-compare table {
+  width: 100%;
+  border-collapse: collapse;
+}
+.statement-compare th,
+.statement-compare td {
+  text-align: left;
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--border);
+}
+.analysis-block {
+  margin-top: 18px;
+}
+.analysis-block h5 {
+  margin: 18px 0 8px;
 }
 .analysis-item-head,
 .visit-item-head {

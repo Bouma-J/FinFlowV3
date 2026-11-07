@@ -20,6 +20,36 @@ def get_user_agency_ids(user):
     return list(agency_ids)
 
 
+# Ces profils voient toute la filiale, même si le compte est encore marqué Agence.
+FILIALE_WIDE_PACK_CODES = frozenset({
+    "tenant_admin",
+    "operations_manager",
+    "credit_risk_manager",
+    "credit_analyst",
+})
+
+
+def sees_whole_filiale(user):
+    """Vrai pour l'administrateur filiale et les rôles d'instruction à périmètre filiale."""
+    if not user or not getattr(user, "is_authenticated", False):
+        return False
+    if getattr(user, "is_group_level", False) or not getattr(user, "tenant_id", None):
+        return False
+    from apps.accounts.models import TenantRole
+
+    return TenantRole.objects.filter(
+        tenant_id=user.tenant_id,
+        group__in=user.groups.all(),
+        pack_code__in=FILIALE_WIDE_PACK_CODES,
+    ).exists()
+
+
+def effective_data_scope(user):
+    if sees_whole_filiale(user):
+        return DataScope.TENANT
+    return getattr(user, "data_scope", DataScope.AGENCY)
+
+
 def user_has_agency_access(user, agency_id):
     if not agency_id:
         return True
@@ -28,7 +58,7 @@ def user_has_agency_access(user, agency_id):
     # TENANT means the full branch, including agency records. Keep this
     # consistent with apply_data_scope(); callers still validate that the
     # agency belongs to the active tenant before relying on this check.
-    if getattr(user, "data_scope", None) == DataScope.TENANT:
+    if effective_data_scope(user) == DataScope.TENANT:
         return True
     return agency_id in get_user_agency_ids(user)
 
@@ -45,7 +75,7 @@ def apply_data_scope(qs, user, agency_field="agency", owner_field="created_by"):
     if getattr(user, "is_group_level", False):
         return qs
 
-    scope = getattr(user, "data_scope", DataScope.AGENCY)
+    scope = effective_data_scope(user)
     if scope == DataScope.TENANT:
         return qs
 
@@ -76,7 +106,7 @@ def apply_related_data_scope(qs, user, agency_lookup):
     if getattr(user, "is_group_level", False):
         return qs
 
-    scope = getattr(user, "data_scope", DataScope.AGENCY)
+    scope = effective_data_scope(user)
     if scope == DataScope.TENANT:
         return qs
 
@@ -103,7 +133,7 @@ def apply_workflow_credit_scope(qs, user, *, prefix=""):
 
     if not user or not user.is_authenticated:
         return qs.none()
-    if user.is_group_level or user.data_scope == DataScope.TENANT:
+    if user.is_group_level or effective_data_scope(user) == DataScope.TENANT:
         return qs
     credit_type = ContentType.objects.get_for_model(CreditApplication)
     visible = apply_data_scope(CreditApplication.objects.all(), user).values("pk")

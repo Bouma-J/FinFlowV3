@@ -119,7 +119,9 @@ def request_setup_complements(application, user, comment):
 
 
 def assert_actor(application, user, permission):
-    from apps.accounts.capabilities import CREDIT_ADMIN, OPERATIONS, user_has_capability
+    from apps.accounts.capabilities import (
+        CREDIT_ADMIN, OPERATIONS, is_tenant_administrator, user_has_capability,
+    )
 
     required_capability = {
         "credits.review_setup_creditapplication": CREDIT_ADMIN,
@@ -132,7 +134,11 @@ def assert_actor(application, user, permission):
         or not user.is_authenticated
         or not user.is_active
         or not user.has_perm(permission)
-        or (required_capability and not user_has_capability(user, required_capability))
+        or (
+            required_capability
+            and not user_has_capability(user, required_capability)
+            and not is_tenant_administrator(user)
+        )
     ):
         raise WorkflowError("Droit insuffisant pour cette action de mise en place.")
     if not user.is_group_level and not user.is_superuser:

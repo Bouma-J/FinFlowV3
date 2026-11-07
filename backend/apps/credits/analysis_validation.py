@@ -125,6 +125,13 @@ def assert_analysis_ready_for_submission(application):
         raise WorkflowError(
             "Rapprochez les mensualités des engagements détaillés avec le total consolidé avant soumission."
         )
+    if detailed.get("tpe_cash_conclusion") in {"TO_JUSTIFY", "INCOHERENT"} and not str(
+        (reference.analysis_details or {}).get("cash_check_comment") or ""
+    ).strip():
+        raise WorkflowError(
+            "Le contrôle de trésorerie depuis le dernier achat présente un écart : "
+            "expliquez-le dans le commentaire du contrôle avant soumission."
+        )
     if detailed.get("forecast_deficit_months", 0) > 0 and not reference.recommended_conditions.strip():
         raise WorkflowError(
             "Le plan de trésorerie présente des mois déficitaires : précisez les mesures ou conditions proposées."

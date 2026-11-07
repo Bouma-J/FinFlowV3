@@ -16,6 +16,7 @@ from django.db.models import Q
 from django.utils import timezone
 from django.utils.html import escape
 
+from .email_brand import branded_shell, colors_for_tenant, readable_text
 from .mail import send_email_for_tenant
 from .models import NotificationLog, TenantNotificationSettings
 
@@ -57,8 +58,8 @@ def _client_nom_prenom(client) -> str:
 
 
 _PROCESS_SUBJECT_LABEL = {
-    "MAIN_LEVEE": "Dossier de main levée",
-    "DATION": "Dossier de dation",
+    "MAIN_LEVEE": "Main levée",
+    "DATION": "Dation",
 }
 
 
@@ -68,33 +69,64 @@ def _client_name_from_meta(meta: dict) -> str:
     ).strip()
 
 
+def _format_when(value) -> str:
+    """Date ou heure locale, lisible dans un e-mail."""
+    if not value:
+        return "—"
+    if getattr(value, "tzinfo", None) is not None:
+        value = timezone.localtime(value)
+    if hasattr(value, "hour"):
+        return value.strftime("%d/%m/%Y à %H:%M")
+    return value.strftime("%d/%m/%Y")
+
+
+def _with_reference(head: str, reference: str) -> str:
+    reference = (reference or "").strip()
+    if head and reference and reference not in head:
+        return f"{head} — {reference}"
+    return head or reference
+
+
 def _subject_tail(meta: dict, fallback: str = "") -> str:
-    """Crédit : « Nom Prénom - montant ». Main levée / dation : libellé + client."""
+    """Crédit : client, montant et référence. Les autres dossiers gardent le client."""
     fallback = fallback or meta.get("reference") or meta.get("process_label") or "dossier"
     kind = meta.get("kind") or ""
     name = _client_name_from_meta(meta)
+    reference = (meta.get("reference") or "").strip()
     if kind == "CREDIT":
         amount = (meta.get("amount_label") or "").strip()
         if amount in {"", "—"}:
             amount = ""
-        if name and amount:
-            return f"{name} - {amount}"
-        if name:
-            return name
-        if amount:
-            return amount
-        return fallback
+        parts = [part for part in (name, amount) if part]
+        return _with_reference(" - ".join(parts), reference) or fallback
+    if kind == "COLLECTION":
+        return _with_reference(name, reference) or fallback
     label = _PROCESS_SUBJECT_LABEL.get(kind)
     if label:
-        return f"{label} - {name}" if name else label
+        head = f"{label} - {name}" if name else label
+        return _with_reference(head, reference)
     return fallback
 
 
 def _alert_subject(prefix: str, meta: dict, fallback: str = "") -> str:
-    kind = meta.get("kind") or ""
-    if kind in _PROCESS_SUBJECT_LABEL:
-        return f"[FIN_FLOW] {_subject_tail(meta, fallback)}"[:255]
     return f"{prefix} — {_subject_tail(meta, fallback)}"[:255]
+
+
+def _latest_decision_comment(instance) -> str:
+    """Dernier commentaire de rejet ou de renvoi, tronqué pour l'e-mail."""
+    from apps.workflow.models import ApprovalTask
+
+    comment = (
+        ApprovalTask.all_tenants.filter(instance_id=instance.pk, acted_at__isnull=False)
+        .exclude(decision_comment="")
+        .order_by("-acted_at")
+        .values_list("decision_comment", flat=True)
+        .first()
+    )
+    text = " ".join((comment or "").split())
+    if len(text) > 500:
+        return text[:497] + "…"
+    return text
 
 
 def _describe_target(instance) -> dict:
@@ -368,6 +400,7 @@ def _build_bodies(
     title: str,
     intro: str,
     meta: dict,
+    tenant=None,
     extra: str = "",
     cta_label: str = "Ouvrir le dossier",
 ) -> tuple[str, str]:
@@ -397,7 +430,11 @@ def _build_bodies(
     )
     text = "\n".join(lines)
 
-    html_extra = f"<p>{escape(extra)}</p>" if extra else ""
+    colors = colors_for_tenant(tenant)
+    button_text = readable_text(colors["primary"], colors["sidebar_text"])
+    html_extra = "".join(
+        f"<p>{escape(line)}</p>" for line in (extra or "").split("\n") if line.strip()
+    )
     client_html = (
         f"<li><strong>Client :</strong> {escape(meta['client_display'])}</li>"
         if meta.get("client_display")
@@ -408,9 +445,8 @@ def _build_bodies(
         for label, value in details
         if value and value != "—"
     )
-    html = f"""
-    <div style="font-family:Segoe UI,Arial,sans-serif;font-size:14px;color:#17231f;">
-      <h2 style="color:#0f9488;">{escape(title)}</h2>
+    inner = f"""
+      <h2 style="margin:0 0 12px;color:{colors['primary']};">{escape(title)}</h2>
       <p>{escape(intro)}</p>
       <ul>
         <li><strong>Processus :</strong> {escape(meta['process_label'])}</li>
@@ -420,14 +456,13 @@ def _build_bodies(
       </ul>
       {html_extra}
       <p><a href="{escape(meta['detail_url'])}"
-            style="display:inline-block;padding:10px 16px;background:#0f9488;
-                   color:#fff;text-decoration:none;border-radius:8px;">
+            style="display:inline-block;padding:10px 16px;background:{colors['primary']};
+                   color:{button_text};text-decoration:none;border-radius:8px;">
         {escape(cta_label)}
       </a></p>
-      <p style="color:#6b7671;font-size:12px;">— FIN_FLOW</p>
-    </div>
+      <p style="color:{colors['secondary']};font-size:12px;">— FIN_FLOW</p>
     """
-    return text, html
+    return text, branded_shell(tenant, inner)
 
 
 def _send_email(
@@ -520,6 +555,7 @@ def notify_step_opened(instance, step, task=None):
         title="Dossier en attente de votre intervention",
         intro=intro,
         meta=meta,
+        tenant=tenant,
         extra=f"Étape à traiter : {step.name}",
     )
     return _send_email(
@@ -595,12 +631,15 @@ def notify_workflow_outcome(instance, outcome: str):
         title = "Dossier rejeté"
         intro = (
             f"Votre dossier{client_bit} a été rejeté au cours du circuit d'approbation. "
-            "Consultez le dossier pour prendre connaissance du motif."
+            "Le motif saisi par le validateur est repris ci-dessous."
         )
         extra = (
             "Aucune suite n'est attendue sur ce dossier tant qu'une nouvelle "
             "demande n'est pas créée, sauf consignes contraires de votre hiérarchie."
         )
+        motif = _latest_decision_comment(instance)
+        if motif:
+            extra = f"{extra}\nMotif indiqué par le validateur : {motif}"
         cta_label = "Voir le dossier rejeté"
         subject = _alert_subject("[FIN_FLOW] Dossier rejeté", meta, fallback=ref)
     elif outcome == "RETURNED" and is_credit:
@@ -619,6 +658,12 @@ def notify_workflow_outcome(instance, outcome: str):
             meta,
             fallback=ref,
         )
+        motif = _latest_decision_comment(instance)
+        if motif:
+            extra = (
+                f"{extra}\n"
+                f"Commentaire du validateur : {motif}"
+            )
     else:
         labels = {
             "APPROVED": ("Circuit approuvé", "Le circuit a été approuvé."),
@@ -636,6 +681,10 @@ def notify_workflow_outcome(instance, outcome: str):
             meta,
             fallback=f"{meta['process_label']} {meta['reference']}".strip(),
         )
+        if outcome in {"REJECTED", "RETURNED"}:
+            motif = _latest_decision_comment(instance)
+            if motif:
+                extra = f"Commentaire du validateur : {motif}"
 
     kind = {
         "APPROVED": NotificationLog.Kind.COMPLETION,
@@ -647,6 +696,7 @@ def notify_workflow_outcome(instance, outcome: str):
         title=title,
         intro=intro,
         meta=meta,
+        tenant=tenant,
         extra=extra,
         cta_label=cta_label,
     )
@@ -707,20 +757,21 @@ def notify_sla_breach(task):
     users = _users_for_step(instance, step)
     recipients = _emails(users)
     meta = _describe_target(instance)
-    due = task.due_at.isoformat() if task.due_at else "—"
+    due = _format_when(task.due_at)
     subject = _alert_subject(
-        "[FIN_FLOW][SLA] Échéance dépassée",
+        "[FIN_FLOW] Délai dépassé",
         meta,
         fallback=f"{meta['process_label']} {meta['reference']}".strip(),
     )
     intro = (
-        f"L'étape « {step.name} » a dépassé son délai (SLA). "
+        f"L'étape « {step.name} » a dépassé son délai. "
         f"Échéance : {due}."
     )
     text, html = _build_bodies(
-        title="SLA dépassé",
+        title="Délai dépassé",
         intro=intro,
         meta=meta,
+        tenant=tenant,
         extra=f"Étape : {step.name}",
     )
     return _send_email(
@@ -839,6 +890,7 @@ def notify_collection_tranche_transfer(case, *, from_tranche=None, to_tranche=No
         title="Dossier transmis à votre tranche",
         intro=intro,
         meta=meta,
+        tenant=tenant,
         extra=f"Transfert : {from_label} → {to_label}",
         cta_label="Ouvrir le dossier de recouvrement",
     )
@@ -923,6 +975,7 @@ def notify_collection_dialogue(message):
         title=kind_label,
         intro=intro,
         meta=meta,
+        tenant=tenant,
         extra=preview,
         cta_label="Ouvrir le dossier de recouvrement",
     )

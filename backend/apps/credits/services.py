@@ -400,7 +400,12 @@ def cancel_submission(application, user=None):
             "Seul un dossier en cours d'approbation peut voir sa soumission annulée."
         )
 
-    is_super = getattr(user, "is_superuser", False) if user is not None else True
+    from apps.accounts.capabilities import is_tenant_administrator
+
+    is_super = (
+        (getattr(user, "is_superuser", False) or is_tenant_administrator(user))
+        if user is not None else True
+    )
 
     if user is not None and not is_super:
         submitter_id = application.submitted_by_id or application.created_by_id

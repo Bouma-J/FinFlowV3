@@ -176,6 +176,12 @@ const NAV_ITEMS: NavItem[] = [
     icon: Calculator,
     anyOf: PERM_SIMULATOR,
   },
+  {
+    to: "/produits",
+    label: "Produits",
+    icon: Boxes,
+    anyOf: PERM_PRODUCTS,
+  },
 ];
 
 const ADMIN_GROUPS: AdminGroup[] = [
@@ -350,7 +356,8 @@ function itemMatchesPath(item: NavItem, pathname: string, resolvedTo: string) {
 }
 
 function canSeeNavItem(item: NavItem, user: CurrentUser | null) {
-  if (item.to.startsWith("/admin/") && !["/admin/audit", "/admin/consolidation", "/admin/intervenants-juridiques", "/admin/delegations", "/admin/roles", "/admin/alertes"].includes(item.to) && !isFinflowAdmin(user)) return false;
+  if (item.to === "/produits" && isFinflowAdmin(user)) return false;
+  if (item.to.startsWith("/admin/") && !isFinflowAdmin(user)) return false;
   if (item.to === "/admin/filiales" && !user?.is_group_level) return false;
   if (item.groupOnly && !user?.is_group_level) return false;
   if (item.finflowAdmin && !isFinflowAdmin(user)) return false;
@@ -716,10 +723,12 @@ export function Layout() {
   const navItems = NAV_ITEMS.filter((item) => canSeeNavItem(item, user));
   const adminGroups = useMemo(
     () =>
-      ADMIN_GROUPS.map((group) => ({
-        ...group,
-        items: group.items.filter((item) => canSeeNavItem(item, user)),
-      })).filter((group) => group.items.length > 0),
+      isFinflowAdmin(user)
+        ? ADMIN_GROUPS.map((group) => ({
+            ...group,
+            items: group.items.filter((item) => canSeeNavItem(item, user)),
+          })).filter((group) => group.items.length > 0)
+        : [],
     [user],
   );
 

@@ -25,7 +25,29 @@ export const ANALYSIS_TABLES: Record<string, { label: string; columns: Column[] 
     { key: "monthly_payment", label: "Service mensuel équivalent", type: "number" },
     { key: "arrears", label: "Impayés", type: "number" },
     { key: "maturity", label: "Échéance finale", type: "date" },
+    { key: "disbursement_date", label: "Date de déblocage", type: "date" },
+    { key: "status", label: "Statut" },
+    { key: "behavior", label: "Comportement / retards" },
     { key: "comment", label: "Source, périodicité, refinancement, sûretés" },
+  ] },
+  sales_observations: { label: "Jours de vente observés et hypothèses", columns: [
+    { key: "kind", label: "Observé ou Hypothèse" },
+    { key: "label", label: "Jour" },
+    { key: "amount", label: "Montant encaissé", type: "number" },
+  ] },
+  bank_flows: { label: "Flux créditeurs par institution (TMC)", columns: [
+    { key: "institution", label: "Institution" },
+    { key: "period", label: "Période" },
+    { key: "tmc", label: "TMC", type: "number" },
+    { key: "balance", label: "Solde à date", type: "number" },
+    { key: "average_tmc", label: "TMC mensuel moyen", type: "number" },
+  ] },
+  references: { label: "Références familiales et professionnelles", columns: [
+    { key: "kind", label: "Familiale ou Professionnelle" },
+    { key: "name", label: "Prénom et nom" },
+    { key: "relationship", label: "Lien / fonction" },
+    { key: "phone", label: "Téléphone" },
+    { key: "address", label: "Adresse" },
   ] },
   cashflow: { label: "Plan mensuel de trésorerie — inclure les mois creux", columns: [
     { key: "month", label: "Mois", type: "month" },
@@ -46,11 +68,12 @@ export const ANALYSIS_TABLES: Record<string, { label: string; columns: Column[] 
   ] },
 };
 
-export function FinancialAnalysisDetails({ name, value, onChange, currency = "XOF" }: {
+export function FinancialAnalysisDetails({ name, value, onChange, currency = "XOF", expanded = false }: {
   name: string;
   value: AnalysisDetails;
   onChange?: (next: AnalysisDetails) => void;
   currency?: string;
+  expanded?: boolean;
 }) {
   const schema = ANALYSIS_TABLES[name];
   const source = value[name];
@@ -66,10 +89,11 @@ export function FinancialAnalysisDetails({ name, value, onChange, currency = "XO
       if (column.type === "date") return new Date(`${content}T00:00:00`).toLocaleDateString("fr-FR");
       return String(content);
     };
-    return <details className="subsection"><summary className="subsection-title">{schema.label} ({rows.length})</summary>
-      <div className="table-scroll"><table className="table"><thead><tr>{schema.columns.map((column) => <th scope="col" key={column.key}>{column.label}</th>)}</tr></thead>
-        <tbody>{rows.map((row, index) => <tr key={index}>{schema.columns.map((column) => <td key={column.key}>{display(row[column.key], column)}</td>)}</tr>)}</tbody>
-      </table></div></details>;
+    const table = <div className="table-scroll"><table className="table"><caption>{schema.label}</caption><thead><tr>{schema.columns.map((column) => <th scope="col" key={column.key}>{column.label}</th>)}</tr></thead>
+      <tbody>{rows.map((row, index) => <tr key={index}>{schema.columns.map((column) => <td key={column.key}>{display(row[column.key], column)}</td>)}</tr>)}</tbody>
+    </table></div>;
+    if (expanded) return table;
+    return <details className="subsection"><summary className="subsection-title">{schema.label} ({rows.length})</summary>{table}</details>;
   }
   function update(index: number, key: string, content: string) {
     onChange?.({ ...value, [name]: rows.map((row, i) => i === index ? { ...row, [key]: content } : row) });

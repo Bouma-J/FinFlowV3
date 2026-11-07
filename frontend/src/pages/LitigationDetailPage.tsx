@@ -16,7 +16,7 @@ import type {
 } from "@/api/types";
 import { useAuth } from "@/auth/AuthContext";
 import { hasAnyPerm, hasPerm } from "@/auth/permissions";
-import { PERM_COLLECTIONS, PERM_LEGAL_PARTIES_MANAGE } from "@/auth/routePerms";
+import { isFinflowAdmin, PERM_COLLECTIONS, PERM_LEGAL_PARTIES_MANAGE } from "@/auth/routePerms";
 import { PermLink } from "@/components/PermLink";
 import {
   Badge,
@@ -617,7 +617,7 @@ export function LitigationDetailPage() {
                 Enregistrer
               </button>
             )}
-            {hasAnyPerm(user, PERM_LEGAL_PARTIES_MANAGE) && (
+            {isFinflowAdmin(user) && hasAnyPerm(user, PERM_LEGAL_PARTIES_MANAGE) && (
               <Link
                 className="btn btn-ghost btn-sm"
                 to="/admin/intervenants-juridiques"

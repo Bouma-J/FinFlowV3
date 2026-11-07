@@ -3,16 +3,26 @@
 Une contribution (analyse financière, visite terrain) peut être ajoutée par :
 - l'initiateur du dossier tant que celui-ci n'est pas clôturé ;
 - toute personne ayant une tâche en cours (PENDING) à l'étape courante du
-  circuit d'approbation du dossier.
+  circuit d'approbation du dossier ;
+- l'administrateur filiale, le responsable exploitation, le responsable
+  crédit et risque et l'analyste crédit, sur tous les dossiers de la filiale ;
+- le chef d'agence, uniquement sur les dossiers de son agence.
 
 Modification / suppression : auteur **et** encore contributeur
-(ou super-administrateur).
+(ou super-administrateur, ou administrateur filiale).
 """
 from django.contrib.contenttypes.models import ContentType
 
 from apps.workflow.models import ApprovalTask, WorkflowInstance
 
 from .models import CreditApplication
+
+# Packs habilités à contribuer sur tous les dossiers de leur filiale.
+_FILIALE_CONTRIBUTION_PACKS = frozenset({
+    "operations_manager",
+    "credit_risk_manager",
+    "credit_analyst",
+})
 
 # Statuts dans lesquels l'initiateur peut encore contribuer.
 _OPEN_STATUSES = {
@@ -64,11 +74,58 @@ def has_pending_task(application, user):
     )
 
 
+def user_role_pack_codes(user):
+    """Codes de packs standard portés par l'utilisateur dans sa filiale."""
+    if not user or not getattr(user, "is_authenticated", False) or not user.tenant_id:
+        return set()
+    if getattr(user, "is_group_level", False):
+        return set()
+    from apps.accounts.models import TenantRole
+
+    return set(
+        TenantRole.objects.filter(
+            tenant_id=user.tenant_id,
+            group__in=user.groups.all(),
+        ).exclude(pack_code="").values_list("pack_code", flat=True)
+    )
+
+
+def _same_filiale(application, user):
+    return bool(
+        application is not None
+        and user
+        and getattr(user, "tenant_id", None)
+        and application.tenant_id == user.tenant_id
+    )
+
+
+def covers_dossier_contribution(application, user):
+    """Périmètre métier hors initiateur : filiale entière, ou agence du chef."""
+    if not _same_filiale(application, user):
+        return False
+    from apps.accounts.capabilities import is_tenant_administrator
+
+    if is_tenant_administrator(user):
+        return True
+    codes = user_role_pack_codes(user)
+    if codes & _FILIALE_CONTRIBUTION_PACKS:
+        return True
+    if "agency_manager" in codes and application.agency_id:
+        from apps.common.access import get_user_agency_ids
+
+        return application.agency_id in get_user_agency_ids(user)
+    return False
+
+
 def can_contribute(application, user):
     """Droit d'ajouter une analyse / visite sur le dossier."""
     if not user or not user.is_authenticated:
         return False
     if user.is_superuser:
+        return True
+    from apps.accounts.capabilities import is_tenant_administrator
+
+    if is_tenant_administrator(user) and _same_filiale(application, user):
         return True
     is_initiator = user.id in {application.created_by_id, application.submitted_by_id}
     if is_initiator and application.status in _OPEN_STATUSES:
@@ -76,11 +133,19 @@ def can_contribute(application, user):
     return has_pending_task(application, user)
 
 
+def _open_instruction_scope(application, user):
+    return (
+        application is not None
+        and application.status in _OPEN_STATUSES
+        and covers_dossier_contribution(application, user)
+    )
+
+
 def can_add_financial_analysis(application, user):
     """Droit d'ajouter une analyse financière (fermé après mise en place)."""
     if application is not None and application.status in ANALYSIS_LOCKED_STATUSES:
         return False
-    return can_contribute(application, user)
+    return can_contribute(application, user) or _open_instruction_scope(application, user)
 
 
 def is_controle_permanent(user):
@@ -91,15 +156,15 @@ def is_controle_permanent(user):
 
 
 def can_add_field_visit(application, user):
-    """Visite terrain : contributeur habituel, ou contrôle permanent."""
-    if can_contribute(application, user):
+    """Visite terrain : contributeur habituel, contrôle permanent, ou rôle d'instruction du périmètre."""
+    if can_contribute(application, user) or is_controle_permanent(user):
         return True
-    return is_controle_permanent(user)
+    return _open_instruction_scope(application, user)
 
 
 def can_mutate_contribution(application, user):
     """Droit de modifier / supprimer une contribution (fenêtre encore ouverte)."""
-    return can_contribute(application, user)
+    return can_contribute(application, user) or _open_instruction_scope(application, user)
 
 
 def can_attach_collateral(application, user=None):

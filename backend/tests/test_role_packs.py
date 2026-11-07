@@ -14,9 +14,12 @@ from apps.accounts.services import (
     COMPTABLE_ROLE_NAME,
     CREDIT_COMMITTEE_FILIALE_ROLE_NAME,
     CREDIT_COMMITTEE_GROUP_ROLE_NAME,
+    FILIALE_ADMIN_ROLE_NAME,
     LECTEUR_ROLE_NAME,
     RESP_AUDIT_ROLE_NAME,
     RESP_CONTROLE_INTERNE_ROLE_NAME,
+    RESP_CREDIT_RISQUE_ROLE_NAME,
+    RESP_EXPLOITATION_ROLE_NAME,
     ensure_default_role_packs,
     get_or_create_tenant_role,
 )
@@ -213,3 +216,141 @@ def test_ensure_role_pack_keeps_manual_permissions(tenant_a):
     group, _ = get_or_create_tenant_role(tenant_a, LECTEUR_ROLE_NAME)
     assert extra in group.permissions.all()
     assert "reporting.view_dashboard" in _codes(group)
+
+
+def test_instruction_roles_add_analysis_and_visit_on_another_dossier(
+    tenant_a, product_a, client_a,
+):
+    from decimal import Decimal
+
+    from django.contrib.auth import get_user_model
+
+    from apps.common.tenancy import tenant_context
+    from apps.credits.access import can_add_field_visit, can_add_financial_analysis
+    from apps.credits.models import CreditApplication
+    from apps.tenants.models import Agency
+
+    ensure_default_role_packs(tenant_a)
+    User = get_user_model()
+    owner = User.objects.create_user(username="dos_owner", password="x", tenant=tenant_a)
+    home = Agency.objects.create(tenant=tenant_a, code="AG-HOME", name="Agence du chef")
+    other = Agency.objects.create(tenant=tenant_a, code="AG-OTHER", name="Autre agence")
+
+    def member(username, role_name, agency=None):
+        user = User.objects.create_user(
+            username=username, password="x", tenant=tenant_a, agency=agency,
+        )
+        group, _ = get_or_create_tenant_role(tenant_a, role_name)
+        user.groups.add(group)
+        if agency is not None:
+            user.agencies.add(agency)
+        return user
+
+    with tenant_context(tenant_a.id):
+        home_file = CreditApplication.objects.create(
+            tenant=tenant_a, reference="DOS-HOME", client=client_a, product=product_a,
+            agency=home, amount_requested=Decimal("500000"), duration_months=12,
+            status=CreditApplication.Status.IN_APPROVAL, created_by=owner,
+        )
+        other_file = CreditApplication.objects.create(
+            tenant=tenant_a, reference="DOS-OTHER", client=client_a, product=product_a,
+            agency=other, amount_requested=Decimal("500000"), duration_months=12,
+            status=CreditApplication.Status.SUBMITTED, created_by=owner,
+        )
+
+    exploitation = member("resp_expl", RESP_EXPLOITATION_ROLE_NAME)
+    assert "credits.add_financialanalysis" in _codes(exploitation.groups.get())
+    assert "credits.add_fieldvisit" in _codes(exploitation.groups.get())
+    for role_name, username in (
+        (RESP_EXPLOITATION_ROLE_NAME, "resp_expl"),
+        (RESP_CREDIT_RISQUE_ROLE_NAME, "resp_credit"),
+        (ANALYSTE_CREDIT_RISQUE_ROLE_NAME, "analyste"),
+        (FILIALE_ADMIN_ROLE_NAME, "admin_fil"),
+    ):
+        user = exploitation if username == "resp_expl" else member(username, role_name)
+        assert can_add_financial_analysis(home_file, user), role_name
+        assert can_add_field_visit(home_file, user), role_name
+        assert can_add_financial_analysis(other_file, user), role_name
+
+    chef = member("chef_ag", CHEF_AGENCE_ROLE_NAME, home)
+    assert can_add_financial_analysis(home_file, chef)
+    assert can_add_field_visit(home_file, chef)
+    assert not can_add_financial_analysis(other_file, chef)
+    assert not can_add_field_visit(other_file, chef)
+
+    officer = member("charge_af", CHARGE_AFFAIRE_ROLE_NAME)
+    assert not can_add_financial_analysis(home_file, officer)
+    assert not can_add_field_visit(home_file, officer)
+
+    home_file.status = CreditApplication.Status.DISBURSED
+    home_file.save(update_fields=["status"])
+    assert not can_add_financial_analysis(home_file, exploitation)
+    assert can_add_field_visit(home_file, member("admin_fil2", FILIALE_ADMIN_ROLE_NAME))
+
+
+def test_chef_agence_records_exposure_like_the_charge(tenant_a):
+    ensure_default_role_packs(tenant_a)
+    codes = _codes(get_or_create_tenant_role(tenant_a, CHEF_AGENCE_ROLE_NAME)[0])
+    assert "credits.add_creditexposureobservation" in codes
+    assert "credits.change_creditexposureobservation" in codes
+    assert "credits.view_borrowergroup" in codes
+    assert "credits.verify_creditexposureobservation" not in codes
+
+
+def test_committee_decides_without_rewriting_the_analysis(tenant_a):
+    ensure_default_role_packs(tenant_a)
+    group, _ = get_or_create_tenant_role(tenant_a, CREDIT_COMMITTEE_FILIALE_ROLE_NAME)
+    codes = _codes(group)
+    assert "workflow.change_approvaltask" in codes
+    assert "documents.add_document" in codes
+    assert "credits.add_financialanalysis" not in codes
+    assert "credits.change_financialanalysis" not in codes
+    assert "credits.delete_financialanalysis" not in codes
+    assert "credits.add_fieldvisit" not in codes
+    extra = Permission.objects.get(
+        content_type__app_label="credits", codename="add_financialanalysis",
+    )
+    group.permissions.add(extra)
+    ensure_default_role_packs(tenant_a)
+    group, _ = get_or_create_tenant_role(tenant_a, CREDIT_COMMITTEE_FILIALE_ROLE_NAME)
+    assert extra not in group.permissions.all()
+
+
+def test_filiale_instruction_roles_see_every_agency(tenant_a, product_a, client_a):
+    from decimal import Decimal
+
+    from django.contrib.auth import get_user_model
+
+    from apps.common.access import apply_data_scope
+    from apps.common.tenancy import tenant_context
+    from apps.credits.models import CreditApplication
+    from apps.tenants.models import Agency
+
+    ensure_default_role_packs(tenant_a)
+    User = get_user_model()
+    home = Agency.objects.create(tenant=tenant_a, code="AG-A", name="Agence A")
+    other = Agency.objects.create(tenant=tenant_a, code="AG-B", name="Agence B")
+    owner = User.objects.create_user(
+        username="scope_owner", password="x", tenant=tenant_a, agency=home, data_scope="AGENCY",
+    )
+    analyst = User.objects.create_user(
+        username="scope_analyst", password="x", tenant=tenant_a, agency=home, data_scope="AGENCY",
+    )
+    analyst.groups.add(get_or_create_tenant_role(tenant_a, ANALYSTE_CREDIT_RISQUE_ROLE_NAME)[0])
+    analyst.agencies.add(home)
+    with tenant_context(tenant_a.id):
+        CreditApplication.objects.create(
+            tenant=tenant_a, reference="SCOPE-A", client=client_a, product=product_a,
+            agency=home, amount_requested=Decimal("1000"), duration_months=6,
+            created_by=owner,
+        )
+        CreditApplication.objects.create(
+            tenant=tenant_a, reference="SCOPE-B", client=client_a, product=product_a,
+            agency=other, amount_requested=Decimal("1000"), duration_months=6,
+            created_by=owner,
+        )
+        visible = set(apply_data_scope(CreditApplication.objects.all(), analyst).values_list("reference", flat=True))
+    assert visible == {"SCOPE-A", "SCOPE-B"}
+    ensure_default_role_packs(tenant_a)
+    analyst.refresh_from_db()
+    assert analyst.data_scope == "TENANT"

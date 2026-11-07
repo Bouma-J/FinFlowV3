@@ -429,6 +429,12 @@ _RESP_CREDIT_PERMS = (
 _RESP_EXPLOITATION_PERMS = (
     *_READ_METIER,
     *_WRITE_COLLECTION_OPERATE,
+    ("credits", "add_financialanalysis"),
+    ("credits", "change_financialanalysis"),
+    ("credits", "delete_financialanalysis"),
+    ("credits", "add_fieldvisit"),
+    ("credits", "change_fieldvisit"),
+    ("credits", "delete_fieldvisit"),
 )
 
 _RESP_RETAILS_PERMS = (
@@ -445,6 +451,7 @@ _RESP_RETAILS_PERMS = (
     *_WRITE_ANALYSIS,
 )
 
+# Le comité décide et peut déposer le procès-verbal. Il ne réécrit pas l'analyse.
 _COMMITTEE_PERMS = (
     *_VIEW_CLIENTS,
     *_VIEW_CREDIT,
@@ -455,8 +462,20 @@ _COMMITTEE_PERMS = (
     *_VIEW_WORKFLOW,
     *_VIEW_COLLECTIONS,
     *_VIEW_TRANSVERSE,
-    *_WRITE_ANALYSIS,
+    ("credits", "add_creditdocument"),
+    ("credits", "change_creditdocument"),
+    ("documents", "add_document"),
+    ("documents", "change_document"),
     ("workflow", "change_approvaltask"),
+)
+
+_COMMITTEE_ANALYSIS_REVOKE = (
+    ("credits", "add_financialanalysis"),
+    ("credits", "change_financialanalysis"),
+    ("credits", "delete_financialanalysis"),
+    ("credits", "add_fieldvisit"),
+    ("credits", "change_fieldvisit"),
+    ("credits", "delete_fieldvisit"),
 )
 
 _DG_PERMS = _READ_METIER
@@ -650,7 +669,7 @@ _EXPOSURE_READ_WRITE = (
     ("credits", "change_creditexposureobservation"),
     ("credits", "view_borrowergroup"),
 )
-for _exposure_role in (CHARGE_AFFAIRE_ROLE_NAME, ANALYSTE_CREDIT_RISQUE_ROLE_NAME, RESP_CREDIT_RISQUE_ROLE_NAME, CREDIT_ADMIN_ROLE_NAME):
+for _exposure_role in (CHARGE_AFFAIRE_ROLE_NAME, CHEF_AGENCE_ROLE_NAME, ANALYSTE_CREDIT_RISQUE_ROLE_NAME, RESP_CREDIT_RISQUE_ROLE_NAME, CREDIT_ADMIN_ROLE_NAME):
     DEFAULT_ROLE_PACKS[_exposure_role] = (*DEFAULT_ROLE_PACKS[_exposure_role], *_EXPOSURE_READ_WRITE)
 DEFAULT_ROLE_PACKS[CREDIT_ADMIN_ROLE_NAME] = (
     *DEFAULT_ROLE_PACKS[CREDIT_ADMIN_ROLE_NAME], ("credits", "verify_creditexposureobservation"),
@@ -863,6 +882,42 @@ def ensure_role_pack(tenant, role_name, spec):
     return group
 
 
+def revoke_permissions(group, spec):
+    """Retire du rôle des droits qui ne font plus partie du pack standard."""
+    banned = {perm.id for perm in permissions_from_spec(spec)}
+    current = [perm for perm in group.permissions.all() if perm.id in banned]
+    if current:
+        group.permissions.remove(*current)
+
+
+def groups_cover_whole_filiale(groups):
+    """Vrai si l'un des rôles doit voir tous les dossiers de la filiale."""
+    from apps.common.access import FILIALE_WIDE_PACK_CODES
+
+    from .models import TenantRole
+
+    ids = [group.id for group in groups if getattr(group, "id", None)]
+    if not ids:
+        return False
+    return TenantRole.objects.filter(
+        group_id__in=ids, pack_code__in=FILIALE_WIDE_PACK_CODES,
+    ).exists()
+
+
+def align_filiale_wide_scopes(tenant):
+    """Les rôles d'instruction filiale voient toute la filiale, pas une seule agence."""
+    from apps.common.access import FILIALE_WIDE_PACK_CODES, DataScope
+
+    from .models import TenantRole, User
+
+    group_ids = TenantRole.objects.filter(
+        tenant=tenant, pack_code__in=FILIALE_WIDE_PACK_CODES,
+    ).values_list("group_id", flat=True)
+    User.objects.filter(
+        tenant=tenant, groups__id__in=group_ids,
+    ).exclude(data_scope=DataScope.TENANT).update(data_scope=DataScope.TENANT)
+
+
 def migrate_legacy_committee_role(tenant):
     """Renomme « Comité de crédit » → « Comité de crédit filiale » si libre."""
     from .models import TenantRole
@@ -896,6 +951,7 @@ def ensure_group_credit_committee_role():
     missing = [perm for perm in desired if perm not in current]
     if missing:
         group.permissions.add(*missing)
+    revoke_permissions(group, _COMMITTEE_ANALYSIS_REVOKE)
     return group
 
 
@@ -953,8 +1009,11 @@ def ensure_default_role_packs(tenant):
     """
     ensure_filiale_admin_role(tenant)
     for role_name, spec in DEFAULT_ROLE_PACKS.items():
-        ensure_role_pack(tenant, role_name, spec)
+        group = ensure_role_pack(tenant, role_name, spec)
+        if role_name in (CREDIT_COMMITTEE_FILIALE_ROLE_NAME, CREDIT_COMMITTEE_GROUP_ROLE_NAME):
+            revoke_permissions(group, _COMMITTEE_ANALYSIS_REVOKE)
     ensure_group_credit_committee_role()
+    align_filiale_wide_scopes(tenant)
     from apps.collections.services import (
         ensure_default_escalation_rules,
         ensure_default_tranches,

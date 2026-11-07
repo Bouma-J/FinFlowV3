@@ -1,4 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { CreditDossierMenu } from "@/components/CreditDossierMenu";
 import { CreditExposurePanel } from "@/components/CreditExposurePanel";
 import {
   ArrowLeft,
@@ -53,9 +54,8 @@ import {
 import { Link, useNavigate, useParams } from "react-router-dom";
 
 import { api } from "@/api/client";
-import { ANALYSIS_TABLES, FinancialAnalysisDetails } from "@/components/FinancialAnalysisDetails";
 import { FinancialAnalysisReadout } from "@/components/FinancialAnalysisReadout";
-import { FINANCIAL_SUPPLEMENTS } from "@/components/FinancialAnalysisSupplements";
+import { pathLabel, resolveAnalysisPath, resolveStatementBasis, sectionAllowed } from "@/components/analysisPath";
 import {
   CLIENT_LABELS,
   CREDIT_LABELS,
@@ -87,7 +87,6 @@ import {
   PERM_CLIENTS,
   PERM_GUARANTEES,
   PERM_SURETIES,
-  isControlePermanent,
 } from "@/auth/routePerms";
 import { PermLink } from "@/components/PermLink";
 import { ApprovalConditionsCard } from "@/components/ApprovalConditionsCard";
@@ -329,6 +328,34 @@ const SectionCollapseContext = createContext<{
   toggle: (id: string) => void;
 } | null>(null);
 
+const DOSSIER_SECTION_ORDER: Record<string, number> = {
+  "sec-client-profile": 10,
+  "sec-compliance": 20,
+  "sec-activity": 30,
+  "sec-applicant": 40,
+  "sec-terms": 50,
+  "sec-banking": 60,
+  "sec-exposure": 70,
+  "sec-financial": 80,
+  "sec-patrimoine": 90,
+  "sec-financing": 100,
+  "sec-setup": 110,
+  "sec-insurance": 120,
+  "sec-special": 130,
+  "sec-schedule": 140,
+  "sec-decision": 150,
+  "sec-conditions": 160,
+  "sec-readiness": 170,
+  "sec-workflow": 180,
+  "sec-visits": 190,
+  "sec-checklist": 200,
+  "sec-documents": 210,
+  "sec-aftersales": 220,
+  "sec-restructure": 230,
+  "sec-contracts": 240,
+  "sec-timeline": 250,
+};
+
 function ViewSection({
   id,
   icon: Icon,
@@ -353,6 +380,7 @@ function ViewSection({
       className={`card form-section${collapsible ? " collapsible" : ""}${
         collapsible && !open ? " collapsed" : ""
       }`}
+      style={{ order: DOSSIER_SECTION_ORDER[id] ?? 500 }}
     >
       <div
         className="card-title form-section-head"
@@ -723,6 +751,12 @@ function AnalysisDetail({
   const cur = currency;
   const isCorp = analysis.client_type === "CORPORATE";
   const isGroupement = analysis.client_type === "PROFESSIONAL";
+  const path = resolveAnalysisPath({
+    clientType: analysis.client_type,
+    individualProfile: analysis.individual_profile,
+    hasSideActivity: analysis.has_side_activity,
+    statementBasis: isCorp ? resolveStatementBasis(analysis.analysis_details) : "RECONSTITUTED",
+  });
   const flags = analysis.flags;
   const m = analysis.metrics;
   const rl = (v: string) =>
@@ -781,11 +815,7 @@ function AnalysisDetail({
       </div>
 
       <p className="muted small" style={{ marginTop: 0 }}>
-        {isCorp
-          ? "Entreprise"
-          : isGroupement
-            ? "Groupement"
-            : "Particulier"}{" "}
+        {pathLabel(path)}{" "}
         · période{" "}
         {FINANCE_LABELS.reference_period[analysis.reference_period] ||
           analysis.reference_period}
@@ -795,157 +825,9 @@ function AnalysisDetail({
         {` · enregistrée le ${formatDate(analysis.created_at)}`}
       </p>
 
-      <FinancialAnalysisReadout analysis={analysis} currency={cur} />
+      <FinancialAnalysisReadout analysis={analysis} currency={cur} part="topics" />
 
-      <details className="subsection"><summary className="subsection-title">Fiabilité et reconstitution financière</summary>
-        <dl className="def-list two">
-          <Row term="Fiabilité des informations" value={({ DECLARED: "Déclarées", PARTIALLY_VERIFIED: "Partiellement vérifiées", VERIFIED: "Vérifiées", AUDITED: "Comptes audités" } as Record<string, string>)[analysis.information_quality] || "Non renseignée"} />
-          <Row term="Date d'arrêté" value={analysis.financial_statement_date ? formatDate(analysis.financial_statement_date) : undefined} />
-          <Row term="Source de remboursement" value={analysis.primary_repayment_source} />
-          <Row term="Pièces financières vérifiées" value={analysis.financial_documents_verified ? "Oui" : "Non"} />
-          <Row term="Mois de relevés examinés" value={analysis.bank_statement_months ?? undefined} />
-          <Row term="Employeur" value={analysis.employer_name} />
-          <Row term="Activité" value={analysis.activity_name} />
-        </dl>
-        {analysis.verification_comment && <p>{analysis.verification_comment}</p>}
-        <div className="metric-grid">
-          <Metric label="Effort mensuel équivalent du nouveau crédit" value={formatMoney(mNum(m, "installment"), cur)} />
-          <Metric label="Ventes reconstituées par produits" value={formatMoney(mNum(m, "reconstituted_sales"), cur)} />
-          <Metric label="Stock net inventorié" value={formatMoney(mNum(m, "inventory_net_value"), cur)} />
-          <Metric label="Mensualités détaillées" value={formatMoney(mNum(m, "detailed_debt_monthly"), cur)} />
-          <Metric label="Mois prévisionnels déficitaires" value={mNum(m, "forecast_deficit_months") ?? "—"} />
-          <Metric label="Trésorerie de clôture la plus basse" value={formatMoney(mNum(m, "forecast_lowest_balance"), cur)} />
-        </div>
-        {analysis.metrics.debt_service_reconciled === false && <p className="form-error">Les mensualités détaillées ne correspondent pas au total déclaré. Rapprocher les engagements avant décision.</p>}
-        {Object.entries(analysis.analysis_details || {}).filter(([key, value]) => !(key in FINANCIAL_SUPPLEMENTS) && !key.endsWith("_detail_mode") && typeof value === "string" && value).map(([key, value]) => <div key={key}>
-          <p className="subsection-label">{({ business_model: "Modèle économique", seasonality: "Saisonnalité", sales_verification: "Vérification du chiffre d'affaires", stock_risks: "Qualité du stock", receivables_quality: "Qualité des créances", asset_ownership: "Propriété des actifs", household_income_evidence: "Justificatifs des revenus", employment_outlook: "Perspectives de l'emploi", project_cost: "Coût du projet", own_contribution: "Apport propre", financing_plan: "Plan de financement", stress_assumptions: "Hypothèses défavorables", monitoring_plan: "Plan de suivi", bureau_reference: "Référence BIC", bureau_discrepancies: "Écarts BIC", banking_behavior: "Fonctionnement bancaire" } as Record<string, string>)[key] || key}</p>
-          <p>{typeof value === "string" ? value : ""}</p>
-        </div>)}
-        {Object.keys(ANALYSIS_TABLES).map((name) => <FinancialAnalysisDetails key={name} name={name} value={analysis.analysis_details || {}} currency={cur} />)}
-      </details>
-
-      {analysis.score_breakdown &&
-        analysis.score_breakdown.total !== null &&
-        analysis.score_breakdown.total !== undefined && (
-          <ScorePanel breakdown={analysis.score_breakdown} />
-        )}
-      {analysis.score_breakdown?.total === null && !!analysis.score_breakdown.missing_metrics?.length && (
-        <p className="form-error">Score non calculable : {analysis.score_breakdown.missing_metrics.join(", ")}. Complétez les indicateurs exigés par la grille.</p>
-      )}
-
-      <details className="subsection"><summary className="subsection-title">Ratios approfondis (contre-analyse)</summary>
-        <div className="metric-grid">
-          {isCorp ? (
-            <>
-              <Metric label="DSCR global" value={fX(mNum(m, "global_dscr"))} tone={boolTone(flags?.dscr_ok)} />
-              <Metric label="Couverture charges fin." value={fX(mNum(m, "interest_coverage"))} tone={boolTone(flags?.interest_coverage_ok)} />
-              <Metric label="Autonomie financière" value={fPct(mNum(m, "financial_autonomy"))} tone={boolTone(flags?.autonomy_ok)} />
-              <Metric label="Gearing (dettes fin./CP)" value={fRatio(mNum(m, "gearing"))} tone={boolTone(flags?.gearing_ok)} />
-              <Metric label="Liquidité générale" value={fRatio(mNum(m, "current_ratio"))} tone={boolTone(flags?.current_ratio_ok)} />
-              <Metric label="Liquidité réduite" value={fRatio(mNum(m, "quick_ratio"))} />
-              <Metric label="Fonds de roulement (FR)" value={formatMoney(mNum(m, "working_capital"), cur)} />
-              <Metric label="Trésorerie nette (TN)" value={formatMoney(mNum(m, "treasury_net"), cur)} />
-              <Metric label="BFR (jours de CA)" value={fDays(mNum(m, "bfr_days"))} />
-              <Metric label="Délai clients (DSO)" value={fDays(mNum(m, "dso_days"))} />
-              <Metric label="Délai fournisseurs (DPO)" value={fDays(mNum(m, "dpo_days"))} />
-              <Metric label="Rotation stocks (DIO)" value={fDays(mNum(m, "dio_days"))} />
-              <Metric label="Rentabilité financière (ROE)" value={fPct(mNum(m, "roe"))} />
-              <Metric label="Rentabilité économique (ROA)" value={fPct(mNum(m, "roa"))} />
-              <Metric label="Seuil rentabilité (ventilation validée)" value={formatMoney(mNum(m, "break_even_turnover"), cur)} />
-              <Metric label="Croissance du CA" value={fPct(mNum(m, "turnover_growth"))} />
-              <Metric label="Croissance du résultat" value={fPct(mNum(m, "result_growth"))} />
-            </>
-          ) : isGroupement ? (
-            <>
-              <Metric label="Taux d'endettement global" value={fPct(mNum(m, "debt_ratio"))} tone={boolTone(flags?.debt_ratio_ok)} />
-              <Metric label="Revenus collectifs" value={formatMoney(mNum(m, "collective_income"), cur)} />
-              <Metric label="Charges collectives" value={formatMoney(mNum(m, "collective_charges"), cur)} />
-              <Metric
-                label="Capacité nette"
-                value={formatMoney(mNum(m, "collective_net_capacity"), cur)}
-                tone={boolTone(flags?.capacity_ok)}
-              />
-              <Metric label="Participation des cotisants" value={fPct(mNum(m, "contribution_concentration"))} />
-            </>
-          ) : (
-            <>
-              <Metric label="Taux d'endettement global" value={fPct(mNum(m, "debt_ratio"))} tone={boolTone(flags?.debt_ratio_ok)} />
-              <Metric label="Revenu pondéré" value={formatMoney(mNum(m, "weighted_income"), cur)} />
-              <Metric label="Taux d'effort (revenu pondéré)" value={fPct(mNum(m, "debt_ratio_weighted"))} />
-              <Metric label="Reste à vivre après crédit" value={formatMoney(mNum(m, "residual_after_loan"), cur)} />
-              <Metric label="Reste à vivre / personne" value={formatMoney(mNum(m, "disposable_per_capita"), cur)} tone={boolTone(flags?.living_wage_ok)} />
-              {Number(analysis.net_salary) > 0 && (
-                <>
-                  <Metric label="Quotité cessible disponible" value={formatMoney(mNum(m, "transferable_quota_available"), cur)} tone={boolTone(flags?.quota_ok)} />
-                </>
-              )}
-            </>
-          )}
-          <Metric label="Couverture par garanties" value={fPct(mNum(m, "guarantee_coverage"))} tone={boolTone(flags?.guarantee_ok)} />
-          <Metric label="Marge de sécurité" value={formatMoney(mNum(m, "safety_margin"), cur)} />
-        </div>
-      </details>
-
-      <SubSection icon={ShieldAlert} title="Stress test & sensibilité">
-        <div className="metric-grid">
-          {isCorp ? (
-            <Metric
-              label="DSCR sous stress"
-              value={analysis.dscr_stress ?? "—"}
-              tone={boolTone(flags?.dscr_stress_ok)}
-            />
-          ) : (
-            <Metric
-              label="Taux d'endettement sous stress"
-              value={pct(analysis.debt_ratio_stress)}
-              tone={boolTone(flags?.debt_ratio_stress_ok)}
-            />
-          )}
-        </div>
-        <p className="muted small" style={{ marginTop: 8 }}>
-          Scénario : baisse de{" "}
-          {analysis.thresholds?.stress_pct ?? 20} % des{" "}
-          {isCorp ? "ventes" : isGroupement ? "recettes collectives" : "revenus / ventes d'activité"}, charges maintenues. Les hypothèses complémentaires sont détaillées dans les formules.
-        </p>
-      </SubSection>
-
-      {(analysis.credit_bureau_checked ||
-        analysis.has_payment_incidents ||
-        analysis.active_loans_count > 0 ||
-        analysis.prior_loans_count > 0) && (
-        <SubSection icon={History} title="Endettement consolidé & historique">
-          <dl className="def-list two">
-            <Row term="Crédits actifs (tous prêteurs)" value={analysis.active_loans_count || undefined} />
-            <Row
-              term="Centrale des risques / BIC"
-              value={
-                analysis.credit_bureau_checked
-                  ? `Consultée${analysis.credit_bureau_date ? ` le ${formatDate(analysis.credit_bureau_date)}` : ""}`
-                  : "Non consultée"
-              }
-            />
-            <Row
-              term="Incidents de paiement"
-              value={analysis.has_payment_incidents ? "Oui" : "Non"}
-            />
-            <Row
-              term="Retard max constaté"
-              value={analysis.max_days_late ? `${analysis.max_days_late} j` : undefined}
-            />
-            <Row term="Crédits antérieurs (interne)" value={analysis.prior_loans_count || undefined} />
-            <Row term="Taux de remboursement historique" value={pct(analysis.prior_repayment_rate)} />
-            <Row
-              term="Retard max historique"
-              value={analysis.prior_max_delay_days ? `${analysis.prior_max_delay_days} j` : undefined}
-            />
-          </dl>
-          {analysis.incidents_comment && (
-            <p className="prose">{analysis.incidents_comment}</p>
-          )}
-        </SubSection>
-      )}
-
-      {hasSector && (
+      {hasSector && sectionAllowed("fa-sector", path) && (
         <SubSection icon={Factory} title="Analyse sectorielle">
           <dl className="def-list two">
             {analysis.sector && (
@@ -996,7 +878,7 @@ function AnalysisDetail({
         </SubSection>
       )}
 
-      {hasES && (
+      {hasES && sectionAllowed("fa-es", path) && (
         <SubSection
           icon={Leaf}
           title="Analyse environnementale & sociale (E&S)"
@@ -1092,7 +974,8 @@ function AnalysisDetail({
 
       {(analysis.strengths ||
         analysis.weaknesses ||
-        analysis.recommended_conditions) && (
+        analysis.recommended_conditions ||
+        (typeof analysis.analysis_details?.monitoring_plan === "string" && analysis.analysis_details.monitoring_plan)) && (
         <SubSection icon={NotebookPen} title="Synthèse structurée">
           {analysis.strengths && (
             <div className="synthesis-block synthesis-ok">
@@ -1112,40 +995,12 @@ function AnalysisDetail({
               <p className="prose">{analysis.recommended_conditions}</p>
             </div>
           )}
-        </SubSection>
-      )}
-
-      {(analysis.existing_debt_institution ||
-        Number(analysis.existing_debt_monthly) > 0 ||
-        Number(analysis.ongoing_credit_balance) > 0) && (
-        <SubSection icon={Landmark} title="Endettement existant">
-          <dl className="def-list two">
-            <Row term="Institution" value={analysis.existing_debt_institution} />
-            <Row
-              term="Montant initial"
-              value={
-                Number(analysis.existing_debt_initial_amount) > 0
-                  ? formatMoney(analysis.existing_debt_initial_amount, cur)
-                  : undefined
-              }
-            />
-            <Row
-              term="Mensualité"
-              value={
-                Number(analysis.existing_debt_monthly) > 0
-                  ? formatMoney(analysis.existing_debt_monthly, cur)
-                  : undefined
-              }
-            />
-            <Row
-              term="Encours restant"
-              value={
-                Number(analysis.ongoing_credit_balance) > 0
-                  ? formatMoney(analysis.ongoing_credit_balance, cur)
-                  : undefined
-              }
-            />
-          </dl>
+          {typeof analysis.analysis_details?.monitoring_plan === "string" && analysis.analysis_details.monitoring_plan && (
+            <div className="analysis-note">
+              <p className="subsection-label">Plan de suivi</p>
+              <p className="prose">{analysis.analysis_details.monitoring_plan}</p>
+            </div>
+          )}
         </SubSection>
       )}
 
@@ -1164,6 +1019,82 @@ function AnalysisDetail({
           </div>
         </SubSection>
       )}
+
+      <section className="analysis-chapter">
+        <h3 className="analysis-chapter-title">Indicateurs et ratios</h3>
+        <FinancialAnalysisReadout analysis={analysis} currency={cur} part="indicators" />
+        {analysis.score_breakdown && analysis.score_breakdown.total !== null && analysis.score_breakdown.total !== undefined && (
+          <ScorePanel breakdown={analysis.score_breakdown} />
+        )}
+        {analysis.score_breakdown?.total === null && !!analysis.score_breakdown.missing_metrics?.length && (
+          <p className="form-error">Score non calculable : {analysis.score_breakdown.missing_metrics.join(", ")}. Complétez les indicateurs exigés par la grille.</p>
+        )}
+        <div className="analysis-block">
+          <h4 className="subsection-title">Ratios approfondis</h4>
+          <div className="metric-grid">
+            {isCorp ? (
+              <>
+                <Metric label="DSCR global" value={fX(mNum(m, "global_dscr"))} tone={boolTone(flags?.dscr_ok)} />
+                <Metric label="Couverture charges fin." value={fX(mNum(m, "interest_coverage"))} tone={boolTone(flags?.interest_coverage_ok)} />
+                <Metric label="Autonomie financière" value={fPct(mNum(m, "financial_autonomy"))} tone={boolTone(flags?.autonomy_ok)} />
+                <Metric label="Gearing (dettes fin./CP)" value={fRatio(mNum(m, "gearing"))} tone={boolTone(flags?.gearing_ok)} />
+                <Metric label="Liquidité générale" value={fRatio(mNum(m, "current_ratio"))} tone={boolTone(flags?.current_ratio_ok)} />
+                <Metric label="Liquidité réduite" value={fRatio(mNum(m, "quick_ratio"))} />
+                <Metric label="Fonds de roulement (FR)" value={formatMoney(mNum(m, "working_capital"), cur)} />
+                <Metric label="Trésorerie nette (TN)" value={formatMoney(mNum(m, "treasury_net"), cur)} />
+                <Metric label="BFR (jours de CA)" value={fDays(mNum(m, "bfr_days"))} />
+                <Metric label="Délai clients (DSO)" value={fDays(mNum(m, "dso_days"))} />
+                <Metric label="Délai fournisseurs (DPO)" value={fDays(mNum(m, "dpo_days"))} />
+                <Metric label="Rotation stocks (DIO)" value={fDays(mNum(m, "dio_days"))} />
+                <Metric label="Rentabilité financière (ROE)" value={fPct(mNum(m, "roe"))} />
+                <Metric label="Rentabilité économique (ROA)" value={fPct(mNum(m, "roa"))} />
+                <Metric label="Seuil rentabilité (ventilation validée)" value={formatMoney(mNum(m, "break_even_turnover"), cur)} />
+                <Metric label="Croissance du CA" value={fPct(mNum(m, "turnover_growth"))} />
+                <Metric label="Croissance du résultat" value={fPct(mNum(m, "result_growth"))} />
+              </>
+            ) : isGroupement ? (
+              <>
+                <Metric label="Taux d'endettement global" value={fPct(mNum(m, "debt_ratio"))} tone={boolTone(flags?.debt_ratio_ok)} />
+                <Metric label="Revenus collectifs" value={formatMoney(mNum(m, "collective_income"), cur)} />
+                <Metric label="Charges collectives" value={formatMoney(mNum(m, "collective_charges"), cur)} />
+                <Metric label="Capacité nette" value={formatMoney(mNum(m, "collective_net_capacity"), cur)} tone={boolTone(flags?.capacity_ok)} />
+                <Metric label="Participation des cotisants" value={fPct(mNum(m, "contribution_concentration"))} />
+              </>
+            ) : (
+              <>
+                <Metric label="Taux d'endettement global" value={fPct(mNum(m, "debt_ratio"))} tone={boolTone(flags?.debt_ratio_ok)} />
+                <Metric label="Revenu pondéré" value={formatMoney(mNum(m, "weighted_income"), cur)} />
+                <Metric label="Taux d'effort (revenu pondéré)" value={fPct(mNum(m, "debt_ratio_weighted"))} />
+                <Metric label="Reste à vivre après crédit" value={formatMoney(mNum(m, "residual_after_loan"), cur)} />
+                <Metric label="Reste à vivre / personne" value={formatMoney(mNum(m, "disposable_per_capita"), cur)} tone={boolTone(flags?.living_wage_ok)} />
+                {Number(analysis.net_salary) > 0 && (
+                  <Metric label="Quotité cessible disponible" value={formatMoney(mNum(m, "transferable_quota_available"), cur)} tone={boolTone(flags?.quota_ok)} />
+                )}
+              </>
+            )}
+            <Metric label="Couverture par garanties" value={fPct(mNum(m, "guarantee_coverage"))} tone={boolTone(flags?.guarantee_ok)} />
+            <Metric label="Marge de sécurité" value={formatMoney(mNum(m, "safety_margin"), cur)} />
+          </div>
+        </div>
+        <SubSection icon={ShieldAlert} title="Stress test et sensibilité">
+          <div className="metric-grid">
+            {isCorp ? (
+              <Metric label="DSCR sous stress" value={analysis.dscr_stress ?? "—"} tone={boolTone(flags?.dscr_stress_ok)} />
+            ) : (
+              <Metric label="Taux d'endettement sous stress" value={pct(analysis.debt_ratio_stress)} tone={boolTone(flags?.debt_ratio_stress_ok)} />
+            )}
+          </div>
+          <p className="muted small" style={{ marginTop: 8 }}>
+            Scénario : baisse de {analysis.thresholds?.stress_pct ?? 20} % des {isCorp ? "ventes" : isGroupement ? "recettes collectives" : "revenus / ventes d'activité"}, charges maintenues.
+          </p>
+          {typeof analysis.analysis_details?.stress_assumptions === "string" && analysis.analysis_details.stress_assumptions && (
+            <div className="analysis-note">
+              <p className="subsection-label">Hypothèses défavorables</p>
+              <p className="prose">{analysis.analysis_details.stress_assumptions}</p>
+            </div>
+          )}
+        </SubSection>
+      </section>
     </div>
   );
 }
@@ -1211,7 +1142,7 @@ function FinancialAnalysesSection({
         <p className="muted small">Aucune analyse financière enregistrée.</p>
       ) : (
         <div className="analysis-list">
-          {analyses.map((a) => (
+          {[...analyses].sort((left, right) => Number(right.is_reference) - Number(left.is_reference) || String(left.created_at).localeCompare(String(right.created_at))).map((a) => (
             <AnalysisDetail
               key={a.id}
               analysis={a}
@@ -2003,12 +1934,12 @@ export function CreditApplicationDetailPage() {
 
   const [activeSection, setActiveSection] = useScrollSpy(
     [app?.id, app?.status],
-    "sec-terms",
+    "sec-client-profile",
   );
 
   // Les principales informations de décision sont ouvertes à l'arrivée.
   const [openSections, setOpenSections] = useState<Set<string>>(
-    () => new Set(["sec-client-profile", "sec-terms", "sec-financial", "sec-patrimoine"]),
+    () => new Set(["sec-client-profile", "sec-activity", "sec-applicant", "sec-terms"]),
   );
 
   useEffect(() => {
@@ -2050,10 +1981,10 @@ export function CreditApplicationDetailPage() {
 
   const uid = user?.id;
   const isSuper = !!user?.is_superuser;
+  const isFilialeAdmin = !!user?.capabilities?.includes("tenant_admin");
+  const actsAsOwner = isSuper || isFilialeAdmin;
   const canChangeCredit = hasPerm(user, "credits.change_creditapplication");
   const canDeleteCredit = hasPerm(user, "credits.delete_creditapplication");
-  const canAddAnalysis = hasPerm(user, "credits.add_financialanalysis");
-  const canAddVisit = hasPerm(user, "credits.add_fieldvisit");
   const canAddContract = hasPerm(user, "contracts.add_generatedcontract");
   const canAddGuarantee = hasPerm(user, "guarantees.add_guarantee");
   const canViewGuarantees = hasAnyPerm(user, PERM_GUARANTEES);
@@ -2077,14 +2008,13 @@ export function CreditApplicationDetailPage() {
     (formalizations?.results.length ?? 0) > 0 ||
     (releases?.results.length ?? 0) > 0;
   const isOwner =
-    !!uid && (app.created_by === uid || app.submitted_by === uid);
-  // Soumission et suppression : réservées au créateur du dossier (ou super-admin),
-  // en cohérence avec le contrôle backend.
-  const isCreator = isSuper || (!!uid && app.created_by === uid);
-  // L'annulation de soumission reste réservée au soumetteur (ou super-admin,
-  // en cohérence avec le contrôle backend).
+    actsAsOwner ||
+    (!!uid && (app.created_by === uid || app.submitted_by === uid));
+  // Soumission et suppression : créateur du dossier, ou administrateur filiale.
+  const isCreator = actsAsOwner || (!!uid && app.created_by === uid);
+  // L'annulation de soumission reste réservée au soumetteur, ou à l'administrateur filiale.
   const isSubmitter =
-    isSuper ||
+    actsAsOwner ||
     (!!uid &&
       (app.submitted_by === uid ||
         (!app.submitted_by && app.created_by === uid)));
@@ -2103,7 +2033,7 @@ export function CreditApplicationDetailPage() {
     app.status === "IN_APPROVAL" &&
     isSubmitter &&
     canChangeCredit &&
-    (isSuper || !aStepActed);
+    (actsAsOwner || !aStepActed);
   const collateralStatuses = [
     "DRAFT",
     "RETURNED",
@@ -2154,26 +2084,8 @@ export function CreditApplicationDetailPage() {
     );
   // Suppression réservée au créateur et uniquement sur un brouillon non soumis.
   const canDelete = isCreator && canDeleteCredit && app.status === "DRAFT";
-  // Contribution : initiateur ou tâche PENDING, + droit d'ajout analyse/visite.
-  const openForContribution = [
-    "DRAFT",
-    "SUBMITTED",
-    "IN_APPROVAL",
-    "RETURNED",
-  ].includes(app.status);
-  const canContributeWindow =
-    isSuper || ((isOwner && openForContribution) || !!myTask);
-  // Après mise en place : plus d'ajout d'analyse financière (lecture seule).
-  const analysisLocked = [
-    "DISBURSED",
-    "CLOSED",
-    "CANCELLED",
-    "REJECTED",
-  ].includes(app.status);
-  const canContributeAnalysis =
-    canContributeWindow && canAddAnalysis && !analysisLocked;
-  const canContributeVisit =
-    canAddVisit && (canContributeWindow || isControlePermanent(user));
+  const canContributeAnalysis = app.can_add_financial_analysis === true;
+  const canContributeVisit = app.can_add_field_visit === true;
   const cur = app.currency;
 
   const activeGuarantees = (guarantees?.results ?? []).filter(
@@ -2241,50 +2153,40 @@ export function CreditApplicationDetailPage() {
   );
   const hasConditions = (conditions?.results.length ?? 0) > 0;
 
+  const showSetup = !!(
+    app.cbs_refs ||
+    (app.fees_breakdown && app.fees_breakdown.lines.length > 0) ||
+    app.cbs_demande_number ||
+    app.cbs_demande_ref ||
+    app.cbs_contract_number ||
+    app.cbs_operation_date
+  );
   const navSections = [
-    { id: "sec-decision", icon: Gavel, label: "Décision à rendre", show: !!myTask, group: "Priorité" },
-    { id: "sec-conditions", icon: ClipboardCheck, label: "Réserves", show: hasConditions, group: "Priorité" },
-    {
-      id: "sec-readiness",
-      icon: ClipboardCheck,
-      label: "Ready à soumettre",
-      show: Boolean(
-        canSubmit && readiness?.show_checklist && editableStatus,
-      ),
-      group: "Priorité",
-    },
-    { id: "sec-client-profile", icon: UserRound, label: "Profil & conformité client", show: true, group: "Profil" },
-    { id: "sec-terms", icon: Banknote, label: "Conditions du crédit", show: true, group: "Instruction" },
-    { id: "sec-financial", icon: LineChart, label: "Analyse financière", show: true, group: "Instruction" },
-    { id: "sec-exposure", icon: Wallet, label: "Engagements & relations", show: hasPerm(user, "credits.view_creditexposureobservation"), group: "Instruction" },
-    { id: "sec-patrimoine", icon: Landmark, label: "Garanties & cautions", show: true, group: "Instruction" },
-    {
-      id: "sec-aftersales",
-      icon: Scale,
-      label: "Après-vente",
-      show: showAfterSales,
-      group: "Suivi",
-    },
-    {
-      id: "sec-restructure",
-      icon: RefreshCw,
-      label: "Restructuration",
-      show: showRestructure,
-      group: "Suivi",
-    },
-    { id: "sec-activity", icon: Store, label: "Activité & commerce", show: showActivity, group: "Profil" },
-    { id: "sec-applicant", icon: Briefcase, label: "Demandeur & emploi", show: showApplicant, group: "Profil" },
-    { id: "sec-banking", icon: History, label: "Relation bancaire", show: showBanking, group: "Profil" },
-    { id: "sec-insurance", icon: ShieldCheck, label: "Assurance", show: showInsurance, group: "Profil" },
-    { id: "sec-special", icon: NotebookPen, label: "Conditions particulières", show: showSpecial, group: "Profil" },
-    { id: "sec-compliance", icon: ShieldCheck, label: "Conformité (LBC-FT)", show: showCompliance, group: "Profil" },
-    { id: "sec-schedule", icon: CalendarClock, label: "Échéancier", show: !!schedule, group: "Suivi" },
-    { id: "sec-visits", icon: MapPin, label: "Visites terrain", show: true, group: "Suivi" },
+    { id: "sec-client-profile", icon: UserRound, label: "Profil client", show: true, group: "Client" },
+    { id: "sec-compliance", icon: ShieldCheck, label: "Conformité (LBC-FT)", show: showCompliance, group: "Client" },
+    { id: "sec-activity", icon: Store, label: "Activité", show: showActivity, group: "Client" },
+    { id: "sec-applicant", icon: Briefcase, label: "Demandeur et emploi", show: showApplicant, group: "Client" },
+    { id: "sec-terms", icon: Banknote, label: "Caractéristiques du prêt", show: true, group: "Prêt" },
+    { id: "sec-banking", icon: History, label: "Relation bancaire", show: showBanking, group: "Historique" },
+    { id: "sec-exposure", icon: Wallet, label: "Engagements", show: hasPerm(user, "credits.view_creditexposureobservation"), group: "Historique" },
+    { id: "sec-financial", icon: LineChart, label: "Analyse financière", show: true, group: "Analyse" },
+    { id: "sec-patrimoine", icon: Landmark, label: "Garanties et cautions", show: true, group: "Garanties" },
+    { id: "sec-financing", icon: Wallet, label: "Plan de financement", show: true, group: "Financement" },
+    { id: "sec-setup", icon: Cable, label: "Frais et mise en place", show: showSetup, group: "Conditions" },
+    { id: "sec-insurance", icon: ShieldCheck, label: "Assurance", show: showInsurance, group: "Conditions" },
+    { id: "sec-special", icon: NotebookPen, label: "Conditions particulières", show: showSpecial, group: "Conditions" },
+    { id: "sec-schedule", icon: CalendarClock, label: "Échéancier", show: !!schedule, group: "Conditions" },
+    { id: "sec-decision", icon: Gavel, label: "Décision à rendre", show: !!myTask, group: "Décision" },
+    { id: "sec-conditions", icon: ClipboardCheck, label: "Réserves", show: hasConditions, group: "Décision" },
+    { id: "sec-readiness", icon: ClipboardCheck, label: "Préparation à la soumission", show: Boolean(canSubmit && readiness?.show_checklist && editableStatus), group: "Décision" },
+    { id: "sec-workflow", icon: GitBranch, label: "Circuit d'approbation", show: true, group: "Décision" },
+    { id: "sec-visits", icon: MapPin, label: "Visites terrain", show: true, group: "Pièces" },
     { id: "sec-checklist", icon: ClipboardList, label: "Pièces du dossier", show: hasChecklist, group: "Pièces" },
     { id: "sec-documents", icon: Paperclip, label: "Documents", show: true, group: "Pièces" },
-    { id: "sec-contracts", icon: FileSignature, label: "Contrats", show: showContracts, group: "Pièces" },
-    { id: "sec-workflow", icon: GitBranch, label: "Circuit d'approbation", show: true, group: "Circuit" },
-    { id: "sec-timeline", icon: History, label: "Historique & audit", show: true, group: "Circuit" },
+    { id: "sec-aftersales", icon: Scale, label: "Après-vente", show: showAfterSales, group: "Suite" },
+    { id: "sec-restructure", icon: RefreshCw, label: "Restructuration", show: showRestructure, group: "Suite" },
+    { id: "sec-contracts", icon: FileSignature, label: "Contrats", show: showContracts, group: "Suite" },
+    { id: "sec-timeline", icon: History, label: "Historique et audit", show: true, group: "Suite" },
   ].filter((s) => s.show);
 
   const collapseCtx = {
@@ -2506,6 +2408,10 @@ export function CreditApplicationDetailPage() {
                   Supprimer
                 </button>
               )}
+              <CreditDossierMenu
+                applicationId={app.id}
+                reference={app.reference || app.id.slice(0, 8)}
+              />
             </div>
           </div>
         </div>
@@ -2894,7 +2800,7 @@ export function CreditApplicationDetailPage() {
           <ViewSection
             id="sec-terms"
             icon={Banknote}
-            title="Conditions du crédit"
+            title="Caractéristiques du prêt"
           >
             <dl className="def-list two">
             <Row term="Montant demandé" value={formatMoney(app.amount_requested, cur)} />
@@ -2935,6 +2841,35 @@ export function CreditApplicationDetailPage() {
             <Row term="Objet de financement CBS exact" value={app.cbs_refs?.financing_object?.label ? `${app.cbs_refs.financing_object.label} (${app.cbs_refs.financing_object.cbs_code})` : "À sélectionner"} />
             <Row term="Niveau de risque (circuit)" value={app.risk_level ?? undefined} />
           </dl>
+          {app.purpose && (
+            <SubSection icon={FileText} title="Détails de la demande">
+              <p className="prose">{app.purpose}</p>
+            </SubSection>
+          )}
+          {app.request_letter_scan && (
+            <div className="doc-row">
+              <a className="doc-chip" href={app.request_letter_scan} target="_blank" rel="noreferrer">
+                <FileText size={15} />
+                Lettre de demande
+              </a>
+            </div>
+          )}
+          </ViewSection>
+
+          <ViewSection id="sec-financing" icon={Wallet} title="Plan de financement">
+            {(Number(app.project_total_cost) > 0 || Number(app.personal_contribution) > 0 || app.financed_quota) ? (
+              <dl className="def-list two">
+                <Row term="Coût total du projet" value={Number(app.project_total_cost) > 0 ? formatMoney(app.project_total_cost!, cur) : undefined} />
+                <Row term="Apport personnel" value={Number(app.personal_contribution) > 0 ? formatMoney(app.personal_contribution!, cur) : undefined} />
+                <Row term="Quotité financée" value={app.financed_quota ? `${Number(app.financed_quota).toFixed(1)} %` : undefined} />
+              </dl>
+            ) : (
+              <p className="muted small">Coût du projet, apport et quotité financée non renseignés.</p>
+            )}
+          </ViewSection>
+
+          {showSetup && (
+          <ViewSection id="sec-setup" icon={Cable} title="Frais et mise en place">
           {app.cbs_refs && (
             <details className="subsection"><summary className="subsection-title">Informations de transmission au CBS</summary>
               <dl className="def-list two">
@@ -3082,37 +3017,8 @@ export function CreditApplicationDetailPage() {
               </div>
             </SubSection>
           )}
-          {(Number(app.project_total_cost) > 0 ||
-            Number(app.personal_contribution) > 0 ||
-            app.financed_quota) && (
-            <SubSection icon={Wallet} title="Plan de financement">
-              <dl className="def-list two">
-                <Row
-                  term="Coût total du projet"
-                  value={Number(app.project_total_cost) > 0 ? formatMoney(app.project_total_cost!, cur) : undefined}
-                />
-                <Row
-                  term="Apport personnel"
-                  value={Number(app.personal_contribution) > 0 ? formatMoney(app.personal_contribution!, cur) : undefined}
-                />
-                <Row term="Quotité financée" value={app.financed_quota ? `${Number(app.financed_quota).toFixed(1)} %` : undefined} />
-              </dl>
-            </SubSection>
-          )}
-          {app.purpose && (
-            <SubSection icon={FileText} title="Détails de la demande">
-              <p className="prose">{app.purpose}</p>
-            </SubSection>
-          )}
-          {app.request_letter_scan && (
-            <div className="doc-row">
-              <a className="doc-chip" href={app.request_letter_scan} target="_blank" rel="noreferrer">
-                <FileText size={15} />
-                Lettre de demande
-              </a>
-            </div>
-          )}
           </ViewSection>
+          )}
 
           <FinancialAnalysesSection
             analyses={analyses}

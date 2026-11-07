@@ -406,9 +406,10 @@ def compute_metrics(analysis, th, configuration=None, *, recalculate_installment
     m["installment_known"] = known_installment
     m["flags"] = flags
     m["information_quality_score"] = _information_quality_score(analysis)
-    from .analysis_details import detail_metrics
+    from .analysis_details import apply_tpe_safety, detail_metrics
 
     m.update(detail_metrics(analysis))
+    apply_tpe_safety(m, analysis)
     if m.get("forecast_rows") and schedule:
         expected = {}
         for row in schedule:

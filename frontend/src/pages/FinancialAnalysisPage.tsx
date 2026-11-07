@@ -3,18 +3,12 @@ import { ArrowLeft, LineChart } from "lucide-react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 
 import { api } from "@/api/client";
-import type {
-  ApprovalTask,
-  CreditApplication,
-  FinancialAnalysis,
-  Paginated,
-} from "@/api/types";
+import type { CreditApplication, FinancialAnalysis } from "@/api/types";
 import { useAuth } from "@/auth/AuthContext";
 import { hasPerm } from "@/auth/permissions";
 import { FinancialAnalysisForm } from "@/components/FinancialAnalysisForm";
 import { ErrorState, PageHeader, Spinner } from "@/components/ui";
 
-const OPEN_FOR_CONTRIBUTION = ["DRAFT", "SUBMITTED", "IN_APPROVAL", "RETURNED"];
 const ANALYSIS_LOCKED = ["DISBURSED", "CLOSED", "CANCELLED", "REJECTED"];
 
 export function FinancialAnalysisPage() {
@@ -50,19 +44,7 @@ export function FinancialAnalysisPage() {
     enabled: !!analysisId,
   });
 
-  const { data: myTasks, isLoading: loadingTasks } = useQuery({
-    queryKey: ["my-pending-tasks"],
-    queryFn: async () =>
-      (await api.get<Paginated<ApprovalTask>>("/approval-tasks/my_pending/"))
-        .data,
-    enabled: !!user && !analysisId,
-  });
-
-  if (
-    loadingApp ||
-    (analysisId && loadingAnalysis) ||
-    (!analysisId && !!user && loadingTasks)
-  ) {
+  if (loadingApp || (analysisId && loadingAnalysis)) {
     return <Spinner />;
   }
 
@@ -117,24 +99,18 @@ export function FinancialAnalysisPage() {
   const isEdit = !!analysisId;
   const uid = user?.id;
   const isSuper = !!user?.is_superuser;
-  const canAdd = hasPerm(user, "credits.add_financialanalysis");
+  const isFilialeAdmin = !!user?.capabilities?.includes("tenant_admin");
   const canChange = hasPerm(user, "credits.change_financialanalysis");
-  const isOwner =
-    !!uid && (app.created_by === uid || app.submitted_by === uid);
-  const myTask =
-    myTasks?.results?.find((t) => t.application?.id === app.id) ?? null;
-  const openWindow = OPEN_FOR_CONTRIBUTION.includes(app.status);
   const analysisLocked = ANALYSIS_LOCKED.includes(app.status);
-  const canContributeWindow =
-    !analysisLocked && (isSuper || ((isOwner && openWindow) || !!myTask));
+  const canContributeWindow = app.can_add_financial_analysis === true;
 
   if (isEdit) {
-    const isAuthor = isSuper || (!!uid && existing?.created_by === uid);
+    const isAuthor = isSuper || isFilialeAdmin || (!!uid && existing?.created_by === uid);
     if (
       analysisLocked ||
       !canChange ||
       !isAuthor ||
-      !(existing?.can_edit || (isSuper && !analysisLocked))
+      !(existing?.can_edit || ((isSuper || isFilialeAdmin) && !analysisLocked))
     ) {
       return (
         <div className="page-shell">
@@ -157,7 +133,7 @@ export function FinancialAnalysisPage() {
         </div>
       );
     }
-  } else if (!canAdd || !canContributeWindow) {
+  } else if (!canContributeWindow) {
     return (
       <div>
         <PageHeader

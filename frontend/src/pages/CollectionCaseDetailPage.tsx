@@ -18,6 +18,7 @@ import { useAuth } from "@/auth/AuthContext";
 import { isSmsEnabled } from "@/auth/features";
 import { hasAnyPerm, hasPerm } from "@/auth/permissions";
 import {
+  isFinflowAdmin,
   PERM_CREDITS,
   PERM_DATIONS,
   PERM_GUARANTEES,
@@ -1464,7 +1465,7 @@ export function CollectionCaseDetailPage() {
                   <li className="muted small">Aucune procédure.</li>
                 )}
               </ul>
-              {hasAnyPerm(user, PERM_LEGAL_PARTIES_MANAGE) && (
+              {isFinflowAdmin(user) && hasAnyPerm(user, PERM_LEGAL_PARTIES_MANAGE) && (
                 <Link
                   className="btn btn-ghost btn-sm"
                   to="/admin/intervenants-juridiques"

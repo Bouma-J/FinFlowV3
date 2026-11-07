@@ -656,9 +656,16 @@ export function AdminConnectorsPage() {
 
           {form.disburse_mode === "LOCAL" && (
             <div className="form-error" style={{ marginTop: 10 }}>
-              Mode LOCAL : aucun appel CBS. Mises en place et contrôles
-              (soldes, situation) restent simulés — réservé à la démo / UAT
-              tant que le CBS n’est pas disponible.
+              Mode LOCAL : aucun appel CBS. La recherche client renvoie une
+              fiche de démonstration. Réservé à la démo tant que le CBS
+              n’est pas disponible.
+            </div>
+          )}
+          {form.disburse_mode === "CBS" && !form.base_url.trim() && (
+            <div className="form-error" style={{ marginTop: 10 }}>
+              Mode CBS sans adresse : la recherche client échoue. Elle ne
+              renvoie pas la fiche de démonstration. Renseignez l’URL du
+              core banking.
             </div>
           )}
 

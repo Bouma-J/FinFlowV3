@@ -282,6 +282,13 @@ class UserSerializer(serializers.ModelSerializer):
                     validate_sod_role_assignment(groups)
                 except ValueError as exc:
                     raise serializers.ValidationError({"group_ids": str(exc)})
+        from .services import groups_cover_whole_filiale
+
+        held = groups if groups is not None else (
+            list(self.instance.groups.all()) if self.instance is not None else []
+        )
+        if groups_cover_whole_filiale(held):
+            attrs["data_scope"] = DataScope.TENANT
         return self._validate_user_scope(attrs)
 
     def _validate_user_scope(self, attrs):
@@ -506,6 +513,10 @@ class UserCreateSerializer(serializers.ModelSerializer):
                     validate_sod_role_assignment(groups)
                 except ValueError as exc:
                     raise serializers.ValidationError({"group_ids": str(exc)})
+                from .services import groups_cover_whole_filiale
+
+                if groups_cover_whole_filiale(groups):
+                    attrs["data_scope"] = DataScope.TENANT
         elif tenant is not None:
             raise serializers.ValidationError({
                 "tenant": "Un utilisateur Groupe ne doit pas être rattaché à une filiale."

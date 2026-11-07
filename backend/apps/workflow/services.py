@@ -532,6 +532,14 @@ def user_can_act(user, step, application=None, amount=None):
         return False
     if user.is_superuser:
         return True
+    from apps.accounts.capabilities import is_tenant_administrator
+
+    if (
+        is_tenant_administrator(user)
+        and not user.is_group_level
+        and user.tenant_id == step.tenant_id
+    ):
+        return True
     if not user.is_group_level and user.tenant_id != step.tenant_id:
         return False
     if application is not None and application.agency_id and not user.is_group_level:

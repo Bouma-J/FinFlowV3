@@ -41,12 +41,37 @@ import {
   type AnalysisDetails,
 } from "@/api/types";
 import { FinancialAnalysisDetails } from "@/components/FinancialAnalysisDetails";
+import { ProductSheetTable } from "@/components/ProductSheetTable";
+import { FinancialStatementsEditor } from "@/components/FinancialStatementsSection";
+import {
+  pathLabel,
+  resolveAnalysisPath,
+  resolveStatementBasis,
+  sectionAllowed,
+  type AnalysisPath,
+} from "@/components/analysisPath";
+import {
+  readStatements,
+  referenceFieldOverrides,
+  statementError,
+  type FinancialStatement,
+  type StatementPiece,
+} from "@/components/financialStatements";
+import {
+  blankExternalCredit,
+  deriveExternalDebt,
+  initialExternalCredits,
+  type ExternalCredit,
+  type DerivedExternalDebt,
+} from "@/components/externalCredits";
+import { TpeReconstitution } from "@/components/TpeReconstitution";
 import { FinancialAnalysisSupplements } from "@/components/FinancialAnalysisSupplements";
 import { formatMoney } from "@/components/ui";
 import { CollateralSummaryCard } from "@/components/CollateralSummaryCard";
 import { CustomFields } from "@/components/CustomFields";
 
 const AnalysisLayoutContext = createContext<{ id: string; visible: boolean }[]>([]);
+const AnalysisPathContext = createContext<AnalysisPath>("RECONSTITUTED");
 
 const toOptions = (m: Record<string, string>) =>
   Object.entries(m).map(([value, label]) => ({ value, label }));
@@ -243,6 +268,8 @@ export function FinancialAnalysisForm({
   const qc = useQueryClient();
   const [error, setError] = useState<string | null>(null);
   const [details, setDetails] = useState<AnalysisDetails>(initial?.analysis_details || {});
+  const [statements, setStatements] = useState<FinancialStatement[]>(() => readStatements(initial?.analysis_details));
+  const [statementFiles, setStatementFiles] = useState<Record<string, File>>({});
   const [customFields, setCustomFields] = useState<Record<string, unknown>>((initial as FinancialAnalysis & { custom_fields?: Record<string, unknown> })?.custom_fields || {});
   const detailText = (key: string, label: string) => (
     <label className="field"><span>{label}</span><textarea rows={2}
@@ -264,9 +291,7 @@ export function FinancialAnalysisForm({
   const [numbers, setNumbers] = useState<NumericState>(() =>
     buildInitialNumeric(initial),
   );
-  const [debtInstitution, setDebtInstitution] = useState(
-    initial?.existing_debt_institution || "",
-  );
+  const [externalCredits, setExternalCredits] = useState<ExternalCredit[]>(() => initialExternalCredits(initial));
   const [period, setPeriod] = useState(
     initial?.reference_period ||
       (clientType === "CORPORATE" ? "ANNUAL" : "MONTHLY"),
@@ -283,18 +308,6 @@ export function FinancialAnalysisForm({
   const [comment, setComment] = useState(initial?.comment || "");
   const [cashflowComment, setCashflowComment] = useState(
     initial?.cashflow_comment || "",
-  );
-  const [creditBureauChecked, setCreditBureauChecked] = useState(
-    initial?.credit_bureau_checked ?? false,
-  );
-  const [creditBureauDate, setCreditBureauDate] = useState(
-    initial?.credit_bureau_date || "",
-  );
-  const [hasIncidents, setHasIncidents] = useState(
-    initial?.has_payment_incidents ?? false,
-  );
-  const [incidentsComment, setIncidentsComment] = useState(
-    initial?.incidents_comment || "",
   );
   const [strengths, setStrengths] = useState(initial?.strengths || "");
   const [weaknesses, setWeaknesses] = useState(initial?.weaknesses || "");
@@ -387,16 +400,25 @@ export function FinancialAnalysisForm({
     (initial as { group_comment?: string } | undefined)?.group_comment || "",
   );
 
+  const statementBasis = isCorporate ? resolveStatementBasis(details as { statement_basis?: unknown; financial_statements?: unknown }) : "RECONSTITUTED";
+  const path = resolveAnalysisPath({
+    clientType,
+    individualProfile,
+    hasSideActivity,
+    statementBasis,
+  });
+
   const navSections = useMemo(
     () =>
       [
         { id: "fa-params", icon: Gauge, label: "Contexte", show: true },
         { id: "fa-quality", icon: Shield, label: "Fiabilité des données", show: true },
-        { id: "fa-business", icon: Store, label: "Reconstitution activité", show: isCorporate },
-        { id: "fa-exploitation", icon: ReceiptText, label: "Activité & résultat", show: isCorporate },
-        { id: "fa-balance", icon: Building2, label: "Bilan reconstitué", show: isCorporate },
-        { id: "fa-trend", icon: Gauge, label: "Historique & tendance", show: isCorporate },
+        { id: "fa-debt", icon: Landmark, label: "Endettement", show: true },
         { id: "fa-income", icon: Wallet, label: "Revenus du ménage", show: isIndividual },
+        { id: "fa-stability", icon: Landmark, label: "Stabilité salariale", show: showStabilityBlock },
+        { id: "fa-group", icon: Users, label: "Groupement", show: isGroupement },
+        { id: "fa-business", icon: Store, label: "Stock et ventes", show: isCorporate },
+        { id: "fa-statements", icon: FileText, label: "États financiers", show: isCorporate },
         {
           id: "fa-activity",
           icon: Store,
@@ -406,16 +428,16 @@ export function FinancialAnalysisForm({
               : "Activité génératrice de revenus",
           show: isIndividual && (showActivityBlock || individualProfile === "SALARIE"),
         },
-        { id: "fa-charges", icon: ReceiptText, label: "Charges & patrimoine", show: isIndividual },
-        { id: "fa-stability", icon: Landmark, label: "Stabilité salariale", show: showStabilityBlock },
-        { id: "fa-group", icon: Users, label: "Groupement", show: isGroupement },
-        { id: "fa-debt", icon: Landmark, label: "Endettement & historique", show: true },
-        { id: "fa-treasury", icon: Wallet, label: "Capacité & trésorerie", show: true },
-        { id: "fa-collateral", icon: Shield, label: "Garanties & cautions", show: true },
+        { id: "fa-exploitation", icon: ReceiptText, label: "Charges et résultat", show: isCorporate },
+        { id: "fa-charges", icon: ReceiptText, label: "Charges du ménage", show: isIndividual },
+        { id: "fa-treasury", icon: Wallet, label: "Capacité et retenue", show: true },
+        { id: "fa-balance", icon: Building2, label: "Bilan reconstitué", show: isCorporate },
+        { id: "fa-trend", icon: Gauge, label: "Caisse et tendance N-1", show: isCorporate || showActivityBlock },
+        { id: "fa-collateral", icon: Shield, label: "Garanties et références", show: true },
         { id: "fa-sector", icon: Factory, label: "Analyse sectorielle", show: isCorporate || isGroupement || showActivityBlock },
         { id: "fa-es", icon: Leaf, label: "Analyse E&S", show: isCorporate || isGroupement || showActivityBlock },
         { id: "fa-conclusion", icon: Calculator, label: "Conclusion", show: true },
-      ].filter((s) => (s.show || configuration.data?.protected_analysis_sections?.includes(s.id)) && configuration.data?.forms?.analysis_sections.find((item) => item.id === s.id)?.visible !== false)
+      ].filter((s) => sectionAllowed(s.id, path) && (s.show || configuration.data?.protected_analysis_sections?.includes(s.id)) && configuration.data?.forms?.analysis_sections.find((item) => item.id === s.id)?.visible !== false)
        .sort((left, right) => { const sections = configuration.data?.forms?.analysis_sections || []; if (!sections.length) return 0;
          const position = (id: string) => { const index = sections.findIndex((item) => item.id === id); return index < 0 ? sections.length : index; }; return position(left.id) - position(right.id); }),
     [
@@ -425,6 +447,7 @@ export function FinancialAnalysisForm({
       individualProfile,
       showActivityBlock,
       showStabilityBlock,
+      path,
       configuration.data,
     ],
   );
@@ -504,7 +527,8 @@ export function FinancialAnalysisForm({
       val("tontine_expense") + val("social_contributions") +
       val("family_support_expense") + val("other_monthly_obligations");
     const monthlyFactor = period === "ANNUAL" ? 1 / 12 : period === "QUARTERLY" ? 1 / 3 : 1;
-    const disposable = (income - charges) * monthlyFactor - val("existing_debt_monthly");
+    const externalMonthly = externalCredits.reduce((total, row) => total + (Number(row.monthly_payment) || 0), 0);
+    const disposable = (income - charges) * monthlyFactor - externalMonthly;
     return {
       gross, opex, ebe, net, cashFlow,
       equity: assets - debts,
@@ -522,27 +546,41 @@ export function FinancialAnalysisForm({
         val("projected_monthly_inflows") - val("projected_monthly_outflows"),
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [numbers, isCorporate, dependents, individualProfile, hasSideActivity, period, details]);
+  }, [numbers, isCorporate, dependents, individualProfile, hasSideActivity, period, details, externalCredits]);
 
   const mutation = useMutation({
-    mutationFn: async () => {
+    mutationFn: async (derived: DerivedExternalDebt) => {
       const fd = new FormData();
-      fd.append("analysis_details", JSON.stringify(details));
+      const applied = path === "STATEMENTS" ? referenceFieldOverrides(statements) : { numbers: {}, details: {} };
+      const rest = { ...details } as AnalysisDetails & { financial_statements?: unknown; statement_basis?: string };
+      delete rest.financial_statements;
+      if (isCorporate) rest.statement_basis = statementBasis;
+      else delete rest.statement_basis;
+      fd.append("analysis_details", JSON.stringify({
+        ...rest,
+        ...applied.details,
+        external_credits: derived.rows,
+        financial_statements: statements,
+      }));
       fd.append("custom_fields", JSON.stringify(customFields));
       if (mode === "create") fd.append("application", application.id);
       for (const key of NUMERIC_KEYS) {
-        const v = numbers[key].trim();
+        const v = (applied.numbers[key] ?? numbers[key]).trim();
         const nullable = ["employment_seniority_months", "informal_income_weight", "max_days_late", "prior_repayment_rate", "prior_max_delay_days", "jobs_created", "jobs_maintained", "jobs_women", "jobs_youth", "workforce_count", "members_count", "active_contributing_members", "bank_statement_months", "activity_business_age_months", "activity_sales_days", "group_age_months", "members_with_arrears"].includes(key);
         fd.append(key, v || (nullable ? "" : "0"));
       }
+      fd.set("existing_debt_initial_amount", derived.initial_amount);
+      fd.set("existing_debt_monthly", derived.monthly);
+      fd.set("active_loans_count", derived.count);
+      fd.set("max_days_late", derived.max_days_late);
       fd.append("reference_period", period);
       fd.append("is_reference", String(isReference));
-      fd.append("existing_debt_institution", debtInstitution);
+      fd.append("existing_debt_institution", derived.institution);
       fd.append("cashflow_comment", cashflowComment);
-      fd.append("credit_bureau_checked", String(creditBureauChecked));
-      fd.append("credit_bureau_date", creditBureauDate);
-      fd.append("has_payment_incidents", String(hasIncidents));
-      fd.append("incidents_comment", incidentsComment);
+      fd.append("credit_bureau_checked", String(derived.bureau_checked));
+      fd.append("credit_bureau_date", derived.bureau_date);
+      fd.append("has_payment_incidents", String(derived.incidents));
+      fd.append("incidents_comment", derived.comment);
       fd.append("has_side_activity", String(
         individualProfile === "INDEPENDANT" ||
           individualProfile === "MIXTE" ||
@@ -573,6 +611,10 @@ export function FinancialAnalysisForm({
       fd.append("analysis_date", analysisDate);
       fd.append("comment", comment);
       for (const d of docs) fd.append("documents", d);
+      for (const [key, file] of Object.entries(statementFiles)) {
+        const separator = key.indexOf(":");
+        fd.append(`statement_file__${key.slice(0, separator)}__${key.slice(separator + 1)}`, file);
+      }
       if (mode === "edit" && analysisId) {
         return (await api.patch(`/financial-analyses/${analysisId}/`, fd)).data;
       }
@@ -618,12 +660,29 @@ export function FinancialAnalysisForm({
 
   function submit(e: FormEvent) {
     e.preventDefault();
+    const derived = deriveExternalDebt(externalCredits);
+    if (derived.error) {
+      setError(derived.error);
+      scrollToSection("fa-debt");
+      return;
+    }
+    const statementIssue = statementError(statements);
+    if (statementIssue) {
+      setError(statementIssue);
+      scrollToSection("fa-statements");
+      return;
+    }
     setError(null);
-    mutation.mutate();
+    mutation.mutate(derived);
+  }
+
+  function updateExternalCredit(index: number, patch: Partial<ExternalCredit>) {
+    setExternalCredits((rows) => rows.map((row, rowIndex) => rowIndex === index ? { ...row, ...patch } : row));
   }
 
   return (
     <AnalysisLayoutContext.Provider value={configuration.data?.forms?.analysis_sections || []}>
+    <AnalysisPathContext.Provider value={path}>
     <form className="credit-form" onSubmit={submit}>
       <aside className="credit-form-nav">
         <div className="credit-form-nav-inner">
@@ -684,6 +743,21 @@ export function FinancialAnalysisForm({
                 : ""}
             </span>
           </div>
+          <p className="profile-banner">Parcours retenu : <strong>{pathLabel(path)}</strong>. Les autres rubriques restent enregistrées et n'alimentent pas les ratios.</p>
+          {isCorporate && (
+            <Checkbox
+              label="Le client dispose d'états financiers établis"
+              checked={statementBasis === "STATEMENTS"}
+              onChange={(checked) => setDetails((current) => ({ ...current, statement_basis: checked ? "STATEMENTS" : "RECONSTITUTED" }))}
+            />
+          )}
+          {isIndividual && individualProfile === "SALARIE" && (
+            <Checkbox
+              label="Exerce aussi une activité génératrice de revenus"
+              checked={hasSideActivity}
+              onChange={setHasSideActivity}
+            />
+          )}
           {isIndividual && (
             <Select
               label="Situation professionnelle"
@@ -800,9 +874,34 @@ export function FinancialAnalysisForm({
       {isCorporate ? (
         <>
           <FormSection id="fa-business" icon={Store} title="Reconstitution de l'activité" description="Produits, sources de ventes et organisation économique.">
+            <ProductSheetTable value={details} onChange={setDetails} currency={cur} />
             {detailText("business_model", "Modèle économique : clientèle, fournisseurs et approvisionnements")}
             {detailText("sales_verification", "Rapprochement du CA : ventes, achats, caisse, banque et mobile money")}
-            {detailTable("products")}
+            <TpeReconstitution details={details} onChange={setDetails} currency={cur} part="sales" />
+          </FormSection>
+          <FormSection
+            id="fa-statements"
+            icon={FileText}
+            title="États financiers établis"
+            description="Un exercice par bloc. L'exercice dont la date de fin est la plus récente alimente les ratios. Chaque pièce a son document."
+          >
+            <p className="muted small">Une case vide reste vide. Les comptes courants d'associés se saisissent dans les autres dettes. La part à plus d'un an vient des notes : si elle est vide, elle ne reste pas sur l'exercice retenu. Le loyer, l'eau, le téléphone et l'entretien séparés sont remis à zéro dès que l'état porte les charges, pour ne pas les compter deux fois.</p>
+            <FinancialStatementsEditor
+              statements={statements}
+              onChange={setStatements}
+              files={statementFiles}
+              onFile={(exerciseId: string, piece: StatementPiece, file: File | null) => {
+                setStatementFiles((current) => {
+                  const next = { ...current };
+                  const key = `${exerciseId}:${piece}`;
+                  if (file) next[key] = file;
+                  else delete next[key];
+                  return next;
+                });
+              }}
+              documents={initial?.documents || []}
+              currency={cur}
+            />
           </FormSection>
           <FormSection
             id="fa-exploitation"
@@ -872,6 +971,7 @@ export function FinancialAnalysisForm({
               <Money label="Dettes fiscales et sociales" value={numbers.tax_social_debt} onChange={set("tax_social_debt")} cur={cur} />
               <Money label="Autres dettes d'exploitation" value={numbers.other_current_debt} onChange={set("other_current_debt")} cur={cur} />
               <Money label="Autres dettes court terme" value={numbers.short_term_debt} onChange={set("short_term_debt")} cur={cur} />
+              <Money label="Encours financier total (court et long terme)" value={numbers.ongoing_credit_balance} onChange={set("ongoing_credit_balance")} cur={cur} />
               <Money label="Dont part long terme de l'encours financier total" value={numbers.long_term_debt} onChange={set("long_term_debt")} cur={cur} />
               <Money label="Comptes courants d'associés" value={numbers.shareholder_debt} onChange={set("shareholder_debt")} cur={cur} />
             </div>
@@ -879,8 +979,6 @@ export function FinancialAnalysisForm({
               <RecapItem label="Capitaux propres" value={formatMoney(recap.equity, cur)} strong />
               <RecapItem label="BFR" value={formatMoney(recap.bfr, cur)} />
             </div>
-            {detailTable("stocks")}
-            {detailText("stock_risks", "Stock : propriété, rotation, dépréciation, assurance")}
             {detailText("receivables_quality", "Créances : ancienneté, impayés, concentration, recouvrabilité")}
             {detailText("asset_ownership", "Immobilisations : propriété, valeur nette, état, sûretés")}
             <details><summary>Soldes d'ouverture et rapprochement comptable</summary>
@@ -888,22 +986,6 @@ export function FinancialAnalysisForm({
             </details>
           </FormSection>
 
-          <FormSection
-            id="fa-trend"
-            icon={Gauge}
-            title="Tendance (exercice N-1)"
-            description="Comparaison avec l'exercice précédent pour apprécier la dynamique."
-          >
-            <div className="form-grid two-col">
-              <Money label="Chiffre d'affaires N-1" value={numbers.turnover_prev} onChange={set("turnover_prev")} cur={cur} />
-              <Money label="Résultat net N-1" value={numbers.net_result_prev} onChange={set("net_result_prev")} cur={cur} signed />
-            </div>
-            {detailTable("history")}
-            <p className="muted small">
-              Les taux de croissance du CA et du résultat sont calculés
-              automatiquement pour apprécier la dynamique de l'activité.
-            </p>
-          </FormSection>
         </>
       ) : isGroupement ? (
         <FormSection
@@ -1028,14 +1110,6 @@ export function FinancialAnalysisForm({
               <Money label="Revenus locatifs / rente" value={numbers.rental_income} onChange={set("rental_income")} cur={cur} />
               <Money label="Pension / retraite" value={numbers.pension_income} onChange={set("pension_income")} cur={cur} />
               <Money label="Primes et revenus variables récurrents" value={numbers.variable_income} onChange={set("variable_income")} cur={cur} />
-              {individualProfile === "SALARIE" && (
-                <Money
-                  label="Revenus d'activité (hors bloc dédié)"
-                  value={numbers.other_activity_income}
-                  onChange={set("other_activity_income")}
-                  cur={cur}
-                />
-              )}
               <Money label="Autres revenus" value={numbers.other_income} onChange={set("other_income")} cur={cur} />
               {!showStabilityBlock && <Money label="Pondération des revenus informels (%) — vide : seuil établissement" value={numbers.informal_income_weight} onChange={set("informal_income_weight")} />}
             </div>
@@ -1063,20 +1137,10 @@ export function FinancialAnalysisForm({
                   : "Si le demandeur exerce une activité indépendante en plus du salaire."
             }
           >
-            {individualProfile === "SALARIE" && (
-              <label className="check-row">
-                <input
-                  type="checkbox"
-                  checked={hasSideActivity}
-                  onChange={(e) => setHasSideActivity(e.target.checked)}
-                />
-                Exerce une activité génératrice de revenus
-              </label>
-            )}
             {showActivityBlock && (
               <>
-                {detailTable("products")}
-                {detailTable("stocks")}
+                <ProductSheetTable value={details} onChange={setDetails} currency={cur} />
+                <TpeReconstitution details={details} onChange={setDetails} currency={cur} part="sales" />
                 {detailText("business_model", "Modèle économique : clientèle, fournisseurs et approvisionnements")}
                 {detailText("sales_verification", "Reconstitution des ventes : recettes journalières, cahier de caisse et mobile money")}
                 <div className="form-grid two-col" style={{ marginTop: "0.75rem" }}>
@@ -1113,14 +1177,6 @@ export function FinancialAnalysisForm({
                     onChange={set("activity_purchases")}
                     cur={cur}
                   />
-                </div>
-                <p className="subsection-label">Bilan de l'activité</p>
-                <div className="form-grid two-col">
-                  <Money label="Stock" value={numbers.activity_stock_value} onChange={set("activity_stock_value")} cur={cur} />
-                  <Money label="Créances clients" value={numbers.activity_receivables} onChange={set("activity_receivables")} cur={cur} />
-                  <Money label="Trésorerie disponible" value={numbers.activity_cash_available} onChange={set("activity_cash_available")} cur={cur} />
-                  <Money label="Actifs productifs" value={numbers.activity_fixed_assets} onChange={set("activity_fixed_assets")} cur={cur} />
-                  <Money label="Dettes fournisseurs" value={numbers.activity_supplier_debt} onChange={set("activity_supplier_debt")} cur={cur} />
                 </div>
                 <div className="form-grid two-col">
                   <Checkbox
@@ -1218,68 +1274,71 @@ export function FinancialAnalysisForm({
         <FormSection
           id="fa-debt"
           icon={Landmark}
-          title="Endettement consolidé & centrale des risques"
-          description="Engagements en cours, incidents et historique de remboursement."
+          title="Endettement dans une autre institution"
+          description="Un crédit par institution ou banque. Ajoutez un bloc pour chaque crédit supplémentaire."
         >
-        <div className="form-grid two-col">
-          <label className="field">
-            <span>Institution du crédit principal en cours</span>
-            <input
-              type="text"
-              value={debtInstitution}
-              onChange={(e) => setDebtInstitution(e.target.value)}
-            />
-          </label>
-          <Money label="Montant initial du crédit" value={numbers.existing_debt_initial_amount} onChange={set("existing_debt_initial_amount")} cur={cur} />
-          <Money label="Mensualités en cours (total consolidé, tous prêteurs)" value={numbers.existing_debt_monthly} onChange={set("existing_debt_monthly")} cur={cur} />
-          <Money label="Encours financier total (court et long terme)" value={numbers.ongoing_credit_balance} onChange={set("ongoing_credit_balance")} cur={cur} />
-          <Money label="Nombre de crédits actifs (tous prêteurs)" value={numbers.active_loans_count} onChange={set("active_loans_count")} />
-          <Money label="Retard maximum constaté (jours)" value={numbers.max_days_late} onChange={set("max_days_late")} />
+        <div className="external-credit-list">
+          {externalCredits.map((credit, index) => (
+            <article className="external-credit" key={index}>
+              <div className="external-credit-head">
+                <h4>Crédit {index + 1}</h4>
+                <button
+                  type="button"
+                  className="btn btn-ghost btn-sm"
+                  onClick={() => setExternalCredits((rows) => rows.filter((_, rowIndex) => rowIndex !== index))}
+                >
+                  Retirer
+                </button>
+              </div>
+              <div className="form-grid two-col">
+                <Text label="Institution de crédit" value={credit.institution} onChange={(value) => updateExternalCredit(index, { institution: value })} />
+                <Money label="Date d'octroi" type="date" value={credit.grant_date} onChange={(value) => updateExternalCredit(index, { grant_date: value })} />
+                <Money label="Date de la dernière échéance" type="date" value={credit.final_due_date} onChange={(value) => updateExternalCredit(index, { final_due_date: value })} />
+                <Money label="Montant initial du crédit" value={credit.initial_amount} onChange={(value) => updateExternalCredit(index, { initial_amount: value })} cur={cur} />
+                <Money label="Mensualité" value={credit.monthly_payment} onChange={(value) => updateExternalCredit(index, { monthly_payment: value })} cur={cur} />
+                <Money label="Encours restant" value={credit.outstanding} onChange={(value) => updateExternalCredit(index, { outstanding: value })} cur={cur} />
+                <Money label="Retard maximum constaté (jours)" value={credit.max_days_late} onChange={(value) => updateExternalCredit(index, { max_days_late: value })} />
+                <Money label="Date de consultation" type="date" value={credit.bureau_date} onChange={(value) => updateExternalCredit(index, { bureau_date: value })} />
+              </div>
+              <div className="external-credit-checks">
+                <Checkbox
+                  label="Centrale des risques / BIC consultée"
+                  checked={credit.bureau_checked === "yes"}
+                  onChange={(checked) => updateExternalCredit(index, { bureau_checked: checked ? "yes" : "no" })}
+                />
+                <Checkbox
+                  label="Incidents de paiement recensés"
+                  checked={credit.incidents === "yes"}
+                  onChange={(checked) => updateExternalCredit(index, { incidents: checked ? "yes" : "no" })}
+                />
+              </div>
+              <label className="field">
+                <span>Détails des incidents / engagements externes</span>
+                <textarea
+                  rows={2}
+                  value={credit.incidents_detail}
+                  onChange={(event) => updateExternalCredit(index, { incidents_detail: event.target.value })}
+                />
+              </label>
+            </article>
+          ))}
         </div>
-        <div className="form-grid two-col">
-          <Checkbox
-            label="Centrale des risques / BIC consultée"
-            checked={creditBureauChecked}
-            onChange={setCreditBureauChecked}
-          />
-          <Money label="Date de consultation" type="date" value={creditBureauDate} onChange={setCreditBureauDate} />
-          <Checkbox
-            label="Incidents de paiement recensés"
-            checked={hasIncidents}
-            onChange={setHasIncidents}
-          />
-        </div>
-        <label className="field">
-          <span>Détails des incidents / engagements externes</span>
-          <textarea
-            rows={2}
-            value={incidentsComment}
-            onChange={(e) => setIncidentsComment(e.target.value)}
-          />
-        </label>
-        {detailTable("debts")}
-        {detailText("bureau_reference", "Rapport BIC / centrale des risques : référence et périmètre")}
-        {detailText("bureau_discrepancies", "Écarts avec les engagements déclarés, cautions données et explications")}
-        {detailText("banking_behavior", "Fonctionnement bancaire : incidents, découverts, rejets et flux créditeurs")}
-        <p className="subsection-label">Historique interne de remboursement</p>
-        <div className="form-grid two-col">
-          <Money label="Nombre de crédits antérieurs (institution)" value={numbers.prior_loans_count} onChange={set("prior_loans_count")} />
-          <Money label="Taux de remboursement historique (%)" value={numbers.prior_repayment_rate} onChange={set("prior_repayment_rate")} />
-          <Money label="Retard maximum historique interne (jours)" value={numbers.prior_max_delay_days} onChange={set("prior_max_delay_days")} />
-        </div>
-        <p className="muted small">
-          L'échéance du crédit sollicité et les ratios (taux d'endettement,
-          {isCorporate ? " DSCR" : " reste à vivre"}, stress test, couverture
-          garanties et score) sont calculés automatiquement à l'enregistrement.
-        </p>
+        <button
+          type="button"
+          className="btn btn-ghost"
+          onClick={() => setExternalCredits((rows) => [...rows, blankExternalCredit()])}
+        >
+          Ajouter un crédit
+        </button>
         </FormSection>
 
         <FormSection
           id="fa-treasury"
           icon={Wallet}
-          title="Capacité et trésorerie prévisionnelle"
-          description="Flux mensuels attendus ; la capacité est comparée automatiquement au service total de la dette."
+          title="Capacité et retenue de prudence"
+          description="La capacité est comparée au service de la dette. La retenue vient ensuite, sans remplacer le taux d'endettement."
         >
+        {(isCorporate || showActivityBlock) && <TpeReconstitution details={details} onChange={setDetails} currency={cur} part="safety" />}
         <div className="form-grid two-col">
           <Money label="Encaissements prévisionnels mensuels" value={numbers.projected_monthly_inflows} onChange={set("projected_monthly_inflows")} cur={cur} />
           <Money label="Sorties de trésorerie prévisionnelles mensuelles" value={numbers.projected_monthly_outflows} onChange={set("projected_monthly_outflows")} cur={cur} />
@@ -1306,6 +1365,35 @@ export function FinancialAnalysisForm({
         {detailText("financing_plan", "Plan de financement : besoins, ressources et adéquation durée / objet")}
         </FormSection>
 
+        {(isCorporate || showActivityBlock) && (
+        <FormSection
+          id="fa-trend"
+          icon={Gauge}
+          title="Bilan, caisse et tendance N-1"
+          description="Patrimoine, contrôle depuis le dernier achat, puis comparaison avec la période précédente."
+        >
+          {!isCorporate && (
+            <>
+              <p className="subsection-label">Bilan de l'activité</p>
+              <div className="form-grid two-col">
+                <Money label="Stock" value={numbers.activity_stock_value} onChange={set("activity_stock_value")} cur={cur} />
+                <Money label="Créances clients" value={numbers.activity_receivables} onChange={set("activity_receivables")} cur={cur} />
+                <Money label="Trésorerie disponible" value={numbers.activity_cash_available} onChange={set("activity_cash_available")} cur={cur} />
+                <Money label="Actifs productifs" value={numbers.activity_fixed_assets} onChange={set("activity_fixed_assets")} cur={cur} />
+                <Money label="Dettes fournisseurs" value={numbers.activity_supplier_debt} onChange={set("activity_supplier_debt")} cur={cur} />
+              </div>
+            </>
+          )}
+          <TpeReconstitution details={details} onChange={setDetails} currency={cur} part="cash" />
+          <div className="form-grid two-col">
+            <Money label="Chiffre d'affaires N-1" value={numbers.turnover_prev} onChange={set("turnover_prev")} cur={cur} />
+            <Money label="Résultat net N-1" value={numbers.net_result_prev} onChange={set("net_result_prev")} cur={cur} signed />
+          </div>
+          {detailTable("history")}
+          <p className="muted small">Les variations sont calculées sur des périodes de même durée. Pour une activité, le bilan ci-dessus est celui de l'exploitation ; le bilan d'entreprise reste dans sa section dédiée.</p>
+        </FormSection>
+        )}
+
         <FormSection
           id="fa-collateral"
           icon={Shield}
@@ -1316,6 +1404,7 @@ export function FinancialAnalysisForm({
             applicationId={application.id}
             currency={cur}
           />
+          {detailTable("references")}
         </FormSection>
 
         {(isCorporate || isGroupement || showActivityBlock || configuration.data?.protected_analysis_sections?.includes("fa-sector")) && (
@@ -1493,6 +1582,7 @@ export function FinancialAnalysisForm({
         </div>
       </AnalysisContent>
     </form>
+    </AnalysisPathContext.Provider>
     </AnalysisLayoutContext.Provider>
   );
 }
@@ -1536,10 +1626,18 @@ function FormSection({
   children: ReactNode;
 }) {
   const sections = useContext(AnalysisLayoutContext);
+  const path = useContext(AnalysisPathContext);
+  if (!sectionAllowed(id, path)) return null;
   const index = sections.findIndex((section) => section.id === id);
   if (index >= 0 && !sections[index].visible) return null;
+  const fallbackOrder: Record<string, number> = {
+    "fa-params": 10, "fa-quality": 20, "fa-debt": 30, "fa-income": 40, "fa-stability": 50,
+    "fa-group": 60, "fa-business": 70, "fa-statements": 85, "fa-activity": 80, "fa-exploitation": 90,
+    "fa-charges": 100, "fa-treasury": 110, "fa-balance": 120, "fa-trend": 130,
+    "fa-collateral": 140, "fa-sector": 150, "fa-es": 160, "fa-conclusion": 170,
+  };
   return (
-    <section id={id} className="card form-section">
+    <section id={id} className="card form-section" style={sections.length ? undefined : { order: fallbackOrder[id] ?? 0 }}>
       <div className="card-title form-section-head">
         <span className="form-section-icon">
           <Icon size={18} />

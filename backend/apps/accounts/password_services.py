@@ -8,6 +8,8 @@ import string
 from django.conf import settings
 from django.utils.html import escape
 
+from apps.notifications.email_brand import branded_shell, colors_for_tenant, readable_text
+
 logger = logging.getLogger("finflow")
 
 
@@ -72,6 +74,9 @@ def send_credentials_email(user, raw_password: str, *, reason: str = "created") 
         )
 
     display = user.get_full_name() or user.username
+    tenant = getattr(user, "tenant", None)
+    colors = colors_for_tenant(tenant)
+    button_text = readable_text(colors["primary"], colors["sidebar_text"])
     text = (
         f"{title}\n\n"
         f"Bonjour {display},\n\n"
@@ -82,9 +87,8 @@ def send_credentials_email(user, raw_password: str, *, reason: str = "created") 
         "Ne partagez pas ce message. Ce mot de passe est à usage unique "
         "jusqu'à son remplacement.\n"
     )
-    html = f"""
-    <div style="font-family:Segoe UI,Arial,sans-serif;max-width:560px;margin:0 auto;color:#1a1a1a">
-      <h2 style="color:#0b3d2e">{escape(title)}</h2>
+    inner = f"""
+      <h2 style="margin:0 0 12px;color:{colors['primary']}">{escape(title)}</h2>
       <p>Bonjour <strong>{escape(display)}</strong>,</p>
       <p>{escape(intro)}</p>
       <table style="border-collapse:collapse;margin:16px 0;width:100%">
@@ -97,15 +101,14 @@ def send_credentials_email(user, raw_password: str, *, reason: str = "created") 
           <td style="padding:8px;border:1px solid #dce5e0"><code>{escape(raw_password)}</code></td>
         </tr>
       </table>
-      <p><a href="{escape(login_url)}" style="display:inline-block;padding:10px 16px;background:#0b3d2e;color:#fff;text-decoration:none;border-radius:4px">Se connecter</a></p>
-      <p style="color:#666;font-size:13px">Ne partagez pas ce message. Changez ce mot de passe dès la première connexion.</p>
-    </div>
+      <p><a href="{escape(login_url)}" style="display:inline-block;padding:10px 16px;background:{colors['primary']};color:{button_text};text-decoration:none;border-radius:4px">Se connecter</a></p>
+      <p style="color:{colors['secondary']};font-size:13px">Ne partagez pas ce message. Changez ce mot de passe dès la première connexion.</p>
     """
+    html = branded_shell(tenant, inner)
 
     try:
         from apps.notifications.mail import send_email_for_tenant
 
-        tenant = getattr(user, "tenant", None)
         send_email_for_tenant(
             tenant=tenant,
             subject=subject,

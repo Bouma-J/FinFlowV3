@@ -224,8 +224,29 @@ def test_disbursement_mode_matrix(tenant_a, catalog):
     assert disbursement_mode(cbs_forced) == "CBS"
     assert disbursement_mode(simulate) == "LOCAL"
     assert disbursement_mode(no_url) == "LOCAL"
+    assert isinstance(get_adapter(local_forced), SimulatedAdapter)
     assert isinstance(get_adapter(simulate), SimulatedAdapter)
     assert isinstance(get_adapter(cbs_forced), RestAdapter)
+    cbs_flag_ignored = CoreBankingConnector(
+        tenant=tenant_a,
+        name="mode-cbs-flag",
+        protocol="REST",
+        base_url="https://cbs.example",
+        mapping_rules={
+            "force_simulate": True,
+            "disbursement": {"mode": "CBS"},
+        },
+    )
+    assert isinstance(get_adapter(cbs_flag_ignored), RestAdapter)
+    cbs_without_url = CoreBankingConnector(
+        tenant=tenant_a,
+        name="mode-cbs-nourl",
+        protocol="REST",
+        base_url="",
+        mapping_rules={"disbursement": {"mode": "CBS"}, "force_simulate": False},
+    )
+    with pytest.raises(CoreBankingError, match="adresse du core banking"):
+        get_adapter(cbs_without_url)
 
 
 # ---------------------------------------------------------------------------

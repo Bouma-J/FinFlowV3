@@ -9,6 +9,7 @@ from apps.common.tenancy import get_current_tenant_id
 from apps.common.viewsets import TenantContextMixin, TenantScopedReadOnlyViewSet
 from apps.tenants.models import Tenant
 
+from .email_brand import branded_shell
 from .mail import (
     check_smtp_tcp,
     normalize_smtp_host,
@@ -158,10 +159,13 @@ class TenantNotificationSettingsViewSet(TenantContextMixin, ReadOnlyModelViewSet
                     f"Expéditeur effectif : {resolve_from_email(prefs, tenant=tenant)}\n"
                     f"SMTP filiale : {'oui' if tenant_has_smtp(prefs) else 'non (repli global)'}\n"
                 ),
-                html_body=(
-                    f"<p>Ceci est un e-mail de test pour la filiale "
-                    f"<strong>{tenant.name}</strong>.</p>"
-                    f"<p>Expéditeur : <code>{resolve_from_email(prefs, tenant=tenant)}</code></p>"
+                html_body=branded_shell(
+                    tenant,
+                    (
+                        f"<p>Ceci est un e-mail de test pour la filiale "
+                        f"<strong>{tenant.name}</strong>.</p>"
+                        f"<p>Expéditeur : <code>{resolve_from_email(prefs, tenant=tenant)}</code></p>"
+                    ),
                 ),
                 recipients=[to],
             )

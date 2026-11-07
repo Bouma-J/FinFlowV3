@@ -160,4 +160,6 @@ export interface ConfigurationPreview {
 export const DETAIL_TABLE_LABELS: Record<string, string> = {
   products: "Fiches produits et ventes", stocks: "Inventaire des stocks",
   debts: "Engagements et dettes", cashflow: "Plan de trésorerie", history: "Historique financier",
+  sales_observations: "Jours de vente observés", bank_flows: "Flux créditeurs (TMC)",
+  references: "Références familiales et professionnelles",
 };

@@ -7,11 +7,14 @@ from django.core.exceptions import ValidationError
 from django.db import models
 
 ANALYSIS_SECTIONS = {
-    "fa-params": "Paramètres", "fa-quality": "Fiabilité des données", "fa-business": "Reconstitution activité",
-    "fa-exploitation": "Activité et résultat", "fa-balance": "Bilan", "fa-trend": "Historique et tendance",
-    "fa-income": "Revenus du ménage", "fa-activity": "Activité génératrice de revenus",
-    "fa-charges": "Charges et patrimoine", "fa-stability": "Stabilité salariale", "fa-group": "Groupement",
-    "fa-debt": "Endettement", "fa-treasury": "Capacité et trésorerie", "fa-collateral": "Garanties",
+    "fa-params": "Paramètres", "fa-quality": "Fiabilité des données",
+    "fa-debt": "Endettement", "fa-income": "Revenus du ménage",
+    "fa-stability": "Stabilité salariale", "fa-group": "Groupement",
+    "fa-business": "Stock et ventes", "fa-statements": "États financiers",
+    "fa-activity": "Activité génératrice de revenus",
+    "fa-exploitation": "Charges et résultat", "fa-charges": "Charges du ménage",
+    "fa-treasury": "Capacité et retenue", "fa-balance": "Bilan",
+    "fa-trend": "Caisse et tendance N-1", "fa-collateral": "Garanties et références",
     "fa-sector": "Analyse sectorielle", "fa-es": "Environnement et social", "fa-conclusion": "Conclusion",
 }
 OPTIONAL_SECTIONS = {"fa-sector", "fa-es"}

@@ -503,9 +503,11 @@ export default function App() {
         <Route
           path="/admin/roles"
           element={
-            <PermissionRoute anyOf={PERM_ADMIN_ROLES}>
-              <AdminRolesPage />
-            </PermissionRoute>
+            <AdminRoute>
+              <PermissionRoute anyOf={PERM_ADMIN_ROLES}>
+                <AdminRolesPage />
+              </PermissionRoute>
+            </AdminRoute>
           }
         />
         <Route
@@ -541,9 +543,11 @@ export default function App() {
         <Route
           path="/admin/intervenants-juridiques"
           element={
-            <PermissionRoute anyOf={PERM_LEGAL_PARTIES}>
-              <LegalPartiesPage />
-            </PermissionRoute>
+            <AdminRoute>
+              <PermissionRoute anyOf={PERM_LEGAL_PARTIES}>
+                <LegalPartiesPage />
+              </PermissionRoute>
+            </AdminRoute>
           }
         />
         <Route
@@ -597,9 +601,11 @@ export default function App() {
         <Route
           path="/admin/alertes"
           element={
-            <PermissionRoute anyOf={PERM_ADMIN_ALERTS}>
-              <AdminNotificationsPage />
-            </PermissionRoute>
+            <AdminRoute>
+              <PermissionRoute anyOf={PERM_ADMIN_ALERTS}>
+                <AdminNotificationsPage />
+              </PermissionRoute>
+            </AdminRoute>
           }
         />
         <Route

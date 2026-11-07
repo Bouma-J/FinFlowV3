@@ -115,7 +115,9 @@ class FinancialAnalysisSerializer(serializers.ModelSerializer):
         if obj.application_id and obj.application.status in ANALYSIS_LOCKED_STATUSES:
             return False
         user = request.user
-        if user.is_superuser:
+        from apps.accounts.capabilities import is_tenant_administrator
+
+        if user.is_superuser or is_tenant_administrator(user):
             return True
         if obj.created_by_id != user.id:
             return False
@@ -337,6 +339,9 @@ class FinancialAnalysisSerializer(serializers.ModelSerializer):
             raise serializers.ValidationError(
                 {"application": "Impossible de réaffecter l'analyse à un autre dossier."}
             )
+        if "analysis_details" in attrs:
+            from .analysis_details import apply_reference_statement
+            apply_reference_statement(attrs)
         errors = {}
         for name, value in attrs.items():
             if isinstance(value, Decimal) and name not in ("net_result_prev",) and value < 0:
@@ -433,6 +438,52 @@ class FinancialAnalysisSerializer(serializers.ModelSerializer):
                 tenant_id=analysis.tenant_id,
                 file=f,
             )
+        self._save_statement_documents(analysis, request)
+
+    def _save_statement_documents(self, analysis, request):
+        from apps.credits.analysis_details import STATEMENT_PIECES
+
+        details = analysis.analysis_details or {}
+        rows = details.get("financial_statements")
+        if not isinstance(rows, list):
+            return
+        from apps.common.upload_validation import validate_uploaded_file
+
+        titles = {
+            "income": "Compte de résultat",
+            "balance": "Bilan",
+            "cashflow": "Tableau des flux",
+            "notes": "Notes annexes",
+        }
+        changed = False
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            exercise_id = str(row.get("id") or "")
+            documents = row.get("documents")
+            if not isinstance(documents, dict):
+                documents = {}
+                row["documents"] = documents
+            exercise_label = str(row.get("label") or "Exercice")[:40]
+            for piece in STATEMENT_PIECES:
+                uploaded = request.FILES.get(f"statement_file__{exercise_id}__{piece}")
+                if uploaded is None:
+                    continue
+                validate_uploaded_file(uploaded, tenant=analysis.tenant, check_quota=True)
+                previous = documents.get(piece) or ""
+                document = FinancialDocument.objects.create(
+                    analysis=analysis,
+                    tenant_id=analysis.tenant_id,
+                    file=uploaded,
+                    label=f"{titles[piece]} · {exercise_label}"[:150],
+                )
+                documents[piece] = str(document.id)
+                changed = True
+                if previous:
+                    FinancialDocument.objects.filter(analysis=analysis, pk=previous).delete()
+        if changed:
+            analysis.analysis_details = details
+            analysis.save(update_fields=["analysis_details", "updated_at"])
 
     def create(self, validated_data):
         application = validated_data.get("application")
@@ -472,7 +523,9 @@ class FieldVisitSerializer(serializers.ModelSerializer):
         if not request or not request.user.is_authenticated:
             return False
         user = request.user
-        if user.is_superuser:
+        from apps.accounts.capabilities import is_tenant_administrator
+
+        if user.is_superuser or is_tenant_administrator(user):
             return True
         if obj.visited_by_id != user.id:
             return False
@@ -644,6 +697,8 @@ class CreditApplicationSerializer(serializers.ModelSerializer):
     client_type = serializers.CharField(source="client.client_type", read_only=True)
     product_label = serializers.CharField(source="product.label", read_only=True)
     agency_display = serializers.SerializerMethodField()
+    can_add_financial_analysis = serializers.SerializerMethodField()
+    can_add_field_visit = serializers.SerializerMethodField()
     status_display = serializers.CharField(source="get_status_display", read_only=True)
     stock_photos = StockPhotoSerializer(many=True, read_only=True)
     documents = CreditDocumentSerializer(many=True, read_only=True)
@@ -671,6 +726,33 @@ class CreditApplicationSerializer(serializers.ModelSerializer):
         if agency is None:
             return ""
         return agency.name or agency.code or ""
+
+    def _request_user(self):
+        request = self.context.get("request")
+        user = getattr(request, "user", None)
+        if not user or not user.is_authenticated:
+            return None
+        return user
+
+    def get_can_add_financial_analysis(self, obj):
+        from .access import can_add_financial_analysis
+
+        user = self._request_user()
+        return bool(
+            user
+            and user.has_perm("credits.add_financialanalysis")
+            and can_add_financial_analysis(obj, user)
+        )
+
+    def get_can_add_field_visit(self, obj):
+        from .access import can_add_field_visit
+
+        user = self._request_user()
+        return bool(
+            user
+            and user.has_perm("credits.add_fieldvisit")
+            and can_add_field_visit(obj, user)
+        )
 
     def get_fees_breakdown(self, obj):
         return self.get_pricing_quote(obj)["fees"]
@@ -729,6 +811,7 @@ class CreditApplicationSerializer(serializers.ModelSerializer):
         fields = [
             "id", "reference", "client", "client_display", "client_reference",
             "client_type", "product", "product_label", "agency", "agency_display",
+            "can_add_financial_analysis", "can_add_field_visit",
             # Conditions
             "amount_requested", "amount_proposed", "interest_rate", "fees_rate",
             "mandatory_savings_rate",

@@ -1,5 +1,8 @@
+import io
+
 from django.contrib.contenttypes.models import ContentType
 from django.db import transaction
+from django.http import FileResponse
 from django.db.models.deletion import ProtectedError
 from django.utils import timezone
 from rest_framework import status, viewsets
@@ -86,6 +89,7 @@ class CreditApplicationViewSet(AgencyScopedViewSet):
         ],
         "cbs_situation": ["credits.view_creditapplication"],
         "exposure": ["credits.view_creditapplication", "credits.view_creditexposureobservation"],
+        "export_pdf": ["credits.view_creditapplication"],
     }
     filterset_fields = [
         "status", "client", "product", "agency", "currency", "risk_level",
@@ -114,8 +118,10 @@ class CreditApplicationViewSet(AgencyScopedViewSet):
 
     @staticmethod
     def _assert_is_creator(application, user, action_label):
-        """N'autorise l'action qu'au créateur du dossier (ou à un super-admin)."""
-        if getattr(user, "is_superuser", False):
+        """N'autorise l'action qu'au créateur du dossier (ou à un administrateur)."""
+        from apps.accounts.capabilities import is_tenant_administrator
+
+        if getattr(user, "is_superuser", False) or is_tenant_administrator(user):
             return
         if application.created_by_id and application.created_by_id == user.id:
             return
@@ -125,8 +131,10 @@ class CreditApplicationViewSet(AgencyScopedViewSet):
 
     @staticmethod
     def _assert_is_submitter(application, user):
-        """N'autorise l'annulation qu'à l'auteur de la soumission (ou super-admin)."""
-        if getattr(user, "is_superuser", False):
+        """N'autorise l'annulation qu'à l'auteur de la soumission (ou un administrateur)."""
+        from apps.accounts.capabilities import is_tenant_administrator
+
+        if getattr(user, "is_superuser", False) or is_tenant_administrator(user):
             return
         submitter_id = application.submitted_by_id or application.created_by_id
         if submitter_id and submitter_id == user.id:
@@ -321,6 +329,21 @@ class CreditApplicationViewSet(AgencyScopedViewSet):
             raise ValidationError(str(exc))
         return Response(self.get_serializer(application).data)
 
+    @action(detail=True, methods=["get"], url_path="export-pdf")
+    def export_pdf(self, request, pk=None):
+        """Télécharge le dossier de crédit en PDF, à la charte de la filiale."""
+        application = self.get_object()
+        from .dossier_pdf import build_dossier_pdf
+
+        payload = build_dossier_pdf(application, request.user)
+        reference = (application.reference or str(application.pk)[:8]).replace("/", "-")
+        return FileResponse(
+            io.BytesIO(payload),
+            as_attachment=True,
+            filename=f"dossier-{reference}.pdf",
+            content_type="application/pdf",
+        )
+
     @action(detail=True, methods=["get"])
     def timeline(self, request, pk=None):
         """Chronologie (piste d'audit) des évènements clés du dossier."""
@@ -440,10 +463,13 @@ class CreditApplicationViewSet(AgencyScopedViewSet):
         from .governance import snapshot, fingerprint, setup_checks, evidence_fingerprint
         from .setup_authorization import invalidate_authorization, policy_fingerprint, setup_state
 
-        from apps.accounts.capabilities import CREDIT_ADMIN, user_has_capability
+        from apps.accounts.capabilities import CREDIT_ADMIN, is_tenant_administrator, user_has_capability
         if request.method == "POST" and not (
             request.user.has_perm("credits.review_setup_creditapplication")
-            and user_has_capability(request.user, CREDIT_ADMIN)
+            and (
+                user_has_capability(request.user, CREDIT_ADMIN)
+                or is_tenant_administrator(request.user)
+            )
         ):
             raise PermissionDenied("Le contrôle final est réservé aux utilisateurs habilités de l'administration crédit.")
 
@@ -879,8 +905,14 @@ class FinancialAnalysisViewSet(TenantScopedViewSet):
         )
 
     def _assert_author(self, instance):
+        from apps.accounts.capabilities import is_tenant_administrator
+
         user = self.request.user
-        if not (user.is_superuser or instance.created_by_id == user.id):
+        if not (
+            user.is_superuser
+            or is_tenant_administrator(user)
+            or instance.created_by_id == user.id
+        ):
             raise PermissionDenied(
                 "Seul l'auteur peut modifier ou supprimer cette analyse."
             )
@@ -1070,8 +1102,14 @@ class FieldVisitViewSet(TenantScopedViewSet):
         super().perform_create(serializer)
 
     def _assert_author(self, instance):
+        from apps.accounts.capabilities import is_tenant_administrator
+
         user = self.request.user
-        if not (user.is_superuser or instance.visited_by_id == user.id):
+        if not (
+            user.is_superuser
+            or is_tenant_administrator(user)
+            or instance.visited_by_id == user.id
+        ):
             raise PermissionDenied(
                 "Seul l'auteur peut modifier ou supprimer cette visite."
             )

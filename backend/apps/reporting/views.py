@@ -50,9 +50,12 @@ class OperationalDashboardView(APIView):
 
         # Snapshot filiale = vue TENANT complète ; hors scope TENANT / Groupe
         # on calcule en live pour respecter data_scope.
+        from apps.common.access import sees_whole_filiale
+
         scope_ok = (
             getattr(user, "is_group_level", False)
             or getattr(user, "data_scope", None) == "TENANT"
+            or sees_whole_filiale(user)
             or getattr(user, "is_superuser", False)
         )
         if (

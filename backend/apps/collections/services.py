@@ -1640,11 +1640,12 @@ def notify_upcoming_hearings(*, within_days: int = 7) -> dict:
         .select_related(
             "tenant",
             "case__assigned_to",
-            "case__loan__application",
+            "case__loan__application__client",
         )
     )
     sent = skipped = failed = 0
     from apps.common.tenancy import tenant_context
+    from django.conf import settings
 
     for lit in qs.iterator():
         with tenant_context(lit.tenant_id):
@@ -1654,20 +1655,61 @@ def notify_upcoming_hearings(*, within_days: int = 7) -> dict:
             if not email or not prefs or not prefs.enabled:
                 skipped += 1
                 continue
-            ref = lit.case_reference or lit.title or str(lit.id)
-            subject = f"Audience contentieux le {lit.hearing_date} — {ref}"
+            ref = lit.case_reference or lit.title or ""
+            loan = getattr(lit.case, "loan", None)
+            app = getattr(loan, "application", None) if loan else None
+            client = getattr(app, "client", None) if app else None
+            if app is not None and (app.reference or "").strip():
+                ref = app.reference.strip()
+            name = ""
+            if client is not None:
+                name = f"{(client.last_name or '').strip()} {(client.first_name or '').strip()}".strip()
+                name = name or (getattr(client, "display_name", None) or "")
+            when = lit.hearing_date.strftime("%d/%m/%Y") if lit.hearing_date else "date non précisée"
+            if lit.hearing_time:
+                when = f"{when} à {lit.hearing_time.strftime('%H:%M')}"
+            court = (lit.court_name or "").strip() or "juridiction non précisée"
+            place = (lit.hearing_location or "").strip() or "lieu non précisé"
+            base = (getattr(settings, "FRONTEND_BASE_URL", None) or "").rstrip("/")
+            link = (
+                f"{base}/recouvrement/{lit.case_id}/contentieux/{lit.id}"
+                if base
+                else ""
+            )
+            who = f" — {name}" if name else ""
+            tail = f" — {ref}" if ref else ""
+            subject = f"[FIN_FLOW] Audience le {when}{who}{tail}"[:255]
             text = (
-                f"Rappel : audience prévue le {lit.hearing_date}"
-                f"{(' à ' + lit.hearing_time.strftime('%H:%M')) if lit.hearing_time else ''}"
-                f" — {lit.court_name or 'juridiction n/c'}\n"
-                f"Dossier recouvrement : {lit.case_id}\n"
-                f"Lieu : {lit.hearing_location or '—'}"
+                f"Audience prévue le {when}.\n"
+                f"Juridiction : {court}\n"
+                f"Lieu : {place}\n"
+                f"Dossier : {ref or '—'}\n"
+                f"Client : {name or '—'}\n"
+            )
+            if link:
+                text += f"\nOuvrir le dossier : {link}\n"
+            from apps.notifications.email_brand import branded_shell
+            from django.utils.html import escape
+
+            html = branded_shell(
+                lit.tenant,
+                (
+                    f"<p>Audience prévue le <strong>{escape(when)}</strong>.</p>"
+                    f"<p>Juridiction : {escape(court)}<br/>Lieu : {escape(place)}</p>"
+                    f"<p>Dossier : {escape(ref or '—')}<br/>Client : {escape(name or '—')}</p>"
+                    + (
+                        f'<p><a href="{escape(link)}">Ouvrir le dossier contentieux</a></p>'
+                        if link
+                        else ""
+                    )
+                ),
             )
             try:
                 send_email_for_tenant(
                     tenant=lit.tenant,
                     subject=subject,
                     text_body=text,
+                    html_body=html,
                     recipients=[email],
                     prefs=prefs,
                 )
@@ -1716,27 +1758,49 @@ def _loan_application(case):
 
 
 def _collection_reminder_body(case: CollectionCase) -> tuple[str, str, str]:
+    from django.utils.html import escape
+
+    from apps.notifications.email_brand import branded_shell
+    from apps.notifications.services import _format_money
+
     app = _loan_application(case)
     client = getattr(app, "client", None) if app else None
     name = client.display_name if client else "Client"
     ref = (app.reference or str(app.id)) if app else str(case.id)
-    amount = case.overdue_amount
+    tenant = getattr(case, "tenant", None)
+    filiale = (getattr(tenant, "name", None) or "votre établissement").strip()
+    phone = (getattr(tenant, "phone", None) or "").strip()
+    currency = getattr(tenant, "currency", None) or "XOF"
+    amount_label = _format_money(case.overdue_amount, currency)
     days = case.days_overdue
-    subject = f"Relance de paiement — dossier {ref}"
+    agency = getattr(app, "agency", None) if app else None
+    agency_name = (getattr(agency, "name", None) or "").strip()
+    contact = f"Pour régulariser, contactez {filiale}"
+    if agency_name:
+        contact += f", agence {agency_name}"
+    if phone:
+        contact += f", au {phone}"
+    contact += "."
+    subject = f"Relance de paiement — {filiale} — {amount_label} — dossier {ref}"[:255]
     text = (
         f"Bonjour {name},\n\n"
-        f"Nous vous rappelons qu'un impayé de {amount} est constaté "
-        f"sur votre dossier {ref} ({days} jour(s) de retard).\n"
-        f"Merci de régulariser votre situation dans les meilleurs délais.\n\n"
-        f"Cordialement,\nLe service recouvrement"
+        f"{filiale} vous rappelle un impayé de {amount_label} "
+        f"sur le dossier {ref} ({days} jour(s) de retard).\n"
+        f"Merci de régulariser votre situation dans les meilleurs délais.\n"
+        f"{contact}\n\n"
+        f"Cordialement,\nLe service recouvrement\n{filiale}\n"
     )
-    html = (
-        f"<p>Bonjour {name},</p>"
-        f"<p>Nous vous rappelons qu'un impayé de <strong>{amount}</strong> "
-        f"est constaté sur votre dossier <strong>{ref}</strong> "
-        f"({days} jour(s) de retard).</p>"
-        f"<p>Merci de régulariser votre situation dans les meilleurs délais.</p>"
-        f"<p>Cordialement,<br/>Le service recouvrement</p>"
+    html = branded_shell(
+        tenant,
+        (
+            f"<p>Bonjour {escape(name)},</p>"
+            f"<p><strong>{escape(filiale)}</strong> vous rappelle un impayé de "
+            f"<strong>{escape(amount_label)}</strong> sur le dossier "
+            f"<strong>{escape(ref)}</strong> ({days} jour(s) de retard).</p>"
+            f"<p>Merci de régulariser votre situation dans les meilleurs délais.</p>"
+            f"<p>{escape(contact)}</p>"
+            f"<p>Cordialement,<br/>Le service recouvrement<br/>{escape(filiale)}</p>"
+        ),
     )
     return subject, text, html
 

@@ -1120,15 +1120,27 @@ class RestAdapter(BaseAdapter):
 
 
 def get_adapter(connector: CoreBankingConnector) -> BaseAdapter:
-    """Choisit l'adaptateur selon le protocole / la config."""
-    rules = connector.mapping_rules or {}
-    if rules.get("force_simulate"):
+    """Choisit l'adaptateur selon le mode du connecteur.
+
+    LOCAL : fiche de démonstration, aucun appel HTTP.
+    CBS : appel réel. Une URL absente lève une erreur au lieu d'inventer
+    un client. ``force_simulate`` ne peut pas garder la démo si le mode
+    enregistré est CBS.
+    """
+    from .disbursement import disbursement_mode
+
+    if disbursement_mode(connector) == "LOCAL":
         return SimulatedAdapter(connector)
-    if connector.protocol == CoreBankingConnector.Protocol.REST:
-        # Sans URL : reste en simulation (dev / démo).
-        if (connector.base_url or "").strip():
-            return RestAdapter(connector)
-    return SimulatedAdapter(connector)
+    if (
+        connector.protocol != CoreBankingConnector.Protocol.REST
+        or not (connector.base_url or "").strip()
+    ):
+        raise CoreBankingError(
+            "Le connecteur est en mode CBS, mais l'adresse du core banking "
+            "est absente. Aucun client de démonstration n'est renvoyé. "
+            "Renseignez l'URL dans Administration → Connecteurs CBS."
+        )
+    return RestAdapter(connector)
 
 
 def resolve_active_connector(tenant_id) -> CoreBankingConnector:

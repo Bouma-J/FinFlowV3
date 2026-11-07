@@ -1033,6 +1033,8 @@ export interface CreditApplication {
   product_label: string;
   agency: string | null;
   agency_display?: string;
+  can_add_financial_analysis?: boolean;
+  can_add_field_visit?: boolean;
   // Conditions
   amount_requested: string;
   amount_proposed: string | null;
