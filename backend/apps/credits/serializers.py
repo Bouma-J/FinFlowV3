@@ -341,7 +341,9 @@ class FinancialAnalysisSerializer(serializers.ModelSerializer):
             )
         if "analysis_details" in attrs:
             from .analysis_details import apply_reference_statement
-            apply_reference_statement(attrs)
+            application = attrs.get("application", getattr(self.instance, "application", None))
+            client = getattr(application, "client", None) if application is not None else None
+            apply_reference_statement(attrs, client_type=getattr(client, "client_type", None))
         errors = {}
         for name, value in attrs.items():
             if isinstance(value, Decimal) and name not in ("net_result_prev",) and value < 0:
@@ -421,6 +423,11 @@ class FinancialAnalysisSerializer(serializers.ModelSerializer):
             "legacy": bool(config.get("legacy")), "captured_at": config.get("captured_at"),
             "application_status": instance.application.status,
             "sources": config.get("sources", []), "rates": metrics.get("calculation_rates", {}),
+            "project_total_cost": instance.application.project_total_cost,
+            "personal_contribution": instance.application.personal_contribution,
+            "financed_quota": instance.application.financed_quota,
+            "activity_start_date": instance.application.activity_start_date.isoformat() if instance.application.activity_start_date else None,
+            "purpose_type": instance.application.purpose_type,
         })
         data["custom_field_definitions"] = config.get("forms", {}).get("analysis_fields", [])
         return data
@@ -439,6 +446,7 @@ class FinancialAnalysisSerializer(serializers.ModelSerializer):
                 file=f,
             )
         self._save_statement_documents(analysis, request)
+        self._save_minimal_cash_document(analysis, request)
 
     def _save_statement_documents(self, analysis, request):
         from apps.credits.analysis_details import STATEMENT_PIECES
@@ -484,6 +492,31 @@ class FinancialAnalysisSerializer(serializers.ModelSerializer):
         if changed:
             analysis.analysis_details = details
             analysis.save(update_fields=["analysis_details", "updated_at"])
+
+    def _save_minimal_cash_document(self, analysis, request):
+        uploaded = request.FILES.get("minimal_cash_file")
+        if uploaded is None:
+            return
+        details = analysis.analysis_details or {}
+        if details.get("minimal_cash_open") != "yes":
+            return
+        from apps.common.upload_validation import validate_uploaded_file
+
+        validate_uploaded_file(uploaded, tenant=analysis.tenant, check_quota=True)
+        previous = str(details.get("minimal_cash_document") or "")
+        period = str(details.get("minimal_cash_label") or "").strip()
+        label = "Trésorerie minimale" + (f" · {period}" if period else "")
+        document = FinancialDocument.objects.create(
+            analysis=analysis,
+            tenant_id=analysis.tenant_id,
+            file=uploaded,
+            label=label[:150],
+        )
+        details["minimal_cash_document"] = str(document.id)
+        analysis.analysis_details = details
+        analysis.save(update_fields=["analysis_details", "updated_at"])
+        if previous:
+            FinancialDocument.objects.filter(analysis=analysis, pk=previous).delete()
 
     def create(self, validated_data):
         application = validated_data.get("application")

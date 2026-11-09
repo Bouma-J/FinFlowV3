@@ -6261,6 +6261,22 @@ code {
 .product-sheet-add {
   margin-top: 12px;
 }
+.product-line-list {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+.product-line {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 14px 16px 8px;
+  background: var(--surface);
+  margin-top: 12px;
+}
+.product-line h4 {
+  margin: 0;
+  font-size: 15px;
+}
 .product-sheet-comment {
   margin-top: 16px;
 }

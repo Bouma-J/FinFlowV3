@@ -12,8 +12,10 @@ ANALYSIS_SECTIONS = {
     "fa-stability": "Stabilité salariale", "fa-group": "Groupement",
     "fa-business": "Stock et ventes", "fa-statements": "États financiers",
     "fa-activity": "Activité génératrice de revenus",
-    "fa-exploitation": "Charges et résultat", "fa-charges": "Charges du ménage",
+    "fa-exploitation": "Charges et résultat",     "fa-charges": "Charges du ménage",
+    "fa-cycle": "Campagne et création",
     "fa-treasury": "Capacité et retenue", "fa-balance": "Bilan",
+    "fa-minimal": "Trésorerie minimale",
     "fa-trend": "Caisse et tendance N-1", "fa-collateral": "Garanties et références",
     "fa-sector": "Analyse sectorielle", "fa-es": "Environnement et social", "fa-conclusion": "Conclusion",
 }

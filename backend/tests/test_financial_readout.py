@@ -7,7 +7,7 @@ import pytest
 from rest_framework.exceptions import ValidationError
 
 from apps.configuration.rule_catalog import DEFAULT_GRID
-from apps.credits.analysis_details import detail_metrics, validate_details
+from apps.credits.analysis_details import detail_metrics, product_line_figures, validate_details
 from apps.credits.analytics import compute_metrics, compute_score
 from apps.credits.models import AnalysisThreshold, CreditApplication, FinancialAnalysis
 from apps.credits.scoring import compute_custom_score
@@ -127,6 +127,82 @@ def test_detail_reconciliations_and_product_margin():
     assert metrics["debt_service_reconciled"] is True
 
 
+def test_manufactured_line_keeps_unsold_production_out_of_sales():
+    analysis = FinancialAnalysis(client_type="CORPORATE", turnover=D("160"), analysis_details={"products": [{
+        "nature": "MANUFACTURED", "quantity_produced": "10", "quantity": "8",
+        "material_cost": "50", "direct_labor": "30", "other_production_cost": "20",
+        "sale_price": "20", "quantity_scrapped": "1",
+    }]})
+    metrics = detail_metrics(analysis)
+    assert metrics["reconstituted_sales"] == D("160")
+    assert metrics["reconstituted_cost"] == D("80")
+    assert metrics["reconstituted_margin"] == D("80")
+    assert metrics["product_details_complete"] is True
+    assert metrics["sales_reconciled"] is True
+
+
+def test_incomplete_manufactured_line_does_not_invent_a_cost():
+    metrics = detail_metrics(FinancialAnalysis(analysis_details={"products": [{
+        "nature": "MANUFACTURED", "quantity_produced": "10", "quantity": "8",
+        "material_cost": "50", "sale_price": "20",
+    }]}))
+    assert metrics["reconstituted_sales"] == D("160")
+    assert metrics["reconstituted_cost"] is None
+    assert metrics["reconstituted_margin"] is None
+    assert metrics["product_details_complete"] is False
+
+
+def test_service_without_direct_cost_keeps_the_field_empty_and_the_margin():
+    row = {"nature": "SERVICE", "quantity": "3", "sale_price": "1000"}
+    stored = validate_details({"products": [row], "manufactures": "yes", "production_main_products": "Couture", "production_stock_finished": "0"})
+    assert "unit_cost" not in stored["products"][0]
+    figures = product_line_figures(stored["products"][0])
+    assert figures["cost"] == D("0")
+    assert figures["margin"] == D("3000")
+    metrics = detail_metrics(FinancialAnalysis(analysis_details=stored))
+    assert metrics["reconstituted_margin"] == D("3000")
+
+
+def test_group_activity_stays_out_of_contributions_until_it_is_opened():
+    closed = FinancialAnalysis(
+        client_type="PROFESSIONAL",
+        collective_contributions=D("80000"),
+        collective_other_income=D("0"),
+        collective_operating_expenses=D("10000"),
+        collective_savings=D("90000"),
+        group_activity_turnover=D("50000"),
+        group_activity_expenses=D("20000"),
+        analysis_details={"group_has_activity": "no"},
+    )
+    assert closed.uses_group_activity is False
+    assert closed.collective_capacity == D("70000")
+    opened = FinancialAnalysis(
+        client_type="PROFESSIONAL",
+        collective_contributions=D("80000"),
+        collective_operating_expenses=D("10000"),
+        collective_savings=D("90000"),
+        group_activity_turnover=D("50000"),
+        group_activity_expenses=D("20000"),
+        analysis_details={"group_has_activity": "yes"},
+    )
+    assert opened.collective_capacity == D("100000")
+    legacy = FinancialAnalysis(
+        client_type="PROFESSIONAL",
+        collective_contributions=D("80000"),
+        collective_operating_expenses=D("10000"),
+        group_activity_turnover=D("50000"),
+        group_activity_expenses=D("20000"),
+        analysis_details={},
+    )
+    assert legacy.uses_group_activity is True
+    assert legacy.collective_capacity == D("100000")
+
+
+def test_unknown_product_nature_is_rejected():
+    with pytest.raises(ValidationError):
+        validate_details({"products": [{"nature": "USINE", "quantity": "1", "sale_price": "1", "unit_cost": "1"}]})
+
+
 def test_incomplete_details_never_create_zero_aggregates():
     metrics = detail_metrics(FinancialAnalysis(analysis_details={"products": [{"quantity": "1"}], "stocks": [{}], "debts": [{}]}))
     assert metrics["reconstituted_sales"] is None
@@ -203,3 +279,110 @@ def test_reference_selection_is_applied_with_only_one_reference(tenant_a, client
         first.refresh_from_db()
         assert second.is_reference and not first.is_reference
         assert app.financial_analyses.filter(is_reference=True).count() == 1
+
+
+def test_minimal_cash_reading_does_not_change_capacity():
+    opened, metrics = calculate(
+        salary_income=D("100000"), new_installment=D("10000"),
+        analysis_details={
+            "minimal_cash_open": "yes", "minimal_cash_opening": "100",
+            "minimal_cash_inflows": "50", "minimal_cash_outflows": "20", "minimal_cash_closing": "140",
+        },
+    )
+    assert metrics["minimal_cash_surplus"] == D("30.00")
+    assert metrics["minimal_cash_theoretical_closing"] == D("130.00")
+    assert metrics["minimal_cash_gap"] == D("10.00")
+    assert metrics["repayment_capacity"] == D("100000.00")
+    assert metrics["debt_ratio"] == calculate(salary_income=D("100000"), new_installment=D("10000"))[1]["debt_ratio"]
+    _, closed = calculate(
+        salary_income=D("100000"), new_installment=D("10000"),
+        analysis_details={"minimal_cash_open": "no", "minimal_cash_inflows": "50", "minimal_cash_outflows": "20"},
+    )
+    assert "minimal_cash_surplus" not in closed
+    _, empty = calculate(salary_income=D("100000"), new_installment=D("10000"), analysis_details={"minimal_cash_open": "yes"})
+    assert "minimal_cash_surplus" not in empty
+    assert opened.client_type == "INDIVIDUAL"
+
+
+def test_campaign_surplus_replaces_the_ordinary_month_and_leaves_the_debt_ratio():
+    closed, ordinary = calculate(
+        has_side_activity=True, salary_income=D("100000"), activity_turnover=D("500000"),
+        activity_expenses=D("100000"), new_installment=D("10000"),
+        analysis_details={"campaign_open": "no", "campaign_revenue": "1200000", "campaign_charges": "240000",
+                          "campaign_input_stock": "5000", "campaign_harvest_stock": "8000"},
+    )
+    opened, retained = calculate(
+        has_side_activity=True, salary_income=D("100000"), activity_turnover=D("500000"),
+        activity_expenses=D("100000"), new_installment=D("10000"),
+        analysis_details={"campaign_open": "yes", "campaign_revenue": "1200000", "campaign_charges": "240000",
+                          "campaign_input_stock": "5000", "campaign_harvest_stock": "8000"},
+    )
+    assert ordinary["repayment_capacity"] == D("380000.00")
+    assert "campaign_monthly_surplus" not in ordinary
+    assert retained["campaign_surplus"] == D("960000.00")
+    assert retained["campaign_monthly_surplus"] == D("80000.00")
+    assert retained["repayment_capacity"] == D("180000.00")
+    assert retained["debt_ratio"] == ordinary["debt_ratio"]
+    assert retained["weighted_income"] == ordinary["weighted_income"]
+    empty, untouched = calculate(
+        has_side_activity=True, salary_income=D("100000"), activity_turnover=D("500000"),
+        activity_expenses=D("100000"), new_installment=D("10000"),
+        analysis_details={"campaign_open": "yes"},
+    )
+    assert untouched["repayment_capacity"] == ordinary["repayment_capacity"]
+    assert "campaign_monthly_surplus" not in untouched
+    salary, ignored = calculate(
+        salary_income=D("100000"), new_installment=D("10000"),
+        analysis_details={"campaign_open": "yes", "campaign_revenue": "1200000"},
+    )
+    assert ignored["repayment_capacity"] == D("100000.00")
+    assert "campaign_monthly_surplus" not in ignored
+    assert closed.uses_campaign is False and opened.uses_campaign is True and empty.uses_campaign is True
+    assert salary.uses_campaign is False
+
+
+def test_group_campaign_replaces_activity_margin_and_keeps_contributions():
+    plain, ordinary = calculate(
+        "PROFESSIONAL", collective_contributions=D("80000"), collective_operating_expenses=D("10000"),
+        group_activity_turnover=D("50000"), group_activity_expenses=D("20000"), collective_savings=D("90000"),
+        new_installment=D("10000"),
+    )
+    opened, retained = calculate(
+        "PROFESSIONAL", collective_contributions=D("80000"), collective_operating_expenses=D("10000"),
+        group_activity_turnover=D("50000"), group_activity_expenses=D("20000"), collective_savings=D("90000"),
+        new_installment=D("10000"),
+        analysis_details={"campaign_open": "yes", "campaign_revenue": "120000"},
+    )
+    assert ordinary["repayment_capacity"] == D("100000.00")
+    assert retained["repayment_capacity"] == D("80000.00")
+    assert retained["campaign_monthly_surplus"] == D("10000.00")
+    assert retained["debt_ratio"] == ordinary["debt_ratio"]
+    assert retained["collective_income"] == ordinary["collective_income"]
+    assert plain.uses_campaign is False
+
+
+def test_corporate_campaign_changes_capacity_only_and_creation_uses_the_forecast_for_dscr():
+    historic, base = calculate(
+        "CORPORATE", turnover=D("1200000"), new_installment=D("10000"),
+    )
+    campaign, seasonal = calculate(
+        "CORPORATE", turnover=D("1200000"), new_installment=D("10000"),
+        analysis_details={"campaign_open": "yes", "campaign_revenue": "2400000"},
+    )
+    assert base["repayment_cash_flow"] == D("1200000.00")
+    assert base["repayment_capacity"] == D("1200000.00")
+    assert seasonal["repayment_cash_flow"] == base["repayment_cash_flow"]
+    assert seasonal["repayment_capacity"] == D("200000.00")
+    assert seasonal["global_dscr"] == base["global_dscr"]
+    assert seasonal["solvency_ratio"] == base["solvency_ratio"]
+    created, forecast = calculate(
+        "CORPORATE", turnover=D("0"), new_installment=D("10000"),
+        projected_monthly_inflows=D("200000"), projected_monthly_outflows=D("50000"),
+        analysis_details={"activity_creation": "yes"},
+    )
+    assert forecast["repayment_capacity"] == D("0.00")
+    assert forecast["dscr_basis"] == "forecast"
+    assert forecast["forecast_monthly_surplus"] == D("150000.00")
+    assert forecast["global_dscr"] == D("15.00")
+    assert forecast["solvency_ratio"] == base["solvency_ratio"]
+    assert created.uses_creation is True and campaign.uses_campaign is True

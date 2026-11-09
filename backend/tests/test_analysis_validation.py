@@ -166,6 +166,131 @@ def test_conditional_requires_conditions_text(tenant_a, product_a, client_a):
             assert_analysis_ready_for_submission(application)
 
 
+def test_purpose_changes_the_required_test_without_a_new_form(tenant_a, product_a, client_a):
+    with tenant_context(tenant_a.id):
+        application = _app(tenant_a, client_a, product_a, ref="D-PURPOSE")
+        application.purpose_type = "CONSUMPTION"
+        application.save(update_fields=["purpose_type", "updated_at"])
+        analysis = FinancialAnalysis.objects.create(
+            tenant=tenant_a,
+            application=application,
+            is_reference=True,
+            recommendation=FinancialAnalysis.Recommendation.FAVORABLE,
+            client_type="INDIVIDUAL",
+            individual_profile=FinancialAnalysis.IndividualProfile.SALARIE,
+            salary_income=Decimal("200000"),
+        )
+        with pytest.raises(WorkflowError, match="baisse du revenu"):
+            assert_analysis_ready_for_submission(application)
+
+        analysis.analysis_details = {"stress_assumptions": "Le revenu du foyer baisse de 20 %."}
+        analysis.salary_income = Decimal("0")
+        analysis.pension_income = Decimal("80000")
+        analysis.save(update_fields=["analysis_details", "salary_income", "pension_income", "updated_at"])
+        with pytest.raises(WorkflowError, match="quotité"):
+            assert_analysis_ready_for_submission(application)
+
+        analysis.salary_income = Decimal("200000")
+        analysis.save(update_fields=["salary_income", "updated_at"])
+        assert assert_analysis_ready_for_submission(application) is not None
+
+        application.purpose_type = "TREASURY"
+        application.save(update_fields=["purpose_type", "updated_at"])
+        analysis.individual_profile = FinancialAnalysis.IndividualProfile.INDEPENDANT
+        analysis.activity_turnover = Decimal("300000")
+        analysis.analysis_details = {"stress_assumptions": "Les ventes baissent."}
+        analysis.save(update_fields=["individual_profile", "activity_turnover", "analysis_details", "updated_at"])
+        with pytest.raises(WorkflowError, match="créances|stock"):
+            assert_analysis_ready_for_submission(application)
+
+        analysis.analysis_details = {
+            "stress_assumptions": "Les ventes baissent.",
+            "receivable_delay_days": "0",
+            "stock_risks": "Stock vu sur place, pas d'écart à signaler.",
+        }
+        analysis.save(update_fields=["analysis_details", "updated_at"])
+        assert assert_analysis_ready_for_submission(application) is not None
+
+        application.purpose_type = "EQUIPMENT"
+        application.save(update_fields=["purpose_type", "updated_at"])
+        analysis.individual_profile = FinancialAnalysis.IndividualProfile.SALARIE
+        analysis.has_side_activity = False
+        analysis.activity_turnover = Decimal("0")
+        analysis.salary_income = Decimal("200000")
+        analysis.projected_monthly_inflows = Decimal("0")
+        analysis.projected_monthly_outflows = Decimal("0")
+        analysis.analysis_details = {}
+        analysis.save(update_fields=[
+            "individual_profile", "has_side_activity", "activity_turnover", "salary_income",
+            "projected_monthly_inflows", "projected_monthly_outflows", "analysis_details", "updated_at",
+        ])
+        with pytest.raises(WorkflowError, match="prévision de trésorerie est vide"):
+            assert_analysis_ready_for_submission(application)
+        analysis.projected_monthly_inflows = Decimal("1000")
+        analysis.save(update_fields=["projected_monthly_inflows", "updated_at"])
+        with pytest.raises(WorkflowError, match="ne couvre pas l'échéance"):
+            assert_analysis_ready_for_submission(application)
+        analysis.projected_monthly_inflows = Decimal("500000")
+        analysis.save(update_fields=["projected_monthly_inflows", "updated_at"])
+        assert assert_analysis_ready_for_submission(application) is not None
+
+        application.purpose_type = "OTHER"
+        application.save(update_fields=["purpose_type", "updated_at"])
+        analysis.comment = ""
+        analysis.projected_monthly_inflows = Decimal("0")
+        analysis.save(update_fields=["comment", "projected_monthly_inflows", "updated_at"])
+        with pytest.raises(WorkflowError, match="avis de synthèse"):
+            assert_analysis_ready_for_submission(application)
+        analysis.comment = "L'épreuve retenue est la stabilité du salaire sur six mois."
+        analysis.save(update_fields=["comment", "updated_at"])
+        assert assert_analysis_ready_for_submission(application) is not None
+
+
+def test_minimal_cash_gap_requires_a_comment(tenant_a, product_a, client_a):
+    with tenant_context(tenant_a.id):
+        application = _app(tenant_a, client_a, product_a, ref="D-CASH")
+        analysis = FinancialAnalysis.objects.create(
+            tenant=tenant_a,
+            application=application,
+            is_reference=True,
+            recommendation=FinancialAnalysis.Recommendation.FAVORABLE,
+            client_type="INDIVIDUAL",
+            individual_profile=FinancialAnalysis.IndividualProfile.SALARIE,
+            salary_income=Decimal("200000"),
+            analysis_details={
+                "minimal_cash_open": "yes",
+                "minimal_cash_opening": "100",
+                "minimal_cash_inflows": "50",
+                "minimal_cash_outflows": "20",
+                "minimal_cash_closing": "140",
+            },
+        )
+        with pytest.raises(WorkflowError, match="trésorerie minimale"):
+            assert_analysis_ready_for_submission(application)
+        analysis.analysis_details["minimal_cash_comment"] = "La clôture compte un encaissement hors période."
+        analysis.save(update_fields=["analysis_details", "updated_at"])
+        assert assert_analysis_ready_for_submission(application) is not None
+
+
+def test_creation_drops_past_turnover_and_requires_the_forecast(tenant_a, product_a, client_a):
+    with tenant_context(tenant_a.id):
+        application = _app(tenant_a, client_a, product_a, ref="D-CREATE")
+        analysis = FinancialAnalysis.objects.create(
+            tenant=tenant_a,
+            application=application,
+            is_reference=True,
+            recommendation=FinancialAnalysis.Recommendation.FAVORABLE,
+            client_type="INDIVIDUAL",
+            individual_profile=FinancialAnalysis.IndividualProfile.INDEPENDANT,
+            analysis_details={"activity_creation": "yes"},
+        )
+        with pytest.raises(WorkflowError, match="prévision"):
+            assert_analysis_ready_for_submission(application)
+        analysis.projected_monthly_inflows = Decimal("150000")
+        analysis.save(update_fields=["projected_monthly_inflows", "updated_at"])
+        assert assert_analysis_ready_for_submission(application) is not None
+
+
 def test_groupement_uses_collective_capacity_and_live_client_type(
     tenant_a, product_a,
 ):

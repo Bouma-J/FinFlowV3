@@ -268,6 +268,25 @@ def test_financial_statement_keeps_each_exercise_and_feeds_the_latest():
     assert details["cash_detail_mode"] == "DETAIL"
 
 
+def test_individual_statements_stay_beside_the_household():
+    details = validate_details({"statement_basis": "STATEMENTS", "financial_statements": [
+        _statement("c" * 32, income={"sales_goods": "9000", "net_result_read": "1000"},
+                   balance={"cash_and_banks": "400", "capital": "500"}),
+    ]})
+    attrs = {
+        "analysis_details": details,
+        "activity_turnover": Decimal("300"),
+        "salary_income": Decimal("200"),
+        "turnover": Decimal("1"),
+    }
+    apply_reference_statement(attrs, client_type="INDIVIDUAL")
+    assert attrs["activity_turnover"] == Decimal("300")
+    assert attrs["salary_income"] == Decimal("200")
+    assert attrs["turnover"] == Decimal("1")
+    assert "cogs" not in attrs
+    assert details["statement_basis"] == "STATEMENTS"
+
+
 def test_reconstituted_basis_keeps_statement_figures_out_of_ratios():
     details = validate_details({"statement_basis": "RECONSTITUTED", "financial_statements": [
         _statement("h" * 32, income={"sales_goods": "1000"}),
@@ -275,6 +294,30 @@ def test_reconstituted_basis_keeps_statement_figures_out_of_ratios():
     attrs = {"analysis_details": details, "turnover": Decimal("1")}
     apply_reference_statement(attrs)
     assert attrs["turnover"] == Decimal("1")
+
+
+def test_minimal_cash_keeps_an_empty_line_empty_and_rejects_a_reversed_period():
+    from apps.credits.analysis_details import detail_metrics
+
+    details = validate_details({
+        "minimal_cash_open": "yes",
+        "minimal_cash_opening": "100",
+        "minimal_cash_inflows": "",
+        "minimal_cash_outflows": "20",
+        "minimal_cash_start": "2026-01-01",
+        "minimal_cash_end": "2026-01-31",
+        "minimal_cash_label": "Janvier",
+    })
+    metrics = detail_metrics(FinancialAnalysis(analysis_details=details))
+    assert metrics["minimal_cash_surplus"] == Decimal("-20.00")
+    assert metrics["minimal_cash_theoretical_closing"] == Decimal("80.00")
+    assert "minimal_cash_gap" not in metrics
+    with pytest.raises(ValidationError):
+        validate_details({"minimal_cash_inflows": "-1"})
+    with pytest.raises(ValidationError):
+        validate_details({"minimal_cash_start": "2026-02-01", "minimal_cash_end": "2026-01-01"})
+    with pytest.raises(ValidationError):
+        validate_details({"minimal_cash_document": "pas-un-uuid"})
 
 
 @pytest.mark.parametrize("value", [
@@ -320,4 +363,43 @@ def test_statement_document_is_kept_on_its_piece(tenant_a, client_a, product_a):
         document = FinancialDocument.objects.get(pk=document_id)
         assert document.analysis_id == analysis.id
         assert document.label.startswith("Compte de résultat")
-        assert analysis.turnover == Decimal("5000")
+        assert analysis.turnover == Decimal("0")
+        assert analysis.analysis_details["financial_statements"][0]["income"]["sales_goods"] == "5000"
+
+
+@pytest.mark.django_db
+def test_minimal_cash_document_stays_out_of_the_ratios(tenant_a, client_a, product_a):
+    class Files(dict):
+        def getlist(self, key):
+            return []
+
+    upload = SimpleUploadedFile("caisse.pdf", b"%PDF-1.4\n", content_type="application/pdf")
+    files = Files({"minimal_cash_file": upload})
+
+    class Request:
+        FILES = files
+
+    with tenant_context(tenant_a.id):
+        app = CreditApplication.objects.create(
+            tenant=tenant_a, client=client_a, product=product_a,
+            reference="FA-CAISSE", amount_requested=1000, duration_months=12,
+        )
+        serializer = FinancialAnalysisSerializer(
+            data={
+                "application": str(app.id),
+                "salary_income": "100000",
+                "analysis_details": {
+                    "minimal_cash_open": "yes", "minimal_cash_label": "Janvier 2026",
+                    "minimal_cash_opening": "100", "minimal_cash_inflows": "50",
+                    "minimal_cash_outflows": "20", "minimal_cash_closing": "130",
+                },
+            },
+            context={"request": Request()},
+        )
+        assert serializer.is_valid(), serializer.errors
+        analysis = serializer.save(tenant=tenant_a)
+        document = FinancialDocument.objects.get(pk=analysis.analysis_details["minimal_cash_document"])
+        assert document.label.startswith("Trésorerie minimale")
+        assert analysis.repayment_capacity == Decimal("100000.00")
+        assert analysis.turnover == Decimal("0")
+        assert analysis.analysis_details["minimal_cash_inflows"] == "50"

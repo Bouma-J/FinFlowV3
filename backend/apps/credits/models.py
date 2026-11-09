@@ -1638,14 +1638,54 @@ class FinancialAnalysis(TenantScopedModel, AuthoredModel):
         return self.activity_net * self.reference_periods_per_year / Decimal("12")
 
     @property
+    def uses_group_activity(self):
+        """L'activité commune n'entre dans la source que si elle est ouverte.
+
+        Un dossier déjà saisi sans la case reste ouvert dès qu'un montant
+        d'activité est présent. L'épargne n'est jamais un revenu.
+        """
+        flag = (self.analysis_details or {}).get("group_has_activity")
+        if flag == "yes":
+            return True
+        if flag == "no":
+            return False
+        return _dec(self.group_activity_turnover) > 0 or _dec(self.group_activity_expenses) > 0
+
+    @property
+    def has_activity_path(self):
+        """Entreprise, groupement, ou personne physique qui a une activité."""
+        if self.is_corporate or self.is_groupement:
+            return True
+        return self.individual_profile in (
+            self.IndividualProfile.INDEPENDANT,
+            self.IndividualProfile.MIXTE,
+        ) or self.has_side_activity
+
+    @property
+    def uses_campaign(self):
+        """La campagne ne remplace le mois ordinaire que si la case est ouverte."""
+        if (self.analysis_details or {}).get("campaign_open") != "yes":
+            return False
+        return self.has_activity_path
+
+    @property
+    def uses_creation(self):
+        """Création : pas d'historique exigé, le DSCR s'appuie sur la prévision."""
+        if (self.analysis_details or {}).get("activity_creation") != "yes":
+            return False
+        return self.has_activity_path
+
+    @property
     def collective_capacity(self):
         """Capacité nette d'un groupement (hors service dette existant)."""
+        activity_turnover = _dec(self.group_activity_turnover) if self.uses_group_activity else Decimal("0")
+        activity_expenses = _dec(self.group_activity_expenses) if self.uses_group_activity else Decimal("0")
         return (
             _dec(self.collective_contributions)
             + _dec(self.collective_other_income)
-            + _dec(self.group_activity_turnover)
+            + activity_turnover
             - _dec(self.collective_operating_expenses)
-            - _dec(self.group_activity_expenses)
+            - activity_expenses
         )
 
     @property

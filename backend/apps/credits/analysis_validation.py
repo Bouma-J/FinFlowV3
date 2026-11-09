@@ -57,8 +57,9 @@ def assert_analysis_ready_for_submission(application):
 
     ctype = getattr(application.client, "client_type", "") or reference.client_type
 
+    creation = reference.uses_creation
     if ctype == "CORPORATE":
-        if _dec(reference.turnover) <= 0:
+        if _dec(reference.turnover) <= 0 and not creation:
             raise WorkflowError(
                 "Analyse entreprise incomplète : le chiffre d'affaires est obligatoire."
             )
@@ -67,7 +68,7 @@ def assert_analysis_ready_for_submission(application):
             raise WorkflowError(
                 "Analyse groupement incomplète : indiquez le nombre de membres."
             )
-        if _dec(reference.collective_contributions) <= 0 and _dec(
+        if not creation and _dec(reference.collective_contributions) <= 0 and _dec(
             reference.group_activity_turnover
         ) <= 0:
             raise WorkflowError(
@@ -101,22 +102,28 @@ def assert_analysis_ready_for_submission(application):
             FinancialAnalysis.IndividualProfile.INDEPENDANT,
             FinancialAnalysis.IndividualProfile.MIXTE,
         ):
-            if not has_activity_ca:
+            if not has_activity_ca and not creation:
                 raise WorkflowError(
                     "Analyse indépendant incomplète : indiquez le chiffre d'affaires "
                     "/ recettes de l'activité génératrice de revenus."
                 )
-        elif reference.has_side_activity and not has_activity_ca:
+        elif reference.has_side_activity and not has_activity_ca and not creation:
             raise WorkflowError(
                 "Activité génératrice de revenus : indiquez le chiffre d'affaires "
                 "/ recettes."
             )
 
-        if reference.total_income <= 0:
+        if reference.total_income <= 0 and not creation:
             raise WorkflowError(
                 "Analyse personne physique incomplète : les revenus du ménage "
                 "(ou de l'activité) doivent être renseignés."
             )
+
+    if creation and _dec(reference.projected_monthly_inflows) == 0 and _dec(reference.projected_monthly_outflows) == 0:
+        raise WorkflowError(
+            "Activité en création : la prévision de trésorerie porte le DSCR. "
+            "Renseignez les encaissements ou les sorties. Le chiffre d'affaires passé n'est pas exigé."
+        )
 
     from .analysis_details import detail_metrics
 
@@ -136,6 +143,15 @@ def assert_analysis_ready_for_submission(application):
         raise WorkflowError(
             "Le plan de trésorerie présente des mois déficitaires : précisez les mesures ou conditions proposées."
         )
+    purpose_failures = _purpose_test_failures(application, reference, detailed)
+    if purpose_failures:
+        raise WorkflowError(" ".join(purpose_failures))
+    gap = detailed.get("minimal_cash_gap")
+    if gap is not None and gap != 0 and not _detail_text(reference, "minimal_cash_comment"):
+        raise WorkflowError(
+            "Le document de trésorerie minimale présente un écart entre la clôture lue et la clôture calculée : "
+            "expliquez-le dans son commentaire."
+        )
     product = application.product
     if product and getattr(product, "requires_guarantee", False):
         has_g = application.guarantees.filter(
@@ -152,6 +168,87 @@ def assert_analysis_ready_for_submission(application):
             )
 
     return reference
+
+
+def _detail_text(reference, key):
+    return str((reference.analysis_details or {}).get(key) or "").strip()
+
+
+def _activity_on_statements(reference):
+    details = reference.analysis_details or {}
+    basis = details.get("statement_basis")
+    if basis == "STATEMENTS":
+        return True
+    if basis == "RECONSTITUTED":
+        return False
+    return bool(details.get("financial_statements"))
+
+
+def _reconstituted_activity(reference):
+    """L'épreuve de stock ne vise que l'activité reconstituée, pas les états."""
+    if reference.is_corporate:
+        return not _activity_on_statements(reference)
+    if reference.is_groupement:
+        return reference.uses_group_activity and not _activity_on_statements(reference)
+    if reference.has_activity_path:
+        return not _activity_on_statements(reference)
+    return False
+
+
+def _purpose_test_failures(application, reference, detailed):
+    """L'objet du dossier impose l'épreuve. Une épreuve vide bloque la soumission.
+
+    Les formules de taux d'endettement, de DSCR et de retenue ne sont pas modifiées.
+    """
+    purpose = application.purpose_type or ""
+    details = reference.analysis_details or {}
+    if purpose == "CONSUMPTION":
+        failures = []
+        if not _detail_text(reference, "stress_assumptions"):
+            failures.append(
+                "Consommation : décrivez la baisse du revenu du foyer dans les scénarios défavorables."
+            )
+        if reference.is_individual and reference.individual_profile in {"SALARIE", "MIXTE"}:
+            if _dec(reference.salary_income) <= 0 and _dec(reference.net_salary) <= 0:
+                failures.append(
+                    "Consommation : le parcours salarial exige le salaire net pour calculer la quotité cessible."
+                )
+        return failures
+    if purpose in {"WORKING_CAPITAL", "TREASURY", "STOCK"}:
+        failures = []
+        if not _detail_text(reference, "stress_assumptions"):
+            failures.append(
+                "Cet objet exige la baisse des ventes : décrivez-la dans les scénarios défavorables."
+            )
+        if details.get("receivable_delay_days") in (None, ""):
+            failures.append(
+                "Cet objet exige l'allongement des créances : indiquez le retard clients, y compris zéro s'il n'y en a pas."
+            )
+        if _reconstituted_activity(reference):
+            sales_known = detailed.get("sales_reconciled") is True
+            stock_known = detailed.get("stock_reconciled") is True
+            gap = detailed.get("sales_reconciled") is False or detailed.get("stock_reconciled") is False
+            if gap and not _detail_text(reference, "stock_risks"):
+                failures.append(
+                    "Le stock ou les ventes reconstituées s'écartent du déclaré : expliquez l'écart dans le commentaire sur le stock."
+                )
+            elif not sales_known and not stock_known and not _detail_text(reference, "stock_risks"):
+                failures.append(
+                    "L'activité est reconstituée : rapprochez le stock ou les ventes, ou écrivez le commentaire sur le stock."
+                )
+        return failures
+    if purpose in {"EQUIPMENT", "REAL_ESTATE"}:
+        if _dec(reference.projected_monthly_inflows) == 0 and _dec(reference.projected_monthly_outflows) == 0:
+            return ["Équipement ou immobilier : la prévision de trésorerie est vide. Elle doit couvrir l'échéance."]
+        if reference.new_installment is None:
+            return ["Équipement ou immobilier : l'échéance n'est pas calculable, la prévision ne peut pas la couvrir."]
+        if reference.projected_monthly_surplus < reference.monthly_new_installment:
+            return ["Équipement ou immobilier : le solde prévisionnel mensuel ne couvre pas l'échéance."]
+        return []
+    if purpose == "OTHER":
+        if not (reference.comment or "").strip():
+            return ["Objet autre : écrivez l'épreuve retenue dans l'avis de synthèse."]
+    return []
 
 
 def refresh_reference_analysis(application):

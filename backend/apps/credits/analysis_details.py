@@ -12,8 +12,11 @@ from rest_framework.exceptions import ValidationError
 
 DETAIL_SCHEMAS = {
     "products": {
-        "name": "text", "unit": "text", "quantity": "amount",
-        "sale_price": "amount", "unit_cost": "amount", "comment": "text",
+        "name": "text", "unit": "text", "nature": "text", "quantity": "amount",
+        "quantity_produced": "amount", "quantity_scrapped": "amount",
+        "sale_price": "amount", "unit_cost": "amount",
+        "material_cost": "amount", "direct_labor": "amount",
+        "other_production_cost": "amount", "comment": "text",
     },
     "stocks": {
         "name": "text", "quantity": "amount", "unit_cost": "amount",
@@ -60,15 +63,28 @@ DETAIL_TEXTS = {
     "financing_plan", "stress_assumptions", "monitoring_plan",
     "bureau_reference", "bureau_discrepancies", "banking_behavior",
     "cash_check_comment",
+    "production_main_products", "production_process", "production_capacity",
+    "production_utilization", "production_main_material", "production_other_inputs",
+    "production_workshop", "production_workforce",     "production_quality",
+    "production_comment", "group_activity_description",
+    "campaign_name", "campaign_production", "campaign_scale", "campaign_inflow_months",
+    "campaign_calendar", "campaign_sales", "campaign_comment",
+    "creation_activity", "creation_ramp", "creation_assumptions",
+    "minimal_cash_label", "minimal_cash_comment",
 }
 
 DETAIL_CHOICES = {
     "sales_method": {"", "CAHIER", "BANK", "THREE_DAYS", "STOCK", "HYPOTHESIS", "OTHER"},
     "purchase_method": {"", "INVOICES", "LEDGER", "COST_RATE", "OTHER"},
     "statement_basis": {"", "STATEMENTS", "RECONSTITUTED"},
+    "manufactures": {"", "yes", "no"},
+    "group_has_activity": {"", "yes", "no"},
+    "campaign_open": {"", "yes", "no"},
+    "activity_creation": {"", "yes", "no"},
+    "minimal_cash_open": {"", "yes", "no"},
 }
 
-DETAIL_DATES = {"last_purchase_date", "cash_control_date"}
+DETAIL_DATES = {"last_purchase_date", "cash_control_date", "minimal_cash_start", "minimal_cash_end"}
 
 SALES_OBSERVATION_KINDS = {"", "Observé", "Hypothèse"}
 REFERENCE_KINDS = {"", "Familiale", "Professionnelle"}
@@ -91,7 +107,21 @@ DETAIL_AMOUNTS = {
     "cash_at_last_purchase": "signed", "charges_paid_in_window": "amount",
     "other_outflows_in_window": "amount", "observed_cash": "signed",
     "cash_tolerance_pct": "percent",
+    "production_stock_materials": "amount",
+    "production_stock_wip": "amount",
+    "production_stock_finished": "amount",
+    "campaign_revenue": "amount",
+    "campaign_charges": "amount",
+    "campaign_input_stock": "amount",
+    "campaign_harvest_stock": "amount",
+    "minimal_cash_opening": "signed",
+    "minimal_cash_inflows": "amount",
+    "minimal_cash_outflows": "amount",
+    "minimal_cash_closing": "signed",
 }
+
+PRODUCT_NATURES = {"", "RESOLD", "MANUFACTURED", "SERVICE"}
+PRODUCTION_COST_KEYS = ("material_cost", "direct_labor", "other_production_cost")
 
 MONEY = Decimal("0.01")
 
@@ -107,13 +137,19 @@ def validate_details(value):
     unknown = (
         set(value) - set(DETAIL_SCHEMAS) - DETAIL_TEXTS - set(DETAIL_AMOUNTS)
         - set(DETAIL_CHOICES) - DETAIL_DATES
-        - {"cash_detail_mode", "fixed_assets_detail_mode", "financial_statements"}
+        - {"cash_detail_mode", "fixed_assets_detail_mode", "financial_statements", "minimal_cash_document"}
     )
     if unknown:
         raise ValidationError(f"Rubriques inconnues : {', '.join(sorted(unknown))}.")
     for key, text in value.items():
         if key == "financial_statements":
             _validate_financial_statements(text)
+            continue
+        if key == "minimal_cash_document":
+            if text in (None, ""):
+                continue
+            if not isinstance(text, str) or not _STATEMENT_UUID.match(text):
+                raise ValidationError({key: "Document invalide."})
             continue
         if key in {"cash_detail_mode", "fixed_assets_detail_mode"}:
             if text not in ("", "DETAIL", "LEGACY"):
@@ -147,6 +183,8 @@ def validate_details(value):
         if key in DETAIL_TEXTS:
             if not isinstance(text, str) or len(text) > 10000:
                 raise ValidationError({key: "Texte attendu, limité à 10 000 caractères."})
+            if key == "minimal_cash_label" and len(text) > 150:
+                raise ValidationError({key: "L'intitulé de la période est limité à 150 caractères."})
             continue
         rows = text
         if not isinstance(rows, list) or len(rows) > 120:
@@ -179,6 +217,10 @@ def validate_details(value):
                     valid = isinstance(content, str) and len(content) <= 1000
                 if not valid:
                     raise ValidationError({key: f"Ligne {index + 1}, {field} : valeur invalide."})
+            if key == "products":
+                nature = str(row.get("nature") or "")
+                if nature not in PRODUCT_NATURES:
+                    raise ValidationError({key: f"Ligne {index + 1} : indiquez Revendu, Fabriqué ou Service."})
             if key == "stocks":
                 total = Decimal(str(row.get("quantity") or 0)) * Decimal(str(row.get("unit_cost") or 0))
                 if Decimal(str(row.get("impaired_value") or 0)) > total:
@@ -207,6 +249,10 @@ def validate_details(value):
                     except (InvalidOperation, ValueError):
                         raise ValidationError({key: f"Ligne {index + 1} : le retard se saisit en jours entiers."}) from None
     _validate_tpe_bounds(value)
+    start = str(value.get("minimal_cash_start") or "")
+    end = str(value.get("minimal_cash_end") or "")
+    if start and end and end < start:
+        raise ValidationError({"minimal_cash_end": "La date de fin est antérieure à la date de début."})
     return value
 
 
@@ -223,6 +269,48 @@ def _validate_tpe_bounds(value):
         raise ValidationError({"cash_control_date": "La date du contrôle est antérieure au dernier achat."})
 
 
+def product_nature(row):
+    nature = str(row.get("nature") or "")
+    return nature if nature in {"MANUFACTURED", "SERVICE"} else "RESOLD"
+
+
+def _present_decimal(row, key):
+    value = row.get(key)
+    if value in (None, ""):
+        return None
+    return Decimal(str(value))
+
+
+def product_line_figures(row):
+    """Chiffre d'affaires retenu, coût des unités vendues et marge.
+
+    Une case vide reste vide. Le service sans coût direct a un coût nul :
+    le champ n'est pas réécrit. Le fabriqué retient la quantité vendue,
+    et son coût unitaire sort des coûts de production divisés par la
+    quantité produite.
+    """
+    sold = _present_decimal(row, "quantity")
+    price = _present_decimal(row, "sale_price")
+    sales = None if sold is None or price is None else sold * price
+    nature = product_nature(row)
+    if nature == "MANUFACTURED":
+        produced = _present_decimal(row, "quantity_produced")
+        parts = [_present_decimal(row, key) for key in PRODUCTION_COST_KEYS]
+        if produced is None or produced <= 0 or any(part is None for part in parts):
+            unit = None
+        else:
+            unit = sum(parts, Decimal("0")) / produced
+        cost = None if unit is None or sold is None else unit * sold
+    elif nature == "SERVICE":
+        unit = _present_decimal(row, "unit_cost")
+        cost = None if sold is None else (Decimal("0") if unit is None else unit * sold)
+    else:
+        unit = _present_decimal(row, "unit_cost")
+        cost = None if unit is None or sold is None else unit * sold
+    margin = None if sales is None or cost is None else sales - cost
+    return {"sales": sales, "cost": cost, "unit_cost": unit, "margin": margin}
+
+
 def detail_metrics(analysis):
     details = analysis.analysis_details or {}
 
@@ -231,16 +319,12 @@ def detail_metrics(analysis):
 
     metrics = {}
     if details.get("products"):
-        sales_complete = all(all(row.get(key) not in (None, "") for key in ("quantity", "sale_price")) for row in details["products"])
-        costs_complete = all(all(row.get(key) not in (None, "") for key in ("quantity", "unit_cost")) for row in details["products"])
+        figures = [product_line_figures(row) for row in details["products"]]
+        sales_complete = all(item["sales"] is not None for item in figures)
+        costs_complete = all(item["cost"] is not None for item in figures)
         metrics["product_details_complete"] = sales_complete and costs_complete
-        metrics["reconstituted_sales"] = sum(
-            (number(row, "quantity") * number(row, "sale_price")
-             for row in details["products"]), Decimal("0")
-        ) if sales_complete else None
-        metrics["reconstituted_cost"] = sum(
-            (number(row, "quantity") * number(row, "unit_cost") for row in details["products"]), Decimal("0")
-        ) if costs_complete else None
+        metrics["reconstituted_sales"] = sum((item["sales"] for item in figures), Decimal("0")) if sales_complete else None
+        metrics["reconstituted_cost"] = sum((item["cost"] for item in figures), Decimal("0")) if costs_complete else None
         metrics["reconstituted_margin"] = metrics["reconstituted_sales"] - metrics["reconstituted_cost"] if sales_complete and costs_complete else None
         declared = analysis.turnover if analysis.is_corporate else analysis.activity_turnover if analysis.is_individual else analysis.group_activity_turnover
         metrics["sales_gap"] = metrics["reconstituted_sales"] - Decimal(str(declared or 0)) if sales_complete else None
@@ -304,6 +388,9 @@ def detail_metrics(analysis):
             "forecast_deficit_months": sum(item < 0 for item in closings) if closings else sum(flow < 0 for flow in flows),
         })
     metrics.update(_tpe_metrics(analysis, details, metrics))
+    reading = minimal_cash_reading(details)
+    if reading:
+        metrics.update(reading)
     return metrics
 
 
@@ -318,6 +405,55 @@ def _optional(details, key):
     if value in (None, ""):
         return None
     return Decimal(str(value))
+
+
+def minimal_cash_reading(details):
+    """Lecture du document court. Elle ne modifie aucun ratio.
+
+    Une case vide reste vide. Dès qu'une ligne du mouvement est saisie,
+    l'autre compte pour zéro. Le surplus est entrées moins sorties.
+    """
+    if not isinstance(details, dict) or details.get("minimal_cash_open") != "yes":
+        return {}
+    opening = _optional(details, "minimal_cash_opening")
+    inflows = _optional(details, "minimal_cash_inflows")
+    outflows = _optional(details, "minimal_cash_outflows")
+    closing = _optional(details, "minimal_cash_closing")
+    result = {}
+    if inflows is not None or outflows is not None:
+        result["minimal_cash_surplus"] = _money((inflows or Decimal("0")) - (outflows or Decimal("0")))
+    if any(item is not None for item in (opening, inflows, outflows)):
+        theoretical = _money((opening or Decimal("0")) + (inflows or Decimal("0")) - (outflows or Decimal("0")))
+        result["minimal_cash_theoretical_closing"] = theoretical
+        if closing is not None:
+            result["minimal_cash_gap"] = _money(closing - theoretical)
+    return result
+
+
+def campaign_capacity(analysis):
+    """Surplus de campagne réparti sur la durée du crédit.
+
+    Les deux montants vides restent vides. Un seul montant saisi compte
+    l'autre comme zéro. Les stocks d'intrants et de récolte ne sont pas
+    des recettes. None si la case est fermée ou si la durée manque.
+    """
+    if not getattr(analysis, "uses_campaign", False):
+        return None
+    details = analysis.analysis_details or {}
+    revenue = _optional(details, "campaign_revenue")
+    charges = _optional(details, "campaign_charges")
+    if revenue is None and charges is None:
+        return None
+    surplus = (revenue or Decimal("0")) - (charges or Decimal("0"))
+    app = getattr(analysis, "application", None)
+    months = getattr(app, "duration_months", None) if app is not None else None
+    if not months:
+        return None
+    return {
+        "campaign_surplus": _money(surplus),
+        "campaign_monthly_surplus": _money(surplus / Decimal(months)),
+        "campaign_duration_months": int(months),
+    }
 
 
 def _monthly(analysis, amount):
@@ -708,13 +844,18 @@ def _put_detail(details, name, amount):
     details[name] = format(amount, "f")
 
 
-def apply_reference_statement(attrs):
+def apply_reference_statement(attrs, client_type=None):
     """L'exercice à la date de fin la plus récente alimente les ratios.
 
     Une ligne vide n'est pas un zéro. Dès qu'un bilan ou un bloc de charges
     est saisi, les postes du moteur qui n'existent pas sur l'état passent à
     zéro pour ne pas conserver une reconstitution antérieure.
+
+    Seule l'entreprise est concernée. Pour une personne physique, les états
+    restent une lecture : ils ne remplacent pas le foyer ni l'activité.
     """
+    if client_type not in (None, "CORPORATE"):
+        return
     details = attrs.get("analysis_details")
     if not isinstance(details, dict) or details.get("statement_basis") != "STATEMENTS":
         return

@@ -4,10 +4,16 @@ import { formatMoney } from "@/components/ui";
 type Column = { key: string; label: string; type?: string };
 export const ANALYSIS_TABLES: Record<string, { label: string; columns: Column[] }> = {
   products: { label: "Fiches produits / services — période de référence", columns: [
+    { key: "nature", label: "Nature : RESOLD, MANUFACTURED ou SERVICE" },
     { key: "name", label: "Produit / service" }, { key: "unit", label: "Unité" },
+    { key: "quantity_produced", label: "Quantité produite", type: "number" },
     { key: "quantity", label: "Quantité vendue", type: "number" },
+    { key: "quantity_scrapped", label: "Pertes et rebuts", type: "number" },
+    { key: "material_cost", label: "Coût des matières", type: "number" },
+    { key: "direct_labor", label: "Main-d'œuvre directe", type: "number" },
+    { key: "other_production_cost", label: "Autres coûts directs", type: "number" },
     { key: "sale_price", label: "Prix de vente unitaire", type: "number" },
-    { key: "unit_cost", label: "Coût unitaire", type: "number" },
+    { key: "unit_cost", label: "Prix d'achat ou coût direct unitaire", type: "number" },
     { key: "comment", label: "Source / observation" },
   ] },
   stocks: { label: "Inventaire et qualité du stock — à la date d'arrêté", columns: [

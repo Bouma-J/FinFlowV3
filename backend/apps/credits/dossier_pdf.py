@@ -313,6 +313,17 @@ def _rate(value) -> str:
     return f"{value} %"
 
 
+def _quantity_text(value) -> str:
+    if value is None:
+        return "—"
+    if value == value.to_integral_value():
+        return f"{int(value):,}".replace(",", " ")
+    text = f"{value.quantize(Decimal('0.0001')):f}".rstrip("0").rstrip(".")
+    whole, _, fraction = text.partition(".")
+    body = f"{int(whole):,}".replace(",", " ") if whole.lstrip("-").isdigit() else whole
+    return body if not fraction else f"{body},{fraction}"
+
+
 def _optional_decimal(value):
     if value in (None, ""):
         return None
@@ -384,24 +395,71 @@ def _comparison_tables(item, currency: str) -> list[dict]:
         })
     products = details.get("products") if isinstance(details.get("products"), list) else []
     product_rows = []
+    from apps.credits.analysis_details import product_line_figures, product_nature
+    nature_label = {"RESOLD": "Revendu", "MANUFACTURED": "Fabriqué", "SERVICE": "Service"}
     for row in products:
-        if not isinstance(row, dict) or not (row.get("name") or row.get("sale_price") or row.get("unit_cost")):
+        if not isinstance(row, dict):
             continue
-        quantity = _optional_decimal(row.get("quantity"))
-        sale = _optional_decimal(row.get("sale_price"))
-        cost = _optional_decimal(row.get("unit_cost"))
-        total = None if quantity is None or sale is None else quantity * sale
-        margin = None if total is None or cost is None else quantity * (sale - cost)
+        if not (row.get("name") or row.get("sale_price") or row.get("unit_cost") or row.get("quantity") or row.get("quantity_produced") or row.get("material_cost") or row.get("nature") in {"MANUFACTURED", "SERVICE"}):
+            continue
+        figures = product_line_figures(row)
+        nature = product_nature(row)
+        sold = _optional_decimal(row.get("quantity"))
+        produced = _optional_decimal(row.get("quantity_produced")) if nature == "MANUFACTURED" else None
+        unit = figures["unit_cost"]
+        unit_text = "Aucun" if nature == "SERVICE" and row.get("unit_cost") in (None, "") else _money(unit, currency)
         product_rows.append((
-            str(row.get("name") or "—"), "—" if quantity is None else f"{quantity:,.0f}".replace(",", " "),
-            _money(cost, currency), _money(sale, currency), _money(total, currency), _money(margin, currency),
+            nature_label.get(nature, "Revendu"),
+            str(row.get("name") or "—"),
+            str(row.get("unit") or "—"),
+            _quantity_text(produced),
+            _quantity_text(sold),
+            unit_text,
+            _money(_optional_decimal(row.get("sale_price")), currency),
+            _money(figures["sales"], currency),
+            _money(figures["margin"], currency),
         ))
     if product_rows:
         tables.append({
-            "title": "Fiches produits / services — période de référence",
-            "headers": ["Articles / produits", "Quantité", "Prix de revient", "Prix de vente", "Valeur totale", "Marge brute prévisionnelle"],
+            "title": "Fiches produits — le chiffre d'affaires retenu est la quantité vendue",
+            "headers": ["Nature", "Article", "Unité", "Produite", "Vendue", "Coût unit.", "Prix", "CA retenu", "Marge"],
             "rows": product_rows,
-            "widths": [36, 20, 28, 28, 30, 32],
+            "widths": [18, 28, 14, 16, 16, 20, 20, 22, 20],
+        })
+    stock_labels = (
+        ("production_stock_materials", "Matières premières"),
+        ("production_stock_wip", "En-cours"),
+        ("production_stock_finished", "Produits finis"),
+    )
+    production_stocks = [(label, _money(_optional_decimal(details.get(key)), currency)) for key, label in stock_labels if details.get(key) not in (None, "")]
+    if production_stocks:
+        tables.append({
+            "title": "Stocks de production à la date d'arrêté",
+            "headers": ["Stock", "Valeur"],
+            "rows": production_stocks,
+            "widths": [110, 64],
+        })
+    identity_labels = (
+        ("production_main_products", "Produits fabriqués"),
+        ("production_process", "Procédé"),
+        ("production_capacity", "Capacité installée"),
+        ("production_utilization", "Capacité utilisée"),
+        ("production_main_material", "Matière principale"),
+        ("production_other_inputs", "Autres intrants"),
+        ("production_workshop", "Atelier et équipement"),
+        ("production_workforce", "Main-d'œuvre de production"),
+        ("production_quality", "Qualité et rebuts"),
+        ("production_comment", "Réserves"),
+    )
+    identity_rows = [(label, str(details.get(key))) for key, label in identity_labels if isinstance(details.get(key), str) and details.get(key).strip()]
+    if identity_rows or details.get("manufactures") == "yes":
+        if not identity_rows:
+            identity_rows = [("Identité", "Production déclarée, fiche non renseignée")]
+        tables.append({
+            "title": "Identité de la production",
+            "headers": ["Rubrique", "Élément"],
+            "rows": identity_rows,
+            "widths": [58, 116],
         })
     stocks = details.get("stocks") if isinstance(details.get("stocks"), list) else []
     stock_rows = []

@@ -254,14 +254,16 @@ def compute_metrics(analysis, th, configuration=None, *, recalculate_installment
                                     th.min_guarantee_coverage),
         }
     elif analysis.is_groupement:
+        activity_turnover = _dec(analysis.group_activity_turnover) if analysis.uses_group_activity else Decimal("0")
+        activity_expenses = _dec(analysis.group_activity_expenses) if analysis.uses_group_activity else Decimal("0")
         collective_income = (
             _dec(analysis.collective_contributions)
             + _dec(analysis.collective_other_income)
-            + _dec(analysis.group_activity_turnover)
+            + activity_turnover
         ) * ppy / Decimal("12")
         collective_charges = (
             _dec(analysis.collective_operating_expenses)
-            + _dec(analysis.group_activity_expenses)
+            + activity_expenses
         ) * ppy / Decimal("12")
         net_capacity = analysis.monthly_collective_capacity - existing
         stressed = collective_income * (Decimal("1") - stress)
@@ -397,6 +399,10 @@ def compute_metrics(analysis, th, configuration=None, *, recalculate_installment
 
     if not analysis.is_corporate and m.get("income_positive") is False:
         flags["debt_ratio_stress_ok"] = False
+    _apply_campaign_capacity(
+        m, flags, analysis, th, existing, total_effort, installment, monthly_savings,
+    )
+    _apply_creation_dscr(m, flags, analysis, th)
     if not known_installment:
         for key in ("installment", "monthly_savings", "global_debt_service", "total_cash_effort", "safety_margin", "residual_after_loan", "disposable_per_capita", "debt_ratio", "debt_ratio_weighted", "debt_ratio_stress", "dscr", "global_dscr", "dscr_stress", "stress_residual"):
             m[key] = None
@@ -424,6 +430,73 @@ def compute_metrics(analysis, th, configuration=None, *, recalculate_installment
         m.update({"activity_assets": _q(assets), "activity_working_capital_need": _q(_dec(analysis.activity_stock_value) + _dec(analysis.activity_receivables) - _dec(analysis.activity_supplier_debt)),
                   "activity_net_margin_pct": _q(_pct(analysis.activity_net, analysis.activity_turnover)) if _dec(analysis.activity_turnover) > 0 else None})
     return m
+
+
+def _apply_campaign_capacity(m, flags, analysis, th, existing, total_effort, installment, monthly_savings):
+    """La capacité retient le surplus de campagne. Le taux d'endettement ne change pas."""
+    from .analysis_details import campaign_capacity
+
+    reading = campaign_capacity(analysis)
+    if not reading:
+        return
+    spread = reading["campaign_monthly_surplus"]
+    if spread is None:
+        return
+    m.update(reading)
+    if analysis.is_corporate:
+        m["repayment_capacity"] = _q(spread - existing)
+        m["safety_margin"] = _q(spread - total_effort)
+        flags["capacity_ok"] = spread > 0 and spread >= total_effort
+        return
+    if analysis.is_groupement:
+        ordinary = (
+            _dec(analysis.collective_contributions)
+            + _dec(analysis.collective_other_income)
+            - _dec(analysis.collective_operating_expenses)
+        ) * analysis.reference_periods_per_year / Decimal("12")
+        base = ordinary + spread
+        net = base - existing
+        m["repayment_capacity"] = _q(net)
+        m["safety_margin"] = _q(net - _dec(installment) - _dec(monthly_savings))
+        flags["capacity_ok"] = net > 0 and net >= _dec(installment) + _dec(monthly_savings)
+        return
+    weight = analysis.informal_income_weight
+    weight = _dec(weight) if weight is not None else _dec(th.informal_income_weight)
+    activity_part = Decimal("0")
+    if analysis.has_side_activity:
+        net_activity = analysis.monthly_activity_net
+        activity_part = net_activity * weight / Decimal("100") if net_activity >= 0 else net_activity
+    base = _dec(m.get("weighted_income")) - activity_part + spread
+    household = analysis.monthly_household_charges
+    margin = base - household - total_effort
+    m["repayment_capacity"] = _q(base - household - existing)
+    m["safety_margin"] = _q(margin)
+    m["residual_after_loan"] = _q(margin)
+    flags["capacity_ok"] = base - household >= total_effort and base > 0
+
+
+def _apply_creation_dscr(m, flags, analysis, th):
+    """En création, le DSCR suit la prévision. Le taux d'endettement reste historique."""
+    if not getattr(analysis, "uses_creation", False):
+        return
+    has_forecast = (
+        _dec(analysis.projected_monthly_inflows) != 0
+        or _dec(analysis.projected_monthly_outflows) != 0
+    )
+    if not has_forecast:
+        m["dscr_basis"] = "missing_forecast"
+        return
+    surplus = analysis.projected_monthly_surplus
+    service = m.get("global_debt_service")
+    stress = _dec(th.stress_pct) / Decimal("100")
+    stressed = _dec(analysis.projected_monthly_inflows) * (Decimal("1") - stress) - _dec(analysis.projected_monthly_outflows)
+    m["dscr_basis"] = "forecast"
+    m["forecast_monthly_surplus"] = _q(surplus)
+    m["dscr"] = _q(_div(surplus, m.get("installment")))
+    m["global_dscr"] = _q(_div(surplus, service))
+    m["dscr_stress"] = _q(_div(stressed, service))
+    flags["dscr_ok"] = _cmp_ge(m["global_dscr"], th.min_dscr)
+    flags["dscr_stress_ok"] = _cmp_ge(m["dscr_stress"], th.min_dscr)
 
 
 def _cmp_ge(value, threshold):

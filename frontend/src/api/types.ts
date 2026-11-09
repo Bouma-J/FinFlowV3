@@ -1205,6 +1205,9 @@ export interface FinancialAnalysis {
     periodicity: string; duration_months: number; mechanism: string; frozen: boolean;
     legacy?: boolean; captured_at?: string | null; application_status?: string;
     sources: { name: string; version: number }[]; rates: Record<string, string>;
+    project_total_cost?: number | null; personal_contribution?: number | null;
+    financed_quota?: number | null; activity_start_date?: string | null;
+    purpose_type?: string;
   };
   recorded_indicators?: { updated_at: string } & Record<string, unknown>;
   custom_field_definitions?: import("@/api/configuration").CustomFieldDefinition[];

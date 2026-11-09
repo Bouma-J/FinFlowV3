@@ -9,14 +9,16 @@ const SECTION_PATHS: Record<string, readonly AnalysisPath[] | typeof ALL> = {
   "fa-income": ["SALARY", "ACTIVITY", "MIXED"],
   "fa-stability": ["SALARY", "MIXED"],
   "fa-group": ["GROUP"],
-  "fa-business": ["RECONSTITUTED"],
-  "fa-statements": ["STATEMENTS"],
+  "fa-business": ["RECONSTITUTED", "GROUP"],
+  "fa-statements": ["STATEMENTS", "ACTIVITY", "MIXED", "GROUP"],
   "fa-activity": ["ACTIVITY", "MIXED"],
   "fa-exploitation": ["RECONSTITUTED"],
   "fa-charges": ["SALARY", "ACTIVITY", "MIXED"],
+  "fa-cycle": ["STATEMENTS", "RECONSTITUTED", "ACTIVITY", "MIXED", "GROUP"],
   "fa-treasury": ALL,
   "fa-balance": ["RECONSTITUTED"],
-  "fa-trend": ["RECONSTITUTED", "ACTIVITY", "MIXED"],
+  "fa-trend": ["RECONSTITUTED", "ACTIVITY", "MIXED", "GROUP"],
+  "fa-minimal": ["RECONSTITUTED", "ACTIVITY", "MIXED", "GROUP"],
   "fa-collateral": ALL,
   "fa-sector": ["STATEMENTS", "RECONSTITUTED", "ACTIVITY", "MIXED", "GROUP"],
   "fa-es": ["STATEMENTS", "RECONSTITUTED", "ACTIVITY", "MIXED", "GROUP"],
@@ -36,10 +38,13 @@ const THEME_SECTIONS: Record<string, readonly string[]> = {
   "Ventes et produits": ["fa-business", "fa-activity"],
   "Bilan": ["fa-balance"],
   "Trésorerie depuis le dernier achat": ["fa-trend"],
+  "Trésorerie minimale": ["fa-minimal"],
   "Exercice précédent": ["fa-trend"],
   "Engagements": ["fa-debt"],
   "Flux créditeurs": ["fa-treasury"],
   "Prévisions de trésorerie": ["fa-treasury"],
+  "Campagne": ["fa-cycle"],
+  "Création": ["fa-cycle"],
   "Références": ["fa-collateral"],
   "Projet": ["fa-treasury"],
   "Fiabilité": ["fa-quality"],
@@ -77,6 +82,34 @@ export function resolveAnalysisPath(input: {
   if (salary && activity) return "MIXED";
   if (activity) return "ACTIVITY";
   return "SALARY";
+}
+
+export function groupActivityOpen(details: { group_has_activity?: unknown } | undefined, turnover?: unknown, expenses?: unknown): boolean {
+  const flag = details?.group_has_activity;
+  if (flag === "yes") return true;
+  if (flag === "no") return false;
+  const sales = turnover == null || String(turnover).trim() === "" ? 0 : Number(turnover);
+  const charges = expenses == null || String(expenses).trim() === "" ? 0 : Number(expenses);
+  return (Number.isFinite(sales) && sales > 0) || (Number.isFinite(charges) && charges > 0);
+}
+
+export function purposeTestText(purpose: string | undefined, reconstituted = false): string {
+  if (purpose === "CONSUMPTION") {
+    return "Épreuve de cet objet : baisse du revenu du foyer, écrite dans les scénarios défavorables. Sur un parcours salarial, le salaire net doit permettre la quotité cessible.";
+  }
+  if (purpose === "WORKING_CAPITAL" || purpose === "TREASURY" || purpose === "STOCK") {
+    const stock = reconstituted
+      ? " L'activité est reconstituée : le stock ou les ventes doivent être rapprochés, ou l'écart écrit dans le commentaire sur le stock."
+      : "";
+    return `Épreuve de cet objet : baisse des ventes et allongement des créances. Le retard clients se saisit, y compris à zéro.${stock}`;
+  }
+  if (purpose === "EQUIPMENT" || purpose === "REAL_ESTATE") {
+    return "Épreuve de cet objet : le solde prévisionnel mensuel couvre l'échéance. L'investissement de maintien reste visible ; une case vide le reste.";
+  }
+  if (purpose === "OTHER") {
+    return "Épreuve de cet objet : elle s'écrit dans l'avis de synthèse. Une synthèse vide bloque la soumission.";
+  }
+  return "";
 }
 
 export function pathLabel(path: AnalysisPath): string {

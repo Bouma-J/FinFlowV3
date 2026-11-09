@@ -414,3 +414,36 @@ export function FinancialStatementsReadout({
     </>
   );
 }
+
+export function ActivityStatementReading({
+  statements,
+  margin,
+  currency,
+  audience = "activity",
+}: {
+  statements: FinancialStatement[];
+  margin: { value: number | null; source: "sheet" | "activity" | "" };
+  currency: string;
+  audience?: "activity" | "group";
+}) {
+  const current = referenceStatement(statements);
+  const net = current ? amount(current.income.net_result_read) ?? incomeTotals(current.income).netResult : null;
+  const equity = current ? balanceTotals(current.balance).equity : null;
+  const cash = current ? amount(current.balance.cash_and_banks) : null;
+  const gap = net != null && margin.value != null ? Math.round((net - margin.value) * 100) / 100 : null;
+  const marginLabel = margin.source === "sheet" ? "Marge des fiches" : audience === "group" ? "Marge de l'activité commune (chiffre d'affaires − charges)" : "Marge de l'activité (chiffre d'affaires − charges)";
+  return <div className="product-line">
+    <h4>{audience === "group" ? "Lecture à côté des cotisations" : "Lecture à côté de l'activité"}</h4>
+    <p className="muted small">{audience === "group"
+      ? "Le résultat, les capitaux propres et la trésorerie sont lus sur l'exercice retenu. Ils ne remplacent pas les cotisations et n'ajoutent pas l'épargne au revenu. L'écart n'apparaît que lorsque le résultat et la marge sont tous deux renseignés."
+      : "Le résultat, les capitaux propres et la trésorerie sont lus sur l'exercice retenu. Ils ne corrigent pas le salaire, le chiffre d'affaires de l'activité ni les charges du foyer. L'écart n'apparaît que lorsque le résultat et la marge sont tous deux renseignés. Si les deux périodes n'ont pas la même durée, cet écart reste une réserve."}</p>
+    {!current && <p className="muted small">Aucun exercice daté. Le résultat, les capitaux propres et la trésorerie restent vides.</p>}
+    <div className="finance-recap">
+      <div className="recap-item"><span className="recap-label">Résultat net de l'état</span><span className="recap-value">{formatMoney(net, currency)}</span></div>
+      <div className="recap-item"><span className="recap-label">{marginLabel}</span><span className="recap-value">{formatMoney(margin.value, currency)}</span></div>
+      <div className="recap-item"><span className="recap-label">Écart résultat − marge</span><span className="recap-value">{formatMoney(gap, currency)}</span></div>
+      <div className="recap-item"><span className="recap-label">Capitaux propres</span><span className="recap-value">{formatMoney(equity, currency)}</span></div>
+      <div className="recap-item"><span className="recap-label">Trésorerie de l'état</span><span className="recap-value">{formatMoney(cash, currency)}</span></div>
+    </div>
+  </div>;
+}

@@ -41,10 +41,13 @@ import {
   type AnalysisDetails,
 } from "@/api/types";
 import { FinancialAnalysisDetails } from "@/components/FinancialAnalysisDetails";
+import { PRODUCTION_IDENTITY, retainedActivityMargin } from "@/components/productLine";
 import { ProductSheetTable } from "@/components/ProductSheetTable";
-import { FinancialStatementsEditor } from "@/components/FinancialStatementsSection";
+import { ActivityStatementReading, FinancialStatementsEditor } from "@/components/FinancialStatementsSection";
 import {
+  groupActivityOpen,
   pathLabel,
+  purposeTestText,
   resolveAnalysisPath,
   resolveStatementBasis,
   sectionAllowed,
@@ -66,7 +69,7 @@ import {
 } from "@/components/externalCredits";
 import { TpeReconstitution } from "@/components/TpeReconstitution";
 import { FinancialAnalysisSupplements } from "@/components/FinancialAnalysisSupplements";
-import { formatMoney } from "@/components/ui";
+import { formatDate, formatMoney } from "@/components/ui";
 import { CollateralSummaryCard } from "@/components/CollateralSummaryCard";
 import { CustomFields } from "@/components/CustomFields";
 
@@ -270,6 +273,7 @@ export function FinancialAnalysisForm({
   const [details, setDetails] = useState<AnalysisDetails>(initial?.analysis_details || {});
   const [statements, setStatements] = useState<FinancialStatement[]>(() => readStatements(initial?.analysis_details));
   const [statementFiles, setStatementFiles] = useState<Record<string, File>>({});
+  const [minimalCashFile, setMinimalCashFile] = useState<File | null>(null);
   const [customFields, setCustomFields] = useState<Record<string, unknown>>((initial as FinancialAnalysis & { custom_fields?: Record<string, unknown> })?.custom_fields || {});
   const detailText = (key: string, label: string) => (
     <label className="field"><span>{label}</span><textarea rows={2}
@@ -278,7 +282,7 @@ export function FinancialAnalysisForm({
     /></label>
   );
   const detailTable = (name: string) => <FinancialAnalysisDetails name={name} value={details} onChange={setDetails} />;
-  const supplements = (names: string[]) => <FinancialAnalysisSupplements names={names} value={details} onChange={setDetails} />;
+  const supplements = (names: string[], required: string[] = []) => <FinancialAnalysisSupplements names={names} value={details} onChange={setDetails} required={required} />;
   const cur = application.currency || "XOF";
   const clientType =
     (initial?.client_type ||
@@ -400,13 +404,59 @@ export function FinancialAnalysisForm({
     (initial as { group_comment?: string } | undefined)?.group_comment || "",
   );
 
-  const statementBasis = isCorporate ? resolveStatementBasis(details as { statement_basis?: unknown; financial_statements?: unknown }) : "RECONSTITUTED";
+  const groupHasActivity = isGroupement && groupActivityOpen(details, numbers.group_activity_turnover, numbers.group_activity_expenses);
+  const enteredAmount = (value: string | undefined) => {
+    if (value == null || value.trim() === "") return null;
+    const number = Number(value);
+    return Number.isFinite(number) ? number : null;
+  };
+  const contributionParts = [numbers.collective_contributions, numbers.collective_other_income, numbers.collective_operating_expenses].map(enteredAmount);
+  const groupContributions = contributionParts.every((item) => item == null) ? null : (contributionParts[0] ?? 0) + (contributionParts[1] ?? 0) - (contributionParts[2] ?? 0);
+  const activityParts = [numbers.group_activity_turnover, numbers.group_activity_expenses].map(enteredAmount);
+  const groupActivityMargin = !groupHasActivity || activityParts.every((item) => item == null) ? null : (activityParts[0] ?? 0) - (activityParts[1] ?? 0);
+  const groupSavings = enteredAmount(numbers.collective_savings);
+  const groupRepaymentSource = groupContributions == null && groupActivityMargin == null ? null : (groupContributions ?? 0) + (groupActivityMargin ?? 0);
+  const statementBasis = isCorporate || showActivityBlock || isGroupement ? resolveStatementBasis(details as { statement_basis?: unknown; financial_statements?: unknown }) : "RECONSTITUTED";
   const path = resolveAnalysisPath({
     clientType,
     individualProfile,
     hasSideActivity,
-    statementBasis,
+    statementBasis: isCorporate ? statementBasis : "RECONSTITUTED",
   });
+  const cycleAllowed = path !== "SALARY";
+  const campaignOpen = cycleAllowed && details.campaign_open === "yes";
+  const creationOpen = cycleAllowed && details.activity_creation === "yes";
+  const campaignAmount = (key: string) => {
+    const value = details[key];
+    if (typeof value !== "string" && typeof value !== "number") return null;
+    if (String(value).trim() === "") return null;
+    const number = Number(value);
+    return Number.isFinite(number) ? number : null;
+  };
+  const campaignRevenue = campaignAmount("campaign_revenue");
+  const campaignCharges = campaignAmount("campaign_charges");
+  const campaignSurplus = campaignRevenue == null && campaignCharges == null ? null : (campaignRevenue ?? 0) - (campaignCharges ?? 0);
+  const campaignMonthly = campaignSurplus == null || !application.duration_months ? null : campaignSurplus / application.duration_months;
+  const reconstitutedActivity = path === "RECONSTITUTED" || ((path === "ACTIVITY" || path === "MIXED" || (path === "GROUP" && groupHasActivity)) && statementBasis !== "STATEMENTS");
+  const purposeText = purposeTestText(application.purpose_type, reconstitutedActivity);
+  const operatingPurpose = application.purpose_type === "WORKING_CAPITAL" || application.purpose_type === "TREASURY" || application.purpose_type === "STOCK";
+  const investmentPurpose = application.purpose_type === "EQUIPMENT" || application.purpose_type === "REAL_ESTATE";
+  const minimalCashVisible = statementBasis !== "STATEMENTS" && (isCorporate || showActivityBlock || groupHasActivity);
+  const minimalCashOpen = minimalCashVisible && details.minimal_cash_open === "yes";
+  const cashNumber = (key: string) => {
+    const value = details[key];
+    if (typeof value !== "string" && typeof value !== "number") return null;
+    if (String(value).trim() === "") return null;
+    const number = Number(value);
+    return Number.isFinite(number) ? number : null;
+  };
+  const minimalOpening = cashNumber("minimal_cash_opening");
+  const minimalInflows = cashNumber("minimal_cash_inflows");
+  const minimalOutflows = cashNumber("minimal_cash_outflows");
+  const minimalClosing = cashNumber("minimal_cash_closing");
+  const minimalSurplus = minimalInflows == null && minimalOutflows == null ? null : (minimalInflows ?? 0) - (minimalOutflows ?? 0);
+  const minimalTheoretical = minimalOpening == null && minimalInflows == null && minimalOutflows == null ? null : (minimalOpening ?? 0) + (minimalInflows ?? 0) - (minimalOutflows ?? 0);
+  const minimalGap = minimalTheoretical == null || minimalClosing == null ? null : minimalClosing - minimalTheoretical;
 
   const navSections = useMemo(
     () =>
@@ -417,8 +467,8 @@ export function FinancialAnalysisForm({
         { id: "fa-income", icon: Wallet, label: "Revenus du ménage", show: isIndividual },
         { id: "fa-stability", icon: Landmark, label: "Stabilité salariale", show: showStabilityBlock },
         { id: "fa-group", icon: Users, label: "Groupement", show: isGroupement },
-        { id: "fa-business", icon: Store, label: "Stock et ventes", show: isCorporate },
-        { id: "fa-statements", icon: FileText, label: "États financiers", show: isCorporate },
+        { id: "fa-business", icon: Store, label: "Stock et ventes", show: isCorporate || (groupHasActivity && statementBasis !== "STATEMENTS") },
+        { id: "fa-statements", icon: FileText, label: "États financiers", show: isCorporate || showActivityBlock || (groupHasActivity && statementBasis === "STATEMENTS") },
         {
           id: "fa-activity",
           icon: Store,
@@ -430,8 +480,10 @@ export function FinancialAnalysisForm({
         },
         { id: "fa-exploitation", icon: ReceiptText, label: "Charges et résultat", show: isCorporate },
         { id: "fa-charges", icon: ReceiptText, label: "Charges du ménage", show: isIndividual },
+        { id: "fa-cycle", icon: Briefcase, label: "Campagne et création", show: isCorporate || isGroupement || showActivityBlock },
         { id: "fa-treasury", icon: Wallet, label: "Capacité et retenue", show: true },
         { id: "fa-balance", icon: Building2, label: "Bilan reconstitué", show: isCorporate },
+        { id: "fa-minimal", icon: UploadCloud, label: "Trésorerie minimale", show: minimalCashVisible },
         { id: "fa-trend", icon: Gauge, label: "Caisse et tendance N-1", show: isCorporate || showActivityBlock },
         { id: "fa-collateral", icon: Shield, label: "Garanties et références", show: true },
         { id: "fa-sector", icon: Factory, label: "Analyse sectorielle", show: isCorporate || isGroupement || showActivityBlock },
@@ -447,7 +499,10 @@ export function FinancialAnalysisForm({
       individualProfile,
       showActivityBlock,
       showStabilityBlock,
+      groupHasActivity,
+      statementBasis,
       path,
+      minimalCashVisible,
       configuration.data,
     ],
   );
@@ -554,7 +609,7 @@ export function FinancialAnalysisForm({
       const applied = path === "STATEMENTS" ? referenceFieldOverrides(statements) : { numbers: {}, details: {} };
       const rest = { ...details } as AnalysisDetails & { financial_statements?: unknown; statement_basis?: string };
       delete rest.financial_statements;
-      if (isCorporate) rest.statement_basis = statementBasis;
+      if (isCorporate || showActivityBlock || isGroupement) rest.statement_basis = statementBasis;
       else delete rest.statement_basis;
       fd.append("analysis_details", JSON.stringify({
         ...rest,
@@ -615,6 +670,7 @@ export function FinancialAnalysisForm({
         const separator = key.indexOf(":");
         fd.append(`statement_file__${key.slice(0, separator)}__${key.slice(separator + 1)}`, file);
       }
+      if (minimalCashOpen && minimalCashFile) fd.append("minimal_cash_file", minimalCashFile);
       if (mode === "edit" && analysisId) {
         return (await api.patch(`/financial-analyses/${analysisId}/`, fd)).data;
       }
@@ -666,7 +722,7 @@ export function FinancialAnalysisForm({
       scrollToSection("fa-debt");
       return;
     }
-    const statementIssue = statementError(statements);
+    const statementIssue = path === "STATEMENTS" || (showActivityBlock && statementBasis === "STATEMENTS") || (groupHasActivity && statementBasis === "STATEMENTS") ? statementError(statements) : null;
     if (statementIssue) {
       setError(statementIssue);
       scrollToSection("fa-statements");
@@ -873,7 +929,7 @@ export function FinancialAnalysisForm({
 
       {isCorporate ? (
         <>
-          <FormSection id="fa-business" icon={Store} title="Reconstitution de l'activité" description="Produits, sources de ventes et organisation économique.">
+          <FormSection id="fa-business" icon={Store} title="Reconstitution de l'activité" description="Produits revendus, produits fabriqués, services, ventes et organisation économique.">
             <ProductSheetTable value={details} onChange={setDetails} currency={cur} />
             {detailText("business_model", "Modèle économique : clientèle, fournisseurs et approvisionnements")}
             {detailText("sales_verification", "Rapprochement du CA : ventes, achats, caisse, banque et mobile money")}
@@ -886,6 +942,19 @@ export function FinancialAnalysisForm({
             description="Un exercice par bloc. L'exercice dont la date de fin est la plus récente alimente les ratios. Chaque pièce a son document."
           >
             <p className="muted small">Une case vide reste vide. Les comptes courants d'associés se saisissent dans les autres dettes. La part à plus d'un an vient des notes : si elle est vide, elle ne reste pas sur l'exercice retenu. Le loyer, l'eau, le téléphone et l'entretien séparés sont remis à zéro dès que l'état porte les charges, pour ne pas les compter deux fois.</p>
+            <label className="check-row">
+              <input
+                type="checkbox"
+                checked={details.manufactures === "yes"}
+                onChange={(event) => setDetails((current) => ({ ...current, manufactures: event.target.checked ? "yes" : "no" }))}
+              />
+              Cette entreprise fabrique ou transforme
+            </label>
+            {details.manufactures === "yes" && <div className="product-line">
+              <h4>Identité de la production</h4>
+              <p className="muted small">Les montants de production sont déjà dans les états : ventes de produits fabriqués, production stockée, achats de matières et stocks. Cette fiche ne les ressaisit pas. La main-d'œuvre est décrite ici ; son montant reste dans les charges de personnel.</p>
+              {PRODUCTION_IDENTITY.map((field) => detailText(field.key, field.label))}
+            </div>}
             <FinancialStatementsEditor
               statements={statements}
               onChange={setStatements}
@@ -909,6 +978,7 @@ export function FinancialAnalysisForm({
             title="Activité et compte de résultat reconstitué"
             description="Ventes, achats, charges et résultat sur la période de référence."
           >
+            {creationOpen && <p className="muted small">Activité en création : ce chiffre d&apos;affaires passé n&apos;est pas exigé. La prévision de trésorerie porte le DSCR.</p>}
             <div className="form-grid two-col">
               <Money label="Chiffre d'affaires" value={numbers.turnover} onChange={set("turnover")} cur={cur} />
               <Money label="Autres produits d'exploitation" value={numbers.other_operating_income} onChange={set("other_operating_income")} cur={cur} />
@@ -988,6 +1058,7 @@ export function FinancialAnalysisForm({
 
         </>
       ) : isGroupement ? (
+        <>
         <FormSection
           id="fa-group"
           icon={Users}
@@ -1043,19 +1114,27 @@ export function FinancialAnalysisForm({
               onChange={set("collective_operating_expenses")}
               cur={cur}
             />
-            <Money
-              label="CA activité commune (si applicable)"
-              value={numbers.group_activity_turnover}
-              onChange={set("group_activity_turnover")}
-              cur={cur}
-            />
-            <Money
-              label="Charges activité commune"
-              value={numbers.group_activity_expenses}
-              onChange={set("group_activity_expenses")}
-              cur={cur}
-            />
           </div>
+          <p className="muted small">Les cotisations, les autres recettes et les charges de fonctionnement forment la source collective. L'épargne est un stock : elle n'est pas un revenu et n'est pas ajoutée aux cotisations.</p>
+          <Checkbox
+            label="Le groupement a une activité commune, distincte des cotisations"
+            checked={groupHasActivity}
+            onChange={(checked) => setDetails((current) => ({ ...current, group_has_activity: checked ? "yes" : "no" }))}
+          />
+          {groupHasActivity && <label className="field">
+            <span>Support de l'activité commune</span>
+            <select value={statementBasis === "STATEMENTS" ? "STATEMENTS" : "RECONSTITUTED"} onChange={(event) => setDetails((current) => ({ ...current, statement_basis: event.target.value }))}>
+              <option value="RECONSTITUTED">Reconstituer l'activité</option>
+              <option value="STATEMENTS">États financiers établis ou à constituer</option>
+            </select>
+          </label>}
+          <div className="finance-recap">
+            <RecapItem label="Cotisations nettes" value={formatMoney(groupContributions, cur)} />
+            <RecapItem label="Marge de l'activité commune" value={groupHasActivity && !campaignOpen ? formatMoney(groupActivityMargin, cur) : "Non retenue"} />
+            <RecapItem label="Source de remboursement" value={formatMoney(groupHasActivity && !campaignOpen ? groupRepaymentSource : groupContributions, cur)} strong />
+            <RecapItem label="Épargne, hors revenu" value={formatMoney(groupSavings, cur)} />
+          </div>
+          {campaignOpen && <p className="muted small">La campagne est ouverte. La marge d&apos;activité n&apos;entre pas dans la capacité : le surplus de campagne, réparti sur la durée du crédit, la remplace. Les cotisations nettes restent. L&apos;épargne ne s&apos;ajoute pas.</p>}
           <label className="check-row" style={{ marginTop: "0.75rem" }}>
             <input
               type="checkbox"
@@ -1085,6 +1164,52 @@ export function FinancialAnalysisForm({
             />
           </label>
         </FormSection>
+        {groupHasActivity && statementBasis !== "STATEMENTS" && <FormSection
+          id="fa-business"
+          icon={Store}
+          title="Activité commune reconstituée"
+          description="Fiches, ventes et charges de l'activité. Les cotisations restent dans le groupement."
+        >
+          <p className="muted small">Le chiffre d'affaires saisi ici est celui de l'activité commune. Il n'inclut pas les cotisations, les autres recettes ni l'épargne. La marge retenue pour la source est ce chiffre d'affaires moins les charges de l'activité. Les fiches servent à le rapprocher.</p>
+          <ProductSheetTable value={details} onChange={setDetails} currency={cur} />
+          <TpeReconstitution details={details} onChange={setDetails} currency={cur} part="sales" />
+          <TpeReconstitution details={details} onChange={setDetails} currency={cur} part="cash" />
+          {detailText("group_activity_description", "Activité commune : ce qui est vendu, à qui, et la saison")}
+          <div className="form-grid two-col">
+            <Money label="Chiffre d'affaires de l'activité commune" value={numbers.group_activity_turnover} onChange={set("group_activity_turnover")} cur={cur} />
+            <Money label="Charges de l'activité commune" value={numbers.group_activity_expenses} onChange={set("group_activity_expenses")} cur={cur} />
+          </div>
+          <div className="finance-recap">
+            <RecapItem label="Marge retenue, hors cotisations" value={formatMoney(groupActivityMargin, cur)} strong />
+            <RecapItem label="Marge des fiches" value={retainedActivityMargin(details.products, numbers.group_activity_turnover, numbers.group_activity_expenses).source === "sheet" ? formatMoney(retainedActivityMargin(details.products, numbers.group_activity_turnover, numbers.group_activity_expenses).value, cur) : "—"} />
+          </div>
+        </FormSection>}
+        {groupHasActivity && statementBasis === "STATEMENTS" && <FormSection
+          id="fa-statements"
+          icon={FileText}
+          title="États financiers de l'activité commune"
+          description="États établis ou à constituer. Les cotisations et l'épargne restent dans le groupement."
+        >
+          <p className="muted small">Même pièces que pour l'entreprise : résultat, bilan, flux et notes, un document par pièce. Ces états ne remplacent pas les cotisations et n'ajoutent pas l'épargne au revenu.</p>
+          <FinancialStatementsEditor
+            statements={statements}
+            onChange={setStatements}
+            files={statementFiles}
+            onFile={(exerciseId: string, piece: StatementPiece, file: File | null) => {
+              setStatementFiles((current) => {
+                const next = { ...current };
+                const key = `${exerciseId}:${piece}`;
+                if (file) next[key] = file;
+                else delete next[key];
+                return next;
+              });
+            }}
+            documents={initial?.documents || []}
+            currency={cur}
+          />
+          <ActivityStatementReading statements={statements} margin={retainedActivityMargin(details.products, numbers.group_activity_turnover, numbers.group_activity_expenses)} currency={cur} audience="group" />
+        </FormSection>}
+        </>
       ) : (
         <>
           <FormSection
@@ -1143,6 +1268,7 @@ export function FinancialAnalysisForm({
                 <TpeReconstitution details={details} onChange={setDetails} currency={cur} part="sales" />
                 {detailText("business_model", "Modèle économique : clientèle, fournisseurs et approvisionnements")}
                 {detailText("sales_verification", "Reconstitution des ventes : recettes journalières, cahier de caisse et mobile money")}
+                {creationOpen && <p className="muted small">Activité en création : ces recettes passées ne sont pas exigées. Elles ne sont pas recopiées dans la prévision.</p>}
                 <div className="form-grid two-col" style={{ marginTop: "0.75rem" }}>
                   <Text
                     label="Activité principale / produit ou service"
@@ -1201,6 +1327,39 @@ export function FinancialAnalysisForm({
               </>
             )}
           </FormSection>
+
+          {showActivityBlock && <FormSection
+            id="fa-statements"
+            icon={FileText}
+            title="États financiers de l'activité"
+            description="À ajouter quand l'activité a des états, ou quand ils doivent être constitués. Le ménage et l'activité restent."
+          >
+            <Checkbox
+              label="Cette activité a des états financiers, ou ils sont à constituer"
+              checked={statementBasis === "STATEMENTS"}
+              onChange={(checked) => setDetails((current) => ({ ...current, statement_basis: checked ? "STATEMENTS" : "RECONSTITUTED" }))}
+            />
+            <p className="muted small">Le compte de résultat, le bilan, le tableau des flux et les notes sont les mêmes que pour l'entreprise. Un document par pièce, plusieurs exercices. L'auteur et la certification distinguent un état reçu d'un état constitué ici. Ces montants ne remplacent ni le salaire, ni le chiffre d'affaires de l'activité, ni les charges du foyer.</p>
+            {statementBasis === "STATEMENTS" && <>
+              <FinancialStatementsEditor
+                statements={statements}
+                onChange={setStatements}
+                files={statementFiles}
+                onFile={(exerciseId: string, piece: StatementPiece, file: File | null) => {
+                  setStatementFiles((current) => {
+                    const next = { ...current };
+                    const key = `${exerciseId}:${piece}`;
+                    if (file) next[key] = file;
+                    else delete next[key];
+                    return next;
+                  });
+                }}
+                documents={initial?.documents || []}
+                currency={cur}
+              />
+              <ActivityStatementReading statements={statements} margin={retainedActivityMargin(details.products, numbers.activity_turnover, numbers.activity_expenses)} currency={cur} />
+            </>}
+          </FormSection>}
 
           <FormSection
             id="fa-charges"
@@ -1333,12 +1492,70 @@ export function FinancialAnalysisForm({
         </FormSection>
 
         <FormSection
+          id="fa-cycle"
+          icon={Briefcase}
+          title="Campagne et création"
+          description="Deux cases sur l'activité déjà analysée. Ni un nouveau type de client, ni un second compte de résultat."
+        >
+          <Checkbox
+            label="Cette activité suit une campagne (agriculture, élevage ou saison), pas un mois de vente ordinaire"
+            checked={campaignOpen}
+            onChange={(checked) => setDetails((current) => ({ ...current, campaign_open: checked ? "yes" : "no" }))}
+          />
+          {campaignOpen && <>
+            <p className="muted small">Le surplus est les recettes de la campagne moins ses charges. Il est réparti sur la durée du crédit et devient la capacité retenue à la place d&apos;un mois de vente ordinaire. Les stocks ne sont pas des recettes. Une case vide reste vide ; si une seule des deux sommes est saisie, l&apos;autre compte pour zéro.</p>
+            <div className="form-grid two-col">
+              <Text label="Nom de la campagne" value={typeof details.campaign_name === "string" ? details.campaign_name : ""} onChange={(value) => setDetails((current) => ({ ...current, campaign_name: value }))} />
+              <Text label="Culture, élevage ou transformation" value={typeof details.campaign_production === "string" ? details.campaign_production : ""} onChange={(value) => setDetails((current) => ({ ...current, campaign_production: value }))} />
+              <Text label="Surface, cheptel ou volume" value={typeof details.campaign_scale === "string" ? details.campaign_scale : ""} onChange={(value) => setDetails((current) => ({ ...current, campaign_scale: value }))} />
+              <Text label="Mois où l'argent entre" value={typeof details.campaign_inflow_months === "string" ? details.campaign_inflow_months : ""} onChange={(value) => setDetails((current) => ({ ...current, campaign_inflow_months: value }))} />
+            </div>
+            {detailText("campaign_calendar", "Calendrier : quand les intrants sont payés, quand la récolte est vendue, et quels mois restent sans entrée")}
+            {detailText("campaign_sales", "Débouchés et prix : acheteurs, marché, prix retenu et ce qui le justifie")}
+            <div className="form-grid two-col">
+              <Money label="Stock d'intrants" value={typeof details.campaign_input_stock === "string" ? details.campaign_input_stock : ""} onChange={(value) => setDetails((current) => ({ ...current, campaign_input_stock: value }))} cur={cur} />
+              <Money label="Stock de récolte" value={typeof details.campaign_harvest_stock === "string" ? details.campaign_harvest_stock : ""} onChange={(value) => setDetails((current) => ({ ...current, campaign_harvest_stock: value }))} cur={cur} />
+              <Money label="Recettes de la campagne" value={typeof details.campaign_revenue === "string" ? details.campaign_revenue : ""} onChange={(value) => setDetails((current) => ({ ...current, campaign_revenue: value }))} cur={cur} />
+              <Money label="Charges de la campagne" value={typeof details.campaign_charges === "string" ? details.campaign_charges : ""} onChange={(value) => setDetails((current) => ({ ...current, campaign_charges: value }))} cur={cur} />
+            </div>
+            {detailText("campaign_comment", "Pertes, invendus, climat, prix et ce qui peut empêcher le surplus d'arriver")}
+            <div className="finance-recap">
+              <RecapItem label="Surplus de la campagne" value={formatMoney(campaignSurplus, cur)} />
+              <RecapItem label="Durée du crédit" value={application.duration_months ? `${application.duration_months} mois` : "—"} />
+              <RecapItem label="Surplus retenu par mois" value={formatMoney(campaignMonthly, cur)} strong />
+              <RecapItem label="Stock d'intrants, hors revenu" value={formatMoney(campaignAmount("campaign_input_stock"), cur)} />
+              <RecapItem label="Stock de récolte, hors revenu" value={formatMoney(campaignAmount("campaign_harvest_stock"), cur)} />
+            </div>
+            <p className="muted small">Le taux d&apos;endettement continue de lire le revenu déjà observé. Seule la capacité de remboursement retient ce surplus mensuel. Pour un groupement, il s&apos;ajoute aux cotisations nettes et remplace la marge d&apos;activité. L&apos;épargne collective n&apos;est pas ajoutée.</p>
+          </>}
+          <Checkbox
+            label="Activité en création : pas d'historique d'exploitation à exiger"
+            checked={creationOpen}
+            onChange={(checked) => setDetails((current) => ({ ...current, activity_creation: checked ? "yes" : "no" }))}
+          />
+          {creationOpen && <>
+            <p className="muted small">Le coût du projet, l&apos;apport et la quotité sont ceux du dossier. Ils ne sont pas ressaisis ici. Le chiffre d&apos;affaires passé n&apos;est pas exigé. Le DSCR s&apos;appuie sur les encaissements et les sorties prévisionnels, pas sur cet historique.</p>
+            <div className="finance-recap">
+              <RecapItem label="Coût total du projet" value={application.project_total_cost == null || application.project_total_cost === "" ? "—" : formatMoney(application.project_total_cost, cur)} />
+              <RecapItem label="Apport personnel" value={application.personal_contribution == null || application.personal_contribution === "" ? "—" : formatMoney(application.personal_contribution, cur)} />
+              <RecapItem label="Montant du dossier" value={formatMoney(application.amount_proposed || application.amount_requested, cur)} />
+              <RecapItem label="Quotité financée" value={application.financed_quota == null || application.financed_quota === "" ? "—" : `${application.financed_quota} %`} />
+              <RecapItem label="Date de création de l'activité" value={application.activity_start_date ? formatDate(application.activity_start_date) : "—"} />
+            </div>
+            {detailText("creation_activity", "Ce qui est créé : activité, investissement, lieu et ce qui existe déjà")}
+            {detailText("creation_ramp", "Délai avant les premières recettes, et comment les échéances sont couvertes pendant ce délai")}
+            {detailText("creation_assumptions", "Hypothèses de la prévision : volumes, prix, charges et ce qui les rend tenables")}
+          </>}
+        </FormSection>
+
+        <FormSection
           id="fa-treasury"
           icon={Wallet}
           title="Capacité et retenue de prudence"
           description="La capacité est comparée au service de la dette. La retenue vient ensuite, sans remplacer le taux d'endettement."
         >
         {(isCorporate || showActivityBlock) && <TpeReconstitution details={details} onChange={setDetails} currency={cur} part="safety" />}
+        {creationOpen && <p className="muted small">Activité en création : ce solde prévisionnel porte le DSCR. Le chiffre d&apos;affaires passé ne le remplace pas. Sans encaissement ni sortie, l&apos;enregistrement du dossier est refusé.</p>}
         <div className="form-grid two-col">
           <Money label="Encaissements prévisionnels mensuels" value={numbers.projected_monthly_inflows} onChange={set("projected_monthly_inflows")} cur={cur} />
           <Money label="Sorties de trésorerie prévisionnelles mensuelles" value={numbers.projected_monthly_outflows} onChange={set("projected_monthly_outflows")} cur={cur} />
@@ -1357,13 +1574,60 @@ export function FinancialAnalysisForm({
         {detailTable("cashflow")}
         {supplements(["opening_cash_balance"])}
         <p className="muted small">Le solde d'ouverture est celui précédant le premier mois saisi. Renseignez tous les mois successifs pour obtenir une trésorerie cumulée. Les sorties et services de dette détaillés doivent correspondre aux échéances réelles, épargne obligatoire comprise.</p>
-        {supplements(["purchase_stress_pct", ...(isCorporate ? ["receivable_delay_days"] : [])])}
+        {purposeText && <p className="muted small">{purposeText}</p>}
+        {supplements(["purchase_stress_pct", ...((isCorporate || operatingPurpose) ? ["receivable_delay_days"] : [])], operatingPurpose ? ["receivable_delay_days"] : [])}
+        {investmentPurpose && path !== "RECONSTITUTED" && supplements(["maintenance_investment"])}
         {detailText("seasonality", "Saisonnalité : mois creux, récoltes, campagnes et remboursement adapté")}
         {detailText("stress_assumptions", "Scénarios défavorables : baisse des revenus, hausse des achats, retards clients et mesures d'atténuation")}
         {detailText("project_cost", "Coût du projet : besoins, investissements et justificatifs / devis")}
         {detailText("own_contribution", "Apport propre : montant, origine et disponibilité vérifiée")}
         {detailText("financing_plan", "Plan de financement : besoins, ressources et adéquation durée / objet")}
         </FormSection>
+
+        {minimalCashVisible && <FormSection
+          id="fa-minimal"
+          icon={UploadCloud}
+          title="Trésorerie minimale"
+          description="Document court, à part des états financiers et de la reconstitution des ventes."
+        >
+          <p className="muted small">Une période, un document. Quatre lignes : trésorerie d&apos;ouverture, entrées, sorties, trésorerie de clôture. Ce document ne remplace pas les fiches, la caisse depuis le dernier achat, ni les états. Il n&apos;alimente pas les ratios. Une case vide reste vide.</p>
+          <Checkbox
+            label="Ce client n'a qu'un suivi de trésorerie minimale"
+            checked={minimalCashOpen}
+            onChange={(checked) => setDetails((current) => ({ ...current, minimal_cash_open: checked ? "yes" : "no" }))}
+          />
+          {minimalCashOpen && <>
+            <div className="form-grid two-col">
+              <Text label="Intitulé de la période" value={typeof details.minimal_cash_label === "string" ? details.minimal_cash_label : ""} onChange={(value) => setDetails((current) => ({ ...current, minimal_cash_label: value }))} />
+              <label className="field">
+                <span>Début</span>
+                <input type="date" value={typeof details.minimal_cash_start === "string" ? details.minimal_cash_start : ""} onChange={(event) => setDetails((current) => ({ ...current, minimal_cash_start: event.target.value }))} />
+              </label>
+              <label className="field">
+                <span>Fin</span>
+                <input type="date" value={typeof details.minimal_cash_end === "string" ? details.minimal_cash_end : ""} onChange={(event) => setDetails((current) => ({ ...current, minimal_cash_end: event.target.value }))} />
+              </label>
+            </div>
+            <div className="form-grid two-col">
+              <Money label="Trésorerie d'ouverture" value={typeof details.minimal_cash_opening === "string" ? details.minimal_cash_opening : ""} onChange={(value) => setDetails((current) => ({ ...current, minimal_cash_opening: value }))} cur={cur} signed />
+              <Money label="Entrées" value={typeof details.minimal_cash_inflows === "string" ? details.minimal_cash_inflows : ""} onChange={(value) => setDetails((current) => ({ ...current, minimal_cash_inflows: value }))} cur={cur} />
+              <Money label="Sorties" value={typeof details.minimal_cash_outflows === "string" ? details.minimal_cash_outflows : ""} onChange={(value) => setDetails((current) => ({ ...current, minimal_cash_outflows: value }))} cur={cur} />
+              <Money label="Trésorerie de clôture" value={typeof details.minimal_cash_closing === "string" ? details.minimal_cash_closing : ""} onChange={(value) => setDetails((current) => ({ ...current, minimal_cash_closing: value }))} cur={cur} signed />
+            </div>
+            <div className="finance-recap">
+              <RecapItem label="Surplus de la période" value={formatMoney(minimalSurplus, cur)} strong />
+              <RecapItem label="Clôture calculée" value={formatMoney(minimalTheoretical, cur)} />
+              <RecapItem label="Écart, clôture lue − clôture calculée" value={formatMoney(minimalGap, cur)} />
+            </div>
+            {minimalGap != null && minimalGap !== 0 && <p className="form-error">L&apos;écart doit être expliqué dans le commentaire avant la soumission du dossier. Il ne corrige pas les lignes.</p>}
+            {detailText("minimal_cash_comment", "Commentaire : ce que couvre la période, et l'écart s'il y en a un")}
+            <label className="field">
+              <span>Document unique de la période</span>
+              <input type="file" onChange={(event) => setMinimalCashFile(event.target.files?.[0] ?? null)} />
+              {typeof details.minimal_cash_document === "string" && details.minimal_cash_document && <small className="muted">Un document est déjà joint. Un nouveau fichier le remplace.</small>}
+            </label>
+          </>}
+        </FormSection>}
 
         {(isCorporate || showActivityBlock) && (
         <FormSection
@@ -1543,13 +1807,14 @@ export function FinancialAnalysisForm({
             placeholder="Garanties additionnelles, plafond, périodicité…"
           />
         </label>
+        {application.purpose_type === "OTHER" && <p className="muted small">{purposeTestText("OTHER")}</p>}
         <label className="field">
           <span>Avis / commentaire de synthèse</span>
           <textarea
             rows={4}
             value={comment}
             onChange={(e) => setComment(e.target.value)}
-            placeholder="Conclusion générale de l'analyste…"
+            placeholder={application.purpose_type === "OTHER" ? "Épreuve retenue pour cet objet, et conclusion" : "Conclusion générale de l'analyste…"}
           />
         </label>
         <p className="muted small">
@@ -1633,7 +1898,7 @@ function FormSection({
   const fallbackOrder: Record<string, number> = {
     "fa-params": 10, "fa-quality": 20, "fa-debt": 30, "fa-income": 40, "fa-stability": 50,
     "fa-group": 60, "fa-business": 70, "fa-statements": 85, "fa-activity": 80, "fa-exploitation": 90,
-    "fa-charges": 100, "fa-treasury": 110, "fa-balance": 120, "fa-trend": 130,
+    "fa-charges": 100, "fa-cycle": 105, "fa-treasury": 110, "fa-balance": 120, "fa-minimal": 125, "fa-trend": 130,
     "fa-collateral": 140, "fa-sector": 150, "fa-es": 160, "fa-conclusion": 170,
   };
   return (

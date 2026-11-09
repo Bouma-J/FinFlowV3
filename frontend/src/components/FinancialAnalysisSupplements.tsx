@@ -20,15 +20,16 @@ export const FINANCIAL_SUPPLEMENTS: Record<string, string> = {
   receivable_delay_days: "Retard clients supplémentaire sous stress (jours)",
 };
 
-export function FinancialAnalysisSupplements({ names, value, onChange }: {
-  names: string[]; value: AnalysisDetails; onChange: (next: AnalysisDetails) => void;
+export function FinancialAnalysisSupplements({ names, value, onChange, required = [] }: {
+  names: string[]; value: AnalysisDetails; onChange: (next: AnalysisDetails) => void; required?: string[];
 }) {
+  const must = new Set(required);
   return <div className="form-grid two-col">{names.map((key) => <label className="field" key={key}>
     <span>{FINANCIAL_SUPPLEMENTS[key]}</span>
     <input type="number" step="any" min={["bfr_change", "declared_equity", "opening_cash_balance"].includes(key) ? undefined : 0}
       max={key === "purchase_stress_pct" ? 100 : undefined}
       value={typeof value[key] === "string" ? value[key] : ""}
       onChange={(event) => onChange({ ...value, [key]: event.target.value })} />
-    <small className="muted">Facultatif. Laisser vide si inconnu ; saisir 0 si vérifié nul.</small>
+    <small className="muted">{must.has(key) ? "Requis pour l'épreuve de cet objet. Saisir 0 si la valeur vérifiée est nulle." : "Facultatif. Laisser vide si inconnu ; saisir 0 si vérifié nul."}</small>
   </label>)}</div>;
 }
