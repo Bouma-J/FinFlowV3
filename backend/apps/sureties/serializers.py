@@ -266,7 +266,7 @@ class SuretySerializer(serializers.ModelSerializer):
             "id", "surety_type", "display_name", "name", "agency",
             # Identité physique
             "first_name", "last_name", "birth_date", "birth_country",
-            "activity", "estimated_income",
+            "activity", "marital_status", "matrimonial_regime", "estimated_income",
             # Pièce d'identité
             "id_document_type", "national_id", "id_document_issue_date",
             "id_document_expiry_date", "id_document_scan", "photo",
@@ -316,6 +316,16 @@ class SuretySerializer(serializers.ModelSerializer):
                 raise serializers.ValidationError(
                     {"last_name": "Le nom de la caution est obligatoire."}
                 )
+        if surety_type == Surety.SuretyType.MORAL:
+            attrs["marital_status"] = ""
+            attrs["matrimonial_regime"] = ""
+        else:
+            marital = attrs.get(
+                "marital_status",
+                getattr(self.instance, "marital_status", "") if self.instance else "",
+            )
+            if marital != "MARRIED":
+                attrs["matrimonial_regime"] = ""
         return attrs
 
     def to_representation(self, instance):

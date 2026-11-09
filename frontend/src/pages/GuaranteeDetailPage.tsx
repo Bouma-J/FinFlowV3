@@ -683,30 +683,32 @@ export function GuaranteeDetailPage({
                 }
               />
             )}
-            <Row term="Nom du propriétaire" value={g.owner_last_name} />
-            <Row term="Prénom du propriétaire" value={g.owner_first_name} />
-            <Row
-              term="Situation matrimoniale"
-              value={
-                g.owner_marital_status
-                  ? lbl(
-                      GUARANTEE_LABELS.marital_status,
-                      g.owner_marital_status,
-                    )
-                  : undefined
-              }
-            />
-            <Row
-              term="Régime matrimonial"
-              value={
-                g.matrimonial_regime
-                  ? lbl(
-                      GUARANTEE_LABELS.matrimonial_regime,
-                      g.matrimonial_regime,
-                    )
-                  : undefined
-              }
-            />
+            {g.belongs_to_applicant === false && (
+              <>
+                <Row
+                  term="Situation matrimoniale"
+                  value={
+                    g.owner_marital_status
+                      ? lbl(
+                          GUARANTEE_LABELS.marital_status,
+                          g.owner_marital_status,
+                        )
+                      : undefined
+                  }
+                />
+                <Row
+                  term="Régime matrimonial"
+                  value={
+                    g.matrimonial_regime
+                      ? lbl(
+                          GUARANTEE_LABELS.matrimonial_regime,
+                          g.matrimonial_regime,
+                        )
+                      : undefined
+                  }
+                />
+              </>
+            )}
           </dl>
         </Section>
 

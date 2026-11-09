@@ -677,7 +677,9 @@ def seed_bulk_operational_data(
                     "transport_expense": Decimal("35000"),
                     "education_expense": Decimal("40000"),
                     "health_expense": Decimal("20000"),
-                    "other_household_expenses": Decimal("25000"),
+                    "analysis_details": {
+                        "extra_charges": [{"label": "Autres charges", "amount": "25000"}],
+                    },
                     "employment_seniority_months": 12 + (i % 60),
                     "existing_debt_monthly": Decimal("30000"),
                 }

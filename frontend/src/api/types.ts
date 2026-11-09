@@ -874,6 +874,8 @@ export interface Surety {
   birth_date: string | null;
   birth_country: string;
   activity: string;
+  marital_status?: string;
+  matrimonial_regime?: string;
   estimated_income: string | null;
   id_document_type: string;
   national_id: string;
@@ -962,6 +964,16 @@ export interface CbsProductReference {
   verified_at: string | null;
   verified_by: string | null;
   updated_at: string;
+}
+
+export interface ExternalBankAccount {
+  id: string;
+  institution_name: string;
+  opened_on: string | null;
+  account_number: string;
+  credit_movement_count: number | null;
+  credit_movement_volume: string | null;
+  statement: string | null;
 }
 
 export interface StockPhoto {
@@ -1092,12 +1104,32 @@ export interface CreditApplication {
   // Demandeur & emploi
   employer_name: string;
   contract_type: string;
+  contract_end_date?: string | null;
   salary_domiciliation: boolean;
   dependents_count: number | null;
+  earning_path?: string;
+  marital_regime?: string;
+  spouse_has_income?: boolean | null;
+  children_count?: number | null;
+  housing_status?: string;
+  housing_seniority_months?: number | null;
+  employer_address?: string;
+  employer_phone?: string;
+  employer_sector?: string;
+  employment_profession?: string;
+  job_title?: string;
+  job_seniority_months?: number | null;
+  career_seniority_months?: number | null;
+  activity_name?: string;
+  activity_trade?: string;
+  activity_sector?: string;
+  activity_premises_status?: string;
+  activity_ifu?: string;
   // Relation bancaire
   client_account_number: string;
   relationship_start_date: string | null;
   avg_monthly_credit_movements: string | null;
+  external_accounts?: ExternalBankAccount[];
   // Assurance
   has_credit_insurance: boolean;
   insurance_company: string;
@@ -1110,6 +1142,7 @@ export interface CreditApplication {
   // Conformité
   beneficial_owner: string;
   is_pep: boolean;
+  pep_details?: string;
   funds_origin: string;
   // Complétude documentaire
   document_checklist: ChecklistItem[];
@@ -1542,9 +1575,25 @@ export const CREDIT_LABELS = {
     CDI: "CDI",
     CDD: "CDD",
     CIVIL_SERVANT: "Fonctionnaire",
+    DAILY: "Journalier",
     INDEPENDENT: "Indépendant",
     RETIRED: "Retraité",
     OTHER: "Autre",
+  } as Record<string, string>,
+  earning_path: {
+    SALARIE: "Salarié",
+    INDEPENDANT: "Activité",
+    MIXTE: "Les deux",
+  } as Record<string, string>,
+  marital_regime: {
+    COMMUNITY: "Communauté",
+    SEPARATION: "Séparation de biens",
+    OTHER: "Autre",
+  } as Record<string, string>,
+  housing_status: {
+    OWNER: "Propriétaire",
+    TENANT: "Locataire",
+    HOSTED: "Hébergé",
   } as Record<string, string>,
   risk_class: {
     A: "A — Excellent",
@@ -1555,6 +1604,11 @@ export const CREDIT_LABELS = {
   } as Record<string, string>,
 };
 
+export interface FieldVisitPhoto {
+  id: string;
+  image: string;
+}
+
 export interface FieldVisit {
   id: string;
   application: string;
@@ -1564,7 +1618,12 @@ export interface FieldVisit {
   visitor_role: string;
   can_edit: boolean;
   geo_coordinates: string;
+  visited_places?: string[];
+  person_met?: string;
+  conclusion?: string;
   report: string;
+  minutes?: string | null;
+  photos?: FieldVisitPhoto[];
   created_at?: string;
 }
 

@@ -392,6 +392,24 @@ export function SuretyDetailPage({
                   <Row term="Pays de naissance" value={s.birth_country} />
                   <Row term="Activité" value={s.activity} />
                   <Row
+                    term="Situation matrimoniale"
+                    value={
+                      s.marital_status
+                        ? label(CLIENT_LABELS.marital_status, s.marital_status)
+                        : undefined
+                    }
+                  />
+                  <Row
+                    term="Régime matrimonial"
+                    value={
+                      s.matrimonial_regime === "COMMUNITY"
+                        ? "Communauté de biens"
+                        : s.matrimonial_regime === "SEPARATION"
+                          ? "Séparation de biens"
+                          : undefined
+                    }
+                  />
+                  <Row
                     term="Estimation de revenu"
                     value={s.estimated_income && formatMoney(s.estimated_income)}
                   />

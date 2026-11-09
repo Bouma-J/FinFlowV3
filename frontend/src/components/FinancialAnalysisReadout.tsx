@@ -11,7 +11,7 @@ import { ANALYSIS_TABLES, FinancialAnalysisDetails } from "@/components/Financia
 
 type Field = [keyof FinancialAnalysis, string, ("money" | "text" | "count" | "bool" | "percent")?];
 const INCOME: Field[] = [["salary_income", "Salaire net"], ["spouse_income", "Revenus du conjoint"], ["rental_income", "Loyers / rentes"], ["pension_income", "Pension"], ["variable_income", "Primes / revenus variables"], ["other_activity_income", "Revenus d'activité hors bloc dédié"], ["other_income", "Autres revenus"]];
-const HOUSEHOLD: Field[] = [["rent_expense", "Logement"], ["food_expense", "Alimentation"], ["utilities_expense", "Eau / électricité / téléphone"], ["transport_expense", "Transport"], ["education_expense", "Scolarité"], ["health_expense", "Santé"], ["other_household_expenses", "Autres charges"], ["tontine_expense", "Tontines"], ["social_contributions", "Cotisations / assurances"], ["family_support_expense", "Soutien familial"], ["other_monthly_obligations", "Autres obligations sur la période"]];
+const HOUSEHOLD: Field[] = [["rent_expense", "Logement"], ["food_expense", "Alimentation"], ["utilities_expense", "Eau / électricité / téléphone"], ["transport_expense", "Transport"], ["education_expense", "Scolarité"], ["health_expense", "Santé"], ["tontine_expense", "Tontines"], ["social_contributions", "Cotisations / assurances"], ["family_support_expense", "Soutien familial"], ["other_monthly_obligations", "Autres obligations sur la période"]];
 const RESULT: Field[] = [["turnover", "Chiffre d'affaires"], ["cogs", "Coût des marchandises vendues"], ["gross_margin", "Marge brute"], ["other_operating_income", "Autres produits d'exploitation"], ["op_rent", "Loyer"], ["op_salaries", "Salaires"], ["op_utilities", "Eau / électricité"], ["op_transport", "Transport"], ["op_telecom", "Télécoms"], ["op_taxes", "Impôts d'exploitation / patente"], ["op_maintenance", "Entretien"], ["op_other", "Autres charges d'exploitation"], ["total_operating_expenses", "Total charges d'exploitation"], ["ebe", "EBE reconstitué"], ["depreciation", "Amortissements"], ["financial_charges", "Charges financières"], ["net_result", "Résultat reconstitué"], ["cash_flow", "Résultat + charges non décaissées nettes"]];
 const ASSETS: Field[] = [["stock_value", "Stock"], ["receivables", "Créances clients"], ["cash_in_hand", "Caisse"], ["bank_balance", "Banque disponible"], ["cash_available", "Ancien agrégat de trésorerie"], ["other_current_assets", "Autres actifs courants"], ["land_building_value", "Terrains / bâtiments"], ["equipment_value", "Équipements"], ["vehicle_value", "Véhicules"], ["other_fixed_assets", "Autres immobilisations"], ["fixed_assets", "Ancien agrégat d'immobilisations"], ["total_assets", "Total de l'actif retenu"]];
 const DEBTS: Field[] = [["supplier_debt", "Dettes fournisseurs"], ["tax_social_debt", "Dettes fiscales et sociales"], ["other_current_debt", "Autres dettes d'exploitation"], ["short_term_debt", "Autres dettes court terme (hors postes précédents)"], ["ongoing_credit_balance", "Encours financier total"], ["long_term_debt", "Dont part long terme (déjà incluse)"], ["shareholder_debt", "Comptes courants d'associés"], ["total_debts", "Total dettes"], ["equity", "Fonds propres reconstitués (actif − dettes)"]];
@@ -58,6 +58,25 @@ function ForecastChart({ rows, currency }: { rows: Record<string, unknown>[]; cu
 }
 
 type DetailRow = Record<string, string>;
+
+function ExtraMoneyLines({
+  details,
+  name,
+  currency,
+}: {
+  details: FinancialAnalysis["analysis_details"];
+  name: string;
+  currency: string;
+}) {
+  const rows = detailRows(details, name).flatMap((row, index) => {
+    const label = String(row.label || "").trim();
+    const amount = numeric(row.amount);
+    if (!label || amount == null) return [];
+    return [<div key={`${name}-${index}`}><dt>{label}</dt><dd>{formatMoney(amount, currency)}</dd></div>];
+  });
+  if (rows.length === 0) return null;
+  return <dl className="def-list two">{rows}</dl>;
+}
 
 function detailRows(details: FinancialAnalysis["analysis_details"], key: string): DetailRow[] {
   const value = details?.[key];
@@ -336,9 +355,13 @@ export function FinancialAnalysisReadout({ analysis: a, currency, part }: { anal
     add("Revenus du ménage", <>
       {profileLabel && <p className="muted small">Profil : {profileLabel}.</p>}
       {fields(path === "SALARY" ? INCOME.filter(([key]) => key !== "other_activity_income") : INCOME)}
+      <ExtraMoneyLines details={a.analysis_details} name="extra_income" currency={currency} />
       <Note label="Justificatifs des revenus" text={detailText("household_income_evidence")} />
     </>, true);
-    add("Charges du ménage", fields(HOUSEHOLD), true);
+    add("Charges du ménage", <>
+      {fields(HOUSEHOLD)}
+      <ExtraMoneyLines details={a.analysis_details} name="extra_charges" currency={currency} />
+    </>, true);
     add("Emploi et stabilité", <>
       {fields([["employer_name", "Employeur", "text"], ["employer_sector", "Secteur employeur", "text"], ["employment_seniority_months", "Ancienneté (mois)", "count"], ["salary_deductions", "Retenues déjà prélevées"], ["salary_paid_through_bank", "Salaire domicilié / traçable", "bool"], ["salary_verified", "Salaire vérifié", "bool"]])}
       {employmentLabel && <p>Type d'emploi : {employmentLabel}.</p>}
@@ -546,6 +569,7 @@ export function FinancialAnalysisReadout({ analysis: a, currency, part }: { anal
     "campaign_open", "activity_creation", "campaign_name", "campaign_production", "campaign_scale", "campaign_inflow_months", "campaign_calendar", "campaign_sales", "campaign_comment",
     "campaign_revenue", "campaign_charges", "campaign_input_stock", "campaign_harvest_stock", "creation_activity", "creation_ramp", "creation_assumptions",
     "minimal_cash_open", "minimal_cash_label", "minimal_cash_start", "minimal_cash_end", "minimal_cash_opening", "minimal_cash_inflows", "minimal_cash_outflows", "minimal_cash_closing", "minimal_cash_comment", "minimal_cash_document",
+    "extra_income", "extra_charges",
     ...PRODUCTION_IDENTITY.map((field) => field.key), ...PRODUCTION_STOCKS.map((stock) => stock.key),
   ]);
   const leftovers = Object.entries(a.analysis_details || {}).filter(([key, value]) => !placed.has(key) && !key.endsWith("_detail_mode") && typeof value === "string" && value.trim());

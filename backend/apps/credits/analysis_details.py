@@ -38,6 +38,8 @@ DETAIL_SCHEMAS = {
     "sales_observations": {
         "kind": "text", "label": "text", "amount": "amount",
     },
+    "extra_income": {"label": "text", "amount": "amount"},
+    "extra_charges": {"label": "text", "amount": "amount"},
     "bank_flows": {
         "institution": "text", "period": "text", "tmc": "amount",
         "balance": "signed", "average_tmc": "amount",
@@ -124,6 +126,23 @@ PRODUCT_NATURES = {"", "RESOLD", "MANUFACTURED", "SERVICE"}
 PRODUCTION_COST_KEYS = ("material_cost", "direct_labor", "other_production_cost")
 
 MONEY = Decimal("0.01")
+
+
+def extra_line_total(details, key):
+    """Somme des lignes libres complètes. Une ligne vide ne compte pas."""
+    total = Decimal("0")
+    rows = (details or {}).get(key) or []
+    if not isinstance(rows, list):
+        return total
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        label = str(row.get("label") or "").strip()
+        amount = row.get("amount")
+        if not label or amount in (None, ""):
+            continue
+        total += Decimal(str(amount))
+    return total
 
 
 def detail_amount(analysis, key, default=Decimal("0")):
@@ -248,6 +267,19 @@ def validate_details(value):
                             raise InvalidOperation
                     except (InvalidOperation, ValueError):
                         raise ValidationError({key: f"Ligne {index + 1} : le retard se saisit en jours entiers."}) from None
+        if key in {"extra_income", "extra_charges"}:
+            kept = []
+            for index, row in enumerate(rows):
+                label = str(row.get("label") or "").strip()
+                amount = row.get("amount")
+                if not label and amount in (None, ""):
+                    continue
+                if not label or amount in (None, ""):
+                    raise ValidationError({
+                        key: f"Ligne {index + 1} : indiquez le libellé et le montant.",
+                    })
+                kept.append({**row, "label": label})
+            value[key] = kept
     _validate_tpe_bounds(value)
     start = str(value.get("minimal_cash_start") or "")
     end = str(value.get("minimal_cash_end") or "")

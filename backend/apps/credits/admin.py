@@ -6,9 +6,11 @@ from .models import (
     CreditDocument,
     CreditInstructionPolicy,
     FieldVisit,
+    FieldVisitPhoto,
     FinancialAnalysis,
     Installment,
     Loan,
+    ExternalBankAccount,
     StockPhoto,
 )
 
@@ -22,6 +24,15 @@ class StockPhotoInline(admin.TabularInline):
     model = StockPhoto
     extra = 0
     fields = ["image", "caption"]
+
+
+class ExternalBankAccountInline(admin.TabularInline):
+    model = ExternalBankAccount
+    extra = 0
+    fields = [
+        "institution_name", "opened_on", "account_number",
+        "credit_movement_count", "credit_movement_volume", "statement",
+    ]
 
 
 class CreditDocumentInline(admin.TabularInline):
@@ -39,7 +50,7 @@ class CreditApplicationAdmin(admin.ModelAdmin):
     list_filter = ["status", "currency", "periodicity", "tenant"]
     search_fields = ["reference"]
     readonly_fields = ["reference", "last_due_date"]
-    inlines = [FinancialAnalysisInline, StockPhotoInline, CreditDocumentInline]
+    inlines = [FinancialAnalysisInline, StockPhotoInline, ExternalBankAccountInline, CreditDocumentInline]
 
 
 class InstallmentInline(admin.TabularInline):
@@ -57,10 +68,16 @@ class LoanAdmin(admin.ModelAdmin):
     inlines = [InstallmentInline]
 
 
+class FieldVisitPhotoInline(admin.TabularInline):
+    model = FieldVisitPhoto
+    extra = 0
+
+
 @admin.register(FieldVisit)
 class FieldVisitAdmin(admin.ModelAdmin):
-    list_display = ["application", "visit_date", "visited_by", "tenant"]
-    list_filter = ["tenant"]
+    list_display = ["application", "visit_date", "visited_by", "person_met", "conclusion", "tenant"]
+    list_filter = ["tenant", "conclusion"]
+    inlines = [FieldVisitPhotoInline]
 
 
 class PublishedConfigurationReadOnlyAdmin(admin.ModelAdmin):

@@ -172,11 +172,12 @@ def build_analysis(app, profile, scenario, factor, as_of):
             personal_savings=D("600000"), personal_real_estate_value=D("35000000") if scenario == 5 else D("5000000"),
             personal_vehicle_value=D("4500000"), personal_productive_assets=D("1800000"), informal_income_weight=D("70"), has_side_activity=activity)
         charges = {"rent_expense": 60000, "food_expense": 70000, "utilities_expense": 18000, "transport_expense": 20000,
-                   "education_expense": 20000, "health_expense": 10000, "other_household_expenses": 5000,
+                   "education_expense": 20000, "health_expense": 10000,
                    "tontine_expense": 5000, "social_contributions": 2000, "family_support_expense": 5000, "other_monthly_obligations": 3000}
         defaults.update({key: D(value) * periods_months for key, value in charges.items()})
+        details["extra_charges"] = [{"label": "Autres charges", "amount": str(D("5000") * periods_months)}]
         monthly_in = (defaults["salary_income"] + defaults["spouse_income"] + defaults["rental_income"] + defaults["variable_income"]) / periods_months
-        monthly_out = sum((D(value) for value in charges.values()), D("0"))
+        monthly_out = sum((D(value) for value in charges.values()), D("0")) + D("5000")
         if activity:
             product_rows = products(factor * periods_months, divisor=20 if profile == "IND" else 40,
                                     cost_ratio=D("1.05") if scenario == 3 else D(".55"))

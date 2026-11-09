@@ -109,7 +109,7 @@ class CreditApplicationViewSet(AgencyScopedViewSet):
             )
         return qs.select_related(
             "client", "product", "agency", "created_by", "submitted_by", "loan"
-        ).prefetch_related("stock_photos", "documents", "extra_fees")
+        ).prefetch_related("stock_photos", "documents", "extra_fees", "external_accounts")
 
     def get_serializer_class(self):
         if self.action == "list":
@@ -1074,7 +1074,7 @@ class CreditInstructionPolicyViewSet(TenantContextMixin, viewsets.ViewSet):
 
 
 class FieldVisitViewSet(TenantScopedViewSet):
-    queryset = FieldVisit.objects.select_related("application", "visited_by").all()
+    queryset = FieldVisit.objects.select_related("application", "visited_by").prefetch_related("photos").all()
     serializer_class = FieldVisitSerializer
     permission_classes = [IsAuthenticated, MustChangePasswordGate, HasModelPermission]
     enforce_model_permissions = True

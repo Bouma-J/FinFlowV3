@@ -641,7 +641,9 @@ def seed_rich_operational_data(*, tenant, agency, product, user, stdout=None):
                     "transport_expense": Decimal("40000"),
                     "education_expense": Decimal("50000"),
                     "health_expense": Decimal("20000"),
-                    "other_household_expenses": Decimal("30000"),
+                    "analysis_details": {
+                        "extra_charges": [{"label": "Autres charges", "amount": "30000"}],
+                    },
                     "tontine_expense": Decimal("25000"),
                     "employment_seniority_months": 48,
                     "existing_debt_monthly": Decimal("45000"),

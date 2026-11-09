@@ -470,6 +470,10 @@ class GuaranteeSerializer(serializers.ModelSerializer):
             surety = None
             attrs["surety"] = None
 
+        attrs["owner_last_name"] = ""
+        attrs["owner_first_name"] = ""
+        attrs["owner_marital_status"] = ""
+        attrs["matrimonial_regime"] = ""
         if belongs:
             attrs["surety"] = None
         elif not surety:

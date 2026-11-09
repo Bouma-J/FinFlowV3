@@ -1,4 +1,6 @@
-from decimal import Decimal
+import json
+from datetime import date
+from decimal import Decimal, InvalidOperation
 
 from django.core.exceptions import ObjectDoesNotExist
 from django.db import transaction
@@ -12,8 +14,10 @@ from .models import (
     CreditApplication,
     CreditApplicationFee,
     CreditDocument,
+    ExternalBankAccount,
     CreditInstructionPolicy,
     FieldVisit,
+    FieldVisitPhoto,
     FinancialAnalysis,
     FinancialDocument,
     Installment,
@@ -542,9 +546,50 @@ class FinancialAnalysisSerializer(serializers.ModelSerializer):
         return analysis
 
 
+class FieldVisitPhotoSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = FieldVisitPhoto
+        fields = ["id", "image"]
+        read_only_fields = fields
+
+    def to_representation(self, instance):
+        return presign_file_fields(super().to_representation(instance), instance, "image")
+
+
+class VisitPlaceListField(serializers.Field):
+    CODES = {choice for choice, _label in FieldVisit.Place.choices}
+
+    def to_internal_value(self, data):
+        if isinstance(data, str):
+            raw = data.strip()
+            if not raw:
+                return []
+            try:
+                data = json.loads(raw)
+            except json.JSONDecodeError as exc:
+                raise serializers.ValidationError("Indiquez les lieux visités.") from exc
+        if data in (None, ""):
+            return []
+        if not isinstance(data, list):
+            raise serializers.ValidationError("Indiquez les lieux visités.")
+        clean = []
+        for item in data:
+            code = str(item).strip()
+            if code not in self.CODES:
+                raise serializers.ValidationError("Lieu visité inconnu.")
+            if code not in clean:
+                clean.append(code)
+        return clean
+
+    def to_representation(self, value):
+        return list(value or [])
+
+
 class FieldVisitSerializer(serializers.ModelSerializer):
     visited_by_display = serializers.SerializerMethodField()
     can_edit = serializers.SerializerMethodField()
+    visited_places = VisitPlaceListField(required=False)
+    photos = FieldVisitPhotoSerializer(many=True, read_only=True)
 
     def get_visited_by_display(self, obj):
         return str(obj.visited_by) if obj.visited_by_id else ""
@@ -569,7 +614,8 @@ class FieldVisitSerializer(serializers.ModelSerializer):
         fields = [
             "id", "application", "visit_date", "visited_by",
             "visited_by_display", "visitor_role", "can_edit",
-            "geo_coordinates", "report", "created_at",
+            "geo_coordinates", "visited_places", "person_met", "conclusion",
+            "report", "minutes", "photos", "created_at",
         ]
         read_only_fields = [
             "id", "visited_by", "visited_by_display", "visitor_role",
@@ -583,7 +629,37 @@ class FieldVisitSerializer(serializers.ModelSerializer):
 
             validated_data["visited_by"] = request.user
             validated_data["visitor_role"] = user_role_label(request.user)
-        return super().create(validated_data)
+        visit = super().create(validated_data)
+        self._save_photos(visit)
+        return visit
+
+    def _save_photos(self, visit):
+        request = self.context.get("request")
+        if not request:
+            return
+        from apps.common.upload_validation import validate_uploaded_file
+
+        for image in request.FILES.getlist("photos"):
+            validate_uploaded_file(image, tenant=visit.tenant, check_quota=True)
+            FieldVisitPhoto.objects.create(
+                visit=visit,
+                tenant_id=visit.tenant_id,
+                image=image,
+            )
+
+    def validate_minutes(self, value):
+        if not value:
+            return value
+        from apps.common.upload_validation import (
+            resolve_tenant_from_context,
+            validate_uploaded_file,
+        )
+
+        return validate_uploaded_file(
+            value,
+            tenant=resolve_tenant_from_context(self.context),
+            check_quota=True,
+        )
 
     def validate(self, attrs):
         if (
@@ -599,6 +675,26 @@ class FieldVisitSerializer(serializers.ModelSerializer):
                 }
             )
         return attrs
+
+    def to_representation(self, instance):
+        return presign_file_fields(
+            super().to_representation(instance), instance, "minutes",
+        )
+
+
+class ExternalBankAccountSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = ExternalBankAccount
+        fields = [
+            "id", "institution_name", "opened_on", "account_number",
+            "credit_movement_count", "credit_movement_volume", "statement",
+        ]
+        read_only_fields = fields
+
+    def to_representation(self, instance):
+        return presign_file_fields(
+            super().to_representation(instance), instance, "statement"
+        )
 
 
 class StockPhotoSerializer(serializers.ModelSerializer):
@@ -720,7 +816,41 @@ def _collection_snapshot(loan):
     return str(case.id), case.stage, case.get_stage_display()
 
 
+class EmptyAsNullIntegerField(serializers.IntegerField):
+    def to_internal_value(self, data):
+        if data is None or data == "":
+            return None
+        return super().to_internal_value(data)
+
+
+class EmptyAsNullBooleanField(serializers.BooleanField):
+    def to_internal_value(self, data):
+        if data is None or data == "":
+            return None
+        return super().to_internal_value(data)
+
+
+class EmptyAsNullDateField(serializers.DateField):
+    def to_internal_value(self, data):
+        if data is None or data == "":
+            return None
+        return super().to_internal_value(data)
+
+
+SPOUSE_WRITE_FIELDS = ("spouse_first_name", "spouse_phone", "spouse_profession")
+
+
 class CreditApplicationSerializer(serializers.ModelSerializer):
+    children_count = EmptyAsNullIntegerField(allow_null=True, required=False, min_value=0)
+    housing_seniority_months = EmptyAsNullIntegerField(allow_null=True, required=False, min_value=0)
+    job_seniority_months = EmptyAsNullIntegerField(allow_null=True, required=False, min_value=0)
+    career_seniority_months = EmptyAsNullIntegerField(allow_null=True, required=False, min_value=0)
+    spouse_has_income = EmptyAsNullBooleanField(allow_null=True, required=False)
+    activity_start_date = EmptyAsNullDateField(allow_null=True, required=False)
+    contract_end_date = EmptyAsNullDateField(allow_null=True, required=False)
+    spouse_first_name = serializers.CharField(required=False, allow_blank=True, write_only=True)
+    spouse_phone = serializers.CharField(required=False, allow_blank=True, write_only=True)
+    spouse_profession = serializers.CharField(required=False, allow_blank=True, write_only=True)
     interest_rate = serializers.DecimalField(max_digits=6, decimal_places=3, min_value=Decimal("0"), required=False, allow_null=True)
     fees_rate = serializers.DecimalField(max_digits=6, decimal_places=3, min_value=Decimal("0"), max_value=Decimal("100"), required=False, allow_null=True)
     mandatory_savings_rate = serializers.DecimalField(max_digits=6, decimal_places=3, min_value=Decimal("0"), max_value=Decimal("100"), required=False, allow_null=True)
@@ -734,6 +864,7 @@ class CreditApplicationSerializer(serializers.ModelSerializer):
     can_add_field_visit = serializers.SerializerMethodField()
     status_display = serializers.CharField(source="get_status_display", read_only=True)
     stock_photos = StockPhotoSerializer(many=True, read_only=True)
+    external_accounts = ExternalBankAccountSerializer(many=True, read_only=True)
     documents = CreditDocumentSerializer(many=True, read_only=True)
     extra_fees = CreditApplicationFeeSerializer(many=True, read_only=True)
     fees_breakdown = serializers.SerializerMethodField()
@@ -861,14 +992,22 @@ class CreditApplicationSerializer(serializers.ModelSerializer):
             "activity_start_date", "exact_address", "clientele",
             "tax_regime",
             "avg_client_payment_days", "avg_supplier_payment_days",
-            "stock_photos", "documents",
+            "stock_photos", "documents", "external_accounts",
             # Environnement commercial
             "catchment_area",
             # Patrimoine
             "premises_status",
             # Demandeur & emploi
-            "employer_name", "contract_type",
+            "employer_name", "contract_type", "contract_end_date",
             "salary_domiciliation", "dependents_count",
+            "earning_path", "marital_regime", "spouse_has_income", "children_count",
+            "housing_status", "housing_seniority_months",
+            "employer_address", "employer_phone", "employer_sector",
+            "employment_profession", "job_title",
+            "job_seniority_months", "career_seniority_months",
+            "activity_name", "activity_trade", "activity_sector",
+            "activity_premises_status", "activity_ifu",
+            "spouse_first_name", "spouse_phone", "spouse_profession",
             # Relation bancaire
             "client_account_number", "relationship_start_date",
             "avg_monthly_credit_movements",
@@ -877,7 +1016,7 @@ class CreditApplicationSerializer(serializers.ModelSerializer):
             # Conditions particulières
             "special_conditions", "suspensive_conditions",
             # Conformité
-            "beneficial_owner", "is_pep", "funds_origin",
+            "beneficial_owner", "is_pep", "pep_details", "funds_origin",
             # Complétude documentaire
             "document_checklist",
             # Suivi
@@ -1008,6 +1147,21 @@ class CreditApplicationSerializer(serializers.ModelSerializer):
                 parse_extra_fees(request.data.get("extra_fees"))
             except ValueError as exc:
                 raise serializers.ValidationError({"extra_fees": str(exc)}) from exc
+        contract_type = attrs.get(
+            "contract_type",
+            getattr(self.instance, "contract_type", "") if self.instance else "",
+        )
+        if contract_type != "CDD":
+            attrs["contract_end_date"] = None
+        is_pep = attrs.get(
+            "is_pep",
+            getattr(self.instance, "is_pep", False) if self.instance else False,
+        )
+        if not is_pep:
+            attrs["pep_details"] = ""
+        client = attrs.get("client") or (self.instance.client if self.instance else None)
+        if getattr(client, "client_type", None) == "INDIVIDUAL":
+            attrs["beneficial_owner"] = ""
         return attrs
 
     def _validate_catalog_refs(self, attrs, tenant_id):
@@ -1044,6 +1198,100 @@ class CreditApplicationSerializer(serializers.ModelSerializer):
                 )
         if errors:
             raise serializers.ValidationError(errors)
+        children = attrs.get("children_count", getattr(self.instance, "children_count", None) if self.instance else None)
+        dependents = attrs.get("dependents_count", getattr(self.instance, "dependents_count", None) if self.instance else None)
+        if children is not None and dependents is not None and children > dependents:
+            raise serializers.ValidationError({
+                "children_count": "Le nombre d'enfants ne peut pas dépasser le nombre de personnes à charge.",
+            })
+
+    def _save_external_accounts(self, application):
+        request = self.context.get("request")
+        if not request or "external_accounts" not in request.data:
+            return
+        raw = request.data.get("external_accounts")
+        try:
+            rows = json.loads(raw) if isinstance(raw, str) else raw
+        except json.JSONDecodeError as exc:
+            raise serializers.ValidationError({
+                "external_accounts": "La liste des comptes hors institution est illisible.",
+            }) from exc
+        if not isinstance(rows, list):
+            raise serializers.ValidationError({
+                "external_accounts": "La liste des comptes hors institution est illisible.",
+            })
+        if len(rows) > 20:
+            raise serializers.ValidationError({
+                "external_accounts": "Vingt comptes hors institution au maximum.",
+            })
+        from apps.common.upload_validation import validate_uploaded_file
+
+        kept = []
+        for index, row in enumerate(rows):
+            if not isinstance(row, dict):
+                raise serializers.ValidationError({
+                    "external_accounts": "Chaque compte doit être un ensemble de champs.",
+                })
+            institution = str(row.get("institution_name") or "").strip()
+            account_number = str(row.get("account_number") or "").strip()
+            opened_raw = str(row.get("opened_on") or "").strip()
+            count_raw = str(row.get("credit_movement_count") or "").strip()
+            volume_raw = str(row.get("credit_movement_volume") or "").strip()
+            upload = request.FILES.get(f"external_statement__{index}")
+            existing = None
+            row_id = str(row.get("id") or "").strip()
+            if row_id:
+                existing = application.external_accounts.filter(pk=row_id).first()
+            if not any((
+                institution, account_number, opened_raw, count_raw, volume_raw, upload,
+                existing and existing.statement,
+            )):
+                continue
+            opened_on = None
+            if opened_raw:
+                try:
+                    opened_on = date.fromisoformat(opened_raw)
+                except ValueError as exc:
+                    raise serializers.ValidationError({
+                        "external_accounts": "La date d'ouverture d'un compte est invalide.",
+                    }) from exc
+            count = None
+            if count_raw:
+                try:
+                    count = int(count_raw)
+                except ValueError as exc:
+                    raise serializers.ValidationError({
+                        "external_accounts": "Le nombre de mouvements créditeurs doit être un entier.",
+                    }) from exc
+                if count < 0:
+                    raise serializers.ValidationError({
+                        "external_accounts": "Le nombre de mouvements créditeurs ne peut pas être négatif.",
+                    })
+            volume = None
+            if volume_raw:
+                try:
+                    volume = Decimal(volume_raw)
+                except InvalidOperation as exc:
+                    raise serializers.ValidationError({
+                        "external_accounts": "Le volume des mouvements créditeurs est invalide.",
+                    }) from exc
+            account = existing or ExternalBankAccount(
+                application=application, tenant_id=application.tenant_id,
+            )
+            account.institution_name = institution[:200]
+            account.opened_on = opened_on
+            account.account_number = account_number[:50]
+            account.credit_movement_count = count
+            account.credit_movement_volume = volume
+            if upload:
+                account.statement = validate_uploaded_file(
+                    upload, tenant=application.tenant, check_quota=True,
+                )
+            elif row.get("remove_statement"):
+                account.statement = None
+            account.save()
+            kept.append(account.pk)
+        application.external_accounts.exclude(pk__in=kept).delete()
 
     def _save_stock_photos(self, application):
         request = self.context.get("request")
@@ -1068,17 +1316,35 @@ class CreditApplicationSerializer(serializers.ModelSerializer):
         except ValueError as exc:
             raise serializers.ValidationError({"extra_fees": str(exc)}) from exc
 
+    def _save_spouse(self, application, spouse):
+        if application.client.client_type != "INDIVIDUAL":
+            return
+        updates = []
+        for key in SPOUSE_WRITE_FIELDS:
+            if key not in spouse:
+                continue
+            setattr(application.client, key, spouse[key] or "")
+            updates.append(key)
+        if updates:
+            application.client.save(update_fields=updates)
+
     @transaction.atomic
     def create(self, validated_data):
+        spouse = {key: validated_data.pop(key) for key in SPOUSE_WRITE_FIELDS if key in validated_data}
         application = super().create(validated_data)
+        self._save_spouse(application, spouse)
         self._save_stock_photos(application)
+        self._save_external_accounts(application)
         self._save_extra_fees(application)
         return application
 
     @transaction.atomic
     def update(self, instance, validated_data):
+        spouse = {key: validated_data.pop(key) for key in SPOUSE_WRITE_FIELDS if key in validated_data}
         application = super().update(instance, validated_data)
+        self._save_spouse(application, spouse)
         self._save_stock_photos(application)
+        self._save_external_accounts(application)
         self._save_extra_fees(application)
         return application
 

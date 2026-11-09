@@ -1,16 +1,19 @@
 import { useQuery } from "@tanstack/react-query";
 import { ArrowLeft, ShieldCheck } from "lucide-react";
-import { Link, useNavigate, useParams } from "react-router-dom";
+import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
 
 import { api } from "@/api/client";
-import type { CreditApplication } from "@/api/types";
+import type { CreditApplication, Surety } from "@/api/types";
 import { GuaranteeForm } from "@/components/GuaranteeForm";
 import { RenewGuaranteesPanel } from "@/components/RenewGuaranteesPanel";
+import { SuretyForm } from "@/components/SuretyForm";
 import { ErrorState, PageHeader, Spinner } from "@/components/ui";
 
 export function GuaranteeAddPage() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
+  const [params, setParams] = useSearchParams();
+  const creatingSurety = params.get("creer") === "caution";
 
   const { data: app, isLoading, isError, refetch } = useQuery({
     queryKey: ["credit-application", id],
@@ -36,7 +39,7 @@ export function GuaranteeAddPage() {
     <div className="page-shell">
       <PageHeader
         icon={ShieldCheck}
-        title="Ajouter une garantie"
+        title={creatingSurety ? "Créer une caution" : "Ajouter une garantie"}
         subtitle={`Dossier ${app.reference} — ${app.client_display}`}
         actions={
           <Link className="btn btn-ghost" to={`/dossiers/${id}`}>
@@ -45,18 +48,29 @@ export function GuaranteeAddPage() {
           </Link>
         }
       />
-      <RenewGuaranteesPanel
-        applicationId={app.id}
-        currency={app.currency || "XOF"}
-      />
-      <GuaranteeForm
-        mode="create"
-        clientId={app.client}
-        applicationId={app.id}
-        loanAmount={loanAmount}
-        backTo={`/dossiers/${id}`}
-        onSaved={() => navigate(`/dossiers/${id}`)}
-      />
+      {creatingSurety ? (
+        <SuretyForm
+          onSuccess={(surety: Surety) => setParams({ surety: surety.id }, { replace: true })}
+          onCancel={() => setParams({}, { replace: true })}
+        />
+      ) : (
+        <>
+          <RenewGuaranteesPanel
+            applicationId={app.id}
+            currency={app.currency || "XOF"}
+          />
+          <GuaranteeForm
+            mode="create"
+            clientId={app.client}
+            applicationId={app.id}
+            loanAmount={loanAmount}
+            backTo={`/dossiers/${id}`}
+            initialSuretyId={params.get("surety") || ""}
+            onCreateSurety={() => setParams({ creer: "caution" })}
+            onSaved={() => navigate(`/dossiers/${id}`)}
+          />
+        </>
+      )}
     </div>
   );
 }

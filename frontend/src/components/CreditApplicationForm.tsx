@@ -5,7 +5,6 @@ import {
   ClipboardList,
   ExternalLink,
   FileText,
-  HeartPulse,
   History,
   Home,
   Images,
@@ -31,15 +30,17 @@ import {
 import { api } from "@/api/client";
 import { allCbsReferences } from "@/api/cbs";
 import type { EffectiveConfiguration } from "@/api/configuration";
-import type {
-  Agency,
-  CbsCatalogItem,
-  ChecklistItem,
-  Client,
-  CreditApplication,
-  CreditDocument,
-  CreditProduct,
-  Paginated,
+import {
+  CLIENT_LABELS,
+  type Agency,
+  type CbsCatalogItem,
+  type ChecklistItem,
+  type Client,
+  type CreditApplication,
+  type CreditDocument,
+  type CreditProduct,
+  type ExternalBankAccount,
+  type Paginated,
 } from "@/api/types";
 import {
   ClientAutocomplete,
@@ -84,6 +85,25 @@ const PREMISES = [
   { value: "OWNER", label: "Propriétaire" },
   { value: "TENANT", label: "Locataire" },
 ];
+const HOUSING = [
+  { value: "OWNER", label: "Propriétaire" },
+  { value: "TENANT", label: "Locataire" },
+  { value: "HOSTED", label: "Hébergé" },
+];
+const EARNING_PATHS = [
+  { value: "SALARIE", label: "Salarié" },
+  { value: "INDEPENDANT", label: "Activité" },
+  { value: "MIXTE", label: "Les deux" },
+];
+const MARITAL_REGIMES = [
+  { value: "COMMUNITY", label: "Communauté" },
+  { value: "SEPARATION", label: "Séparation de biens" },
+  { value: "OTHER", label: "Autre" },
+];
+const YES_NO = [
+  { value: "true", label: "Oui" },
+  { value: "false", label: "Non" },
+];
 
 const TEXT_KEYS = [
   "product", "agency", "currency",
@@ -97,12 +117,18 @@ const TEXT_KEYS = [
   "avg_client_payment_days", "avg_supplier_payment_days",
   "catchment_area",
   "premises_status",
-  "employer_name", "contract_type", "dependents_count",
+  "employer_name", "contract_type", "contract_end_date", "dependents_count",
+  "earning_path", "marital_regime", "spouse_has_income", "children_count",
+  "housing_status", "housing_seniority_months",
+  "employer_address", "employer_phone", "employer_sector",
+  "employment_profession", "job_title",
+  "job_seniority_months", "career_seniority_months",
+  "activity_name", "activity_trade", "activity_sector",
+  "activity_premises_status", "activity_ifu",
   "client_account_number", "relationship_start_date",
   "avg_monthly_credit_movements",
-  "insurance_company", "insurance_premium", "insurance_policy_number", "insurance_expiry_date",
   "special_conditions", "suspensive_conditions",
-  "beneficial_owner", "funds_origin",
+  "beneficial_owner", "pep_details",
 ] as const;
 
 type TextKey = (typeof TEXT_KEYS)[number];
@@ -110,7 +136,7 @@ type TextState = Record<TextKey, string>;
 
 const BOOL_KEYS = [
   "salary_domiciliation",
-  "has_credit_insurance", "is_pep",
+  "is_pep",
 ] as const;
 type BoolKey = (typeof BOOL_KEYS)[number];
 type BoolState = Record<BoolKey, boolean>;
@@ -119,14 +145,26 @@ type BoolState = Record<BoolKey, boolean>;
 const TEXT_ONLY_KEYS = new Set<string>([
   "purpose", "exact_address", "clientele",
   "employer_name", "client_account_number",
-  "insurance_company", "insurance_policy_number", "special_conditions",
-  "suspensive_conditions", "beneficial_owner", "funds_origin",
+  "special_conditions",
+  "suspensive_conditions", "beneficial_owner", "pep_details",
+]);
+
+const PROFILE_ALWAYS = new Set<TextKey>([
+  "earning_path", "marital_regime", "spouse_has_income", "children_count",
+  "housing_status", "housing_seniority_months",
+  "employer_name", "employer_address", "employer_phone", "employer_sector",
+  "employment_profession", "job_title",
+  "contract_type", "contract_end_date", "job_seniority_months", "career_seniority_months",
+  "activity_name", "activity_trade", "activity_sector",
+  "activity_premises_status", "activity_ifu", "tax_regime", "exact_address",
+  "activity_start_date",
 ]);
 
 const CONTRACT_TYPES = [
   { value: "CDI", label: "CDI" },
   { value: "CDD", label: "CDD" },
   { value: "CIVIL_SERVANT", label: "Fonctionnaire" },
+  { value: "DAILY", label: "Journalier" },
   { value: "INDEPENDENT", label: "Indépendant" },
   { value: "RETIRED", label: "Retraité" },
   { value: "OTHER", label: "Autre" },
@@ -153,23 +191,26 @@ const PURPOSE_TYPES_INDIVIDUAL = new Set([
   "OTHER",
 ]);
 
-const CHECKLIST_COMMON = [
-  "Pièce d'identité",
-  "Justificatif de domicile",
-  "Lettre de demande",
-  "Relevés bancaires (6 mois)",
-];
-const CHECKLIST_INDIVIDUAL = [
-  "Justificatifs de revenus / bulletins de salaire",
-  "Attestation de travail",
-];
+const CHECKLIST_COMMON = ["Justificatif de domicile"];
+const CHECKLIST_INDIVIDUAL = ["Attestation de travail"];
 const CHECKLIST_CORPORATE = [
-  "RCCM",
-  "IFU / NINEA",
-  "États financiers (2 derniers exercices)",
   "Statuts de la société",
   "PV autorisant l'emprunt",
 ];
+/** Déjà jointes sur la fiche client, dans le prêt ou dans l'analyse. */
+const COLLECTED_ELSEWHERE = new Set([
+  "pièce d'identité",
+  "lettre de demande",
+  "relevés bancaires (6 mois)",
+  "justificatifs de revenus / bulletins de salaire",
+  "rccm",
+  "ifu / ninea",
+  "états financiers (2 derniers exercices)",
+]);
+
+function collectedElsewhere(label: string) {
+  return COLLECTED_ELSEWHERE.has(label.trim().toLowerCase());
+}
 
 const emptyText = (): TextState =>
   ({
@@ -209,16 +250,36 @@ const FIELD_LABELS: Record<string, string> = {
   personal_contribution: "Apport personnel",
   employer_name: "Employeur",
   contract_type: "Type de contrat",
+  contract_end_date: "Date de fin du contrat",
   dependents_count: "Personnes à charge",
+  earning_path: "Parcours",
+  marital_regime: "Régime matrimonial",
+  spouse_has_income: "Le conjoint a un revenu",
+  children_count: "Enfants à charge",
+  housing_status: "Statut du logement",
+  housing_seniority_months: "Ancienneté dans le logement",
+  employer_address: "Adresse de l'employeur",
+  employer_phone: "Téléphone de l'employeur",
+  employer_sector: "Secteur de l'employeur",
+  employment_profession: "Profession",
+  job_title: "Poste occupé",
+  job_seniority_months: "Ancienneté dans l'emploi",
+  career_seniority_months: "Ancienneté professionnelle",
+  activity_name: "Nom de l'activité",
+  activity_trade: "Métier",
+  activity_sector: "Secteur de l'activité",
+  activity_premises_status: "Statut du local d'activité",
+  activity_ifu: "IFU de l'activité",
+  spouse_first_name: "Prénom du conjoint",
+  spouse_phone: "Téléphone du conjoint",
+  spouse_profession: "Profession du conjoint",
   client_account_number: "Numéro de compte",
   relationship_start_date: "Début de la relation",
   avg_monthly_credit_movements: "Mouvements créditeurs mensuels moyens",
-  insurance_company: "Compagnie d'assurance",
-  insurance_premium: "Prime d'assurance",
   special_conditions: "Conditions particulières",
   suspensive_conditions: "Conditions suspensives",
   beneficial_owner: "Bénéficiaire effectif",
-  funds_origin: "Origine des fonds / apport",
+  pep_details: "Explication",
 };
 
 const REQUIRED_FIELDS: { key: string; label: string }[] = [
@@ -277,6 +338,46 @@ function textFromApp(app: CreditApplication): TextState {
   return state;
 }
 
+type AccountDraft = {
+  key: string;
+  id: string;
+  institution_name: string;
+  opened_on: string;
+  account_number: string;
+  credit_movement_count: string;
+  credit_movement_volume: string;
+  statement: string;
+  file: File | null;
+};
+
+function accountDraft(account: ExternalBankAccount): AccountDraft {
+  return {
+    key: account.id,
+    id: account.id,
+    institution_name: account.institution_name || "",
+    opened_on: account.opened_on || "",
+    account_number: account.account_number || "",
+    credit_movement_count: account.credit_movement_count == null ? "" : String(account.credit_movement_count),
+    credit_movement_volume: account.credit_movement_volume == null ? "" : String(account.credit_movement_volume),
+    statement: account.statement || "",
+    file: null,
+  };
+}
+
+function emptyAccount(): AccountDraft {
+  return {
+    key: `new-${Date.now()}-${Math.random().toString(16).slice(2)}`,
+    id: "",
+    institution_name: "",
+    opened_on: "",
+    account_number: "",
+    credit_movement_count: "",
+    credit_movement_volume: "",
+    statement: "",
+    file: null,
+  };
+}
+
 export function CreditApplicationForm({
   initial,
   defaultClientId,
@@ -302,7 +403,7 @@ export function CreditApplicationForm({
     ) as BoolState;
   });
   const [checklist, setChecklist] = useState<ChecklistItem[]>(
-    initial?.document_checklist ?? [],
+    (initial?.document_checklist ?? []).filter((item) => !collectedElsewhere(item.label)),
   );
   const [newItem, setNewItem] = useState("");
   const [letter, setLetter] = useState<File | null>(null);
@@ -312,6 +413,9 @@ export function CreditApplicationForm({
   // Pièces déjà scannées (mode édition), indexées par libellé.
   const [documents, setDocuments] = useState<CreditDocument[]>(
     initial?.documents ?? [],
+  );
+  const [externalAccounts, setExternalAccounts] = useState(() =>
+    (initial?.external_accounts ?? []).map(accountDraft),
   );
   const [extraFees, setExtraFees] = useState<
     { key: string; label: string; mode: "PERCENT" | "AMOUNT"; value: string }[]
@@ -427,6 +531,17 @@ export function CreditApplicationForm({
     queryFn: async () => (await api.get<Client>(`/clients/${client}/`)).data,
   });
   const selectedClient = selectedClientQuery.data;
+  const [spouse, setSpouse] = useState({ first: "", phone: "", profession: "" });
+  const [spouseClientId, setSpouseClientId] = useState("");
+  useEffect(() => {
+    if (!selectedClient || selectedClient.id === spouseClientId) return;
+    setSpouse({
+      first: selectedClient.spouse_first_name || "",
+      phone: selectedClient.spouse_phone || "",
+      profession: selectedClient.spouse_profession || "",
+    });
+    setSpouseClientId(selectedClient.id);
+  }, [selectedClient, spouseClientId]);
 
   const clientType = selectedClient?.client_type ?? initial?.client_type;
   const isCorporate = clientType === "CORPORATE";
@@ -466,11 +581,10 @@ export function CreditApplicationForm({
         { id: "sec-activity", icon: Store, label: isGroupement ? "Activité du groupement" : "Activité de l'entreprise", show: showTypedSections && isLegalEntity },
         { id: "sec-market", icon: Users, label: "Environnement commercial", show: showTypedSections && isLegalEntity },
         { id: "sec-applicant", icon: Briefcase, label: "Profil du demandeur", show: showTypedSections && isIndividual },
-        { id: "sec-banking", icon: History, label: "Relation bancaire", show: showTypedSections },
-        { id: "sec-insurance", icon: HeartPulse, label: "Assurance", show: showTypedSections },
+        { id: "sec-banking", icon: History, label: "Comptes hors institution", show: showTypedSections },
         { id: "sec-compliance", icon: ShieldCheck, label: "Conformité (LBC-FT)", show: showTypedSections },
         { id: "sec-special", icon: NotebookPen, label: "Conditions particulières", show: showTypedSections },
-        { id: "sec-documents", icon: ClipboardList, label: "Pièces du dossier", show: showTypedSections },
+        { id: "sec-documents", icon: ClipboardList, label: "Pièces à réunir", show: showTypedSections },
       ].filter((s) => s.show),
     [showTypedSections, isLegalEntity, isIndividual, isGroupement],
   );
@@ -538,6 +652,10 @@ export function CreditApplicationForm({
   function addChecklistItem() {
     const label = newItem.trim();
     if (!label) return;
+    if (collectedElsewhere(label)) {
+      setError("Cette pièce est déjà jointe ailleurs dans le dossier.");
+      return;
+    }
     setChecklist((prev) => [...prev, { label, provided: false }]);
     setNewItem("");
   }
@@ -580,11 +698,23 @@ export function CreditApplicationForm({
       const fd = new FormData();
       fd.append("client", client);
       for (const key of TEXT_KEYS) {
-        const value = text[key].trim();
+        if (PROFILE_ALWAYS.has(key)) continue;
+        let value = text[key].trim();
+        if (key === "pep_details" && !bools.is_pep) value = "";
+        if (key === "beneficial_owner" && !isLegalEntity) value = "";
         // Champs texte : on autorise l'effacement en édition ; les champs
         // numériques/date vides ne sont pas envoyés (évite les erreurs).
         if (value) fd.append(key, value);
         else if (isEdit && TEXT_ONLY_KEYS.has(key)) fd.append(key, "");
+      }
+      for (const key of PROFILE_ALWAYS) {
+        const value = key === "contract_end_date" && text.contract_type !== "CDD" ? "" : text[key].trim();
+        fd.append(key, value);
+      }
+      if (isIndividual) {
+        fd.append("spouse_first_name", spouse.first.trim());
+        fd.append("spouse_phone", spouse.phone.trim());
+        fd.append("spouse_profession", spouse.profession.trim());
       }
       if (isEdit && !text.financing_object) fd.set("financing_object", "");
       for (const key of BOOL_KEYS) {
@@ -603,6 +733,23 @@ export function CreditApplicationForm({
             })),
         ),
       );
+      fd.append(
+        "external_accounts",
+        JSON.stringify(
+          externalAccounts.map((row) => ({
+            id: row.id,
+            institution_name: row.institution_name.trim(),
+            opened_on: row.opened_on,
+            account_number: row.account_number.trim(),
+            credit_movement_count: row.credit_movement_count.trim(),
+            credit_movement_volume: row.credit_movement_volume.trim(),
+            remove_statement: false,
+          })),
+        ),
+      );
+      externalAccounts.forEach((row, index) => {
+        if (row.file) fd.append(`external_statement__${index}`, row.file);
+      });
       if (letter) fd.append("request_letter_scan", letter);
       for (const photo of stockPhotos) fd.append("stock_photos", photo);
       const app = isEdit
@@ -629,6 +776,7 @@ export function CreditApplicationForm({
       setPendingFiles({});
       qc.invalidateQueries({ queryKey: ["credit-applications"] });
       qc.invalidateQueries({ queryKey: ["credit-application", app.id] });
+      qc.invalidateQueries({ queryKey: ["client", client] });
       onCreated(app);
     },
     onError: (e: unknown) => {
@@ -683,6 +831,8 @@ export function CreditApplicationForm({
     setText((prev) => ({ ...prev, [key]: value }));
   const setBool = (key: BoolKey) => (value: boolean) =>
     setBools((prev) => ({ ...prev, [key]: value }));
+  const updateAccount = (key: string, patch: Partial<AccountDraft>) =>
+    setExternalAccounts((prev) => prev.map((row) => (row.key === key ? { ...row, ...patch } : row)));
 
   const quotaPreview = useMemo(() => {
     const cost = Number(text.project_total_cost);
@@ -1089,23 +1239,118 @@ export function CreditApplicationForm({
             id="sec-applicant"
             icon={Briefcase}
             title="Profil du demandeur"
-            description="Situation professionnelle et logement. Ancienneté et revenus : analyse financière."
+            description="La personne vient de la fiche client. Ici : le foyer, le logement et la façon de gagner sa vie. Les montants restent dans l'analyse."
           >
             <div className="subsection-label">
-              <Briefcase size={14} /> Emploi
+              <Users size={14} /> Identité
             </div>
             <div className="form-grid two-col">
-              <Text label="Employeur" value={text.employer_name} onChange={set("employer_name")} />
-              <Select label="Type de contrat" value={text.contract_type} onChange={set("contract_type")} options={CONTRACT_TYPES} />
+              <ReadOnly label="Civilité" value={labelOf(CLIENT_LABELS.civility, selectedClient?.civility)} />
+              <ReadOnly label="Nom" value={selectedClient?.last_name} />
+              <ReadOnly label="Prénom" value={selectedClient?.first_name} />
+              <ReadOnly label="Date de naissance" value={showDate(selectedClient?.birth_date)} />
+              <ReadOnly label="Pays de naissance" value={selectedClient?.birth_country} />
+              <ReadOnly label="Nationalité" value={selectedClient?.nationality} />
+              <ReadOnly label="Profession" value={selectedClient?.profession} />
+              <ReadOnly label="Téléphone" value={selectedClient?.phone} />
+              <ReadOnly label="E-mail" value={selectedClient?.email} />
+              <ReadOnly label="Adresse" value={[selectedClient?.address, selectedClient?.city].filter(Boolean).join(", ")} />
+              <ReadOnly
+                label="Pièce d'identité"
+                value={[labelOf(CLIENT_LABELS.id_document_type, selectedClient?.id_document_type), selectedClient?.national_id].filter(Boolean).join(" · ")}
+              />
+              <ReadOnly label="Établie le" value={showDate(selectedClient?.id_document_issue_date)} />
+              <ReadOnly label="Expire le" value={showDate(selectedClient?.id_document_expiry_date)} />
+            </div>
+            <p className="muted small">Ces informations viennent de l'import du client. Une correction se fait dans le CBS.</p>
+
+            <div className="subsection-label">
+              <Users size={14} /> Foyer
+            </div>
+            <div className="form-grid two-col">
+              <ReadOnly label="Situation matrimoniale" value={labelOf(CLIENT_LABELS.marital_status, selectedClient?.marital_status)} />
+              {selectedClient?.marital_status === "MARRIED" && (
+                <>
+                  <Select label="Régime matrimonial" value={text.marital_regime} onChange={set("marital_regime")} options={MARITAL_REGIMES} />
+                  <ReadOnly label="Nom du conjoint" value={selectedClient.spouse_last_name} />
+                  <Text label="Prénom du conjoint" value={spouse.first} onChange={(value) => setSpouse((prev) => ({ ...prev, first: value }))} />
+                  <Text label="Téléphone du conjoint" value={spouse.phone} onChange={(value) => setSpouse((prev) => ({ ...prev, phone: value }))} />
+                  <Text label="Profession du conjoint" value={spouse.profession} onChange={(value) => setSpouse((prev) => ({ ...prev, profession: value }))} />
+                  <Select label="Le conjoint a un revenu" value={text.spouse_has_income} onChange={set("spouse_has_income")} options={YES_NO} />
+                </>
+              )}
+              <Text label="Enfants à charge" type="number" value={text.children_count} onChange={set("children_count")} />
               <Text label="Personnes à charge" type="number" value={text.dependents_count} onChange={set("dependents_count")} />
             </div>
-            <Check label="Domiciliation du salaire dans l'institution" checked={bools.salary_domiciliation} onChange={setBool("salary_domiciliation")} />
+
             <div className="subsection-label">
               <Home size={14} /> Logement
             </div>
             <div className="form-grid two-col">
-              <Select label="Statut d'occupation du logement" value={text.premises_status} onChange={set("premises_status")} options={PREMISES} />
+              <Select label="Statut du logement" value={text.housing_status} onChange={set("housing_status")} options={HOUSING} />
+              <Text label="Ancienneté dans le logement (mois)" type="number" value={text.housing_seniority_months} onChange={set("housing_seniority_months")} />
+              <ReadOnly label="Adresse du domicile" value={[selectedClient?.address, selectedClient?.city].filter(Boolean).join(", ")} />
             </div>
+
+            <div className="subsection-label">
+              <Briefcase size={14} /> Parcours
+            </div>
+            <div className="form-grid two-col">
+              <Select label="Le client est" value={text.earning_path} onChange={set("earning_path")} options={EARNING_PATHS} />
+              {(text.earning_path === "SALARIE" || text.earning_path === "INDEPENDANT" || text.earning_path === "MIXTE") && (
+                <Text label="Ancienneté professionnelle totale (mois)" type="number" value={text.career_seniority_months} onChange={set("career_seniority_months")} />
+              )}
+            </div>
+
+            {(text.earning_path === "SALARIE" || text.earning_path === "MIXTE") && (
+              <>
+                <div className="subsection-label">
+                  <Briefcase size={14} /> Emploi
+                </div>
+                <div className="form-grid two-col">
+                  <Text label="Profession" value={text.employment_profession} onChange={set("employment_profession")} />
+                  <Text label="Poste occupé" value={text.job_title} onChange={set("job_title")} />
+                  <Text label="Employeur" value={text.employer_name} onChange={set("employer_name")} />
+                  <Text label="Adresse de l'employeur" value={text.employer_address} onChange={set("employer_address")} />
+                  <Text label="Téléphone de l'employeur" value={text.employer_phone} onChange={set("employer_phone")} />
+                  <Text label="Secteur de l'employeur" value={text.employer_sector} onChange={set("employer_sector")} />
+                  <Select
+                    label="Type de contrat"
+                    value={text.contract_type}
+                    onChange={(value) => {
+                      set("contract_type")(value);
+                      if (value !== "CDD") set("contract_end_date")("");
+                    }}
+                    options={CONTRACT_TYPES}
+                  />
+                  {text.contract_type === "CDD" && (
+                    <Text label="Date de fin du contrat" type="date" value={text.contract_end_date} onChange={set("contract_end_date")} />
+                  )}
+                  <Text label="Ancienneté dans cet emploi (mois)" type="number" value={text.job_seniority_months} onChange={set("job_seniority_months")} />
+                </div>
+                <Check label="Domiciliation du salaire dans l'institution" checked={bools.salary_domiciliation} onChange={setBool("salary_domiciliation")} />
+              </>
+            )}
+
+            {(text.earning_path === "INDEPENDANT" || text.earning_path === "MIXTE") && (
+              <>
+                <div className="subsection-label">
+                  <Store size={14} /> Activité
+                </div>
+                <div className="form-grid two-col">
+                  <Text label="Nom de l'activité" value={text.activity_name} onChange={set("activity_name")} />
+                  <Text label="Métier" value={text.activity_trade} onChange={set("activity_trade")} />
+                  <Text label="Secteur de l'activité" value={text.activity_sector} onChange={set("activity_sector")} />
+                  <Text label="Date de début" type="date" value={text.activity_start_date} onChange={set("activity_start_date")} />
+                  <Select label="Régime fiscal" value={text.tax_regime} onChange={set("tax_regime")} options={TAX_REGIME} />
+                  <Text label="Adresse du lieu d'activité" value={text.exact_address} onChange={set("exact_address")} />
+                  <Select label="Statut du local d'activité" value={text.activity_premises_status} onChange={set("activity_premises_status")} options={HOUSING} />
+                  {text.tax_regime !== "INFORMAL" && (
+                    <Text label="IFU de l'activité" value={text.activity_ifu} onChange={set("activity_ifu")} />
+                  )}
+                </div>
+              </>
+            )}
           </FormSection>
         )}
 
@@ -1113,31 +1358,78 @@ export function CreditApplicationForm({
           <FormSection
             id="sec-banking"
             icon={History}
-            title="Relation bancaire"
-            description="Compte dans l'institution. Centrale des risques et incidents : analyse financière."
+            title="Comptes hors institution"
+            description="Comptes tenus dans une autre banque. Le compte de cette institution vient de la fiche client."
           >
-            <div className="form-grid two-col">
-              <Text label="Numéro de compte dans l'institution" value={text.client_account_number} onChange={set("client_account_number")} />
-              <Text label="Début de la relation" type="date" value={text.relationship_start_date} onChange={set("relationship_start_date")} />
-              <Text label="Mouvements créditeurs mensuels moyens" type="number" value={text.avg_monthly_credit_movements} onChange={set("avg_monthly_credit_movements")} />
-            </div>
-          </FormSection>
-        )}
-
-        {showTypedSections && (
-          <FormSection
-            id="sec-insurance"
-            icon={HeartPulse}
-            title="Assurance"
-            description="Couverture décès-invalidité du crédit."
-          >
-            <Check label="Assurance décès-invalidité (ADI)" checked={bools.has_credit_insurance} onChange={setBool("has_credit_insurance")} />
-            <div className="form-grid two-col">
-              <Text label="Compagnie d'assurance" value={text.insurance_company} onChange={set("insurance_company")} />
-              <Text label="Numéro de police" value={text.insurance_policy_number} onChange={set("insurance_policy_number")} />
-              <Text label="Fin de couverture" type="date" value={text.insurance_expiry_date} onChange={set("insurance_expiry_date")} />
-              <Text label="Prime d'assurance" type="number" value={text.insurance_premium} onChange={set("insurance_premium")} />
-            </div>
+            {externalAccounts.length === 0 && (
+              <p className="muted small">Aucun compte hors institution.</p>
+            )}
+            {externalAccounts.map((row, index) => (
+              <div className="stack" key={row.key}>
+                <div className="doc-row">
+                  <span className="subsection-label">Compte {index + 1}</span>
+                  <button
+                    type="button"
+                    className="btn btn-ghost btn-icon"
+                    onClick={() => setExternalAccounts((prev) => prev.filter((item) => item.key !== row.key))}
+                    aria-label="Retirer le compte"
+                  >
+                    <Trash2 size={15} />
+                  </button>
+                </div>
+                <div className="form-grid two-col">
+                  <Text
+                    label="Nom de l'institution"
+                    value={row.institution_name}
+                    onChange={(value) => updateAccount(row.key, { institution_name: value })}
+                  />
+                  <Text
+                    label="Date d'ouverture"
+                    type="date"
+                    value={row.opened_on}
+                    onChange={(value) => updateAccount(row.key, { opened_on: value })}
+                  />
+                  <Text
+                    label="Numéro de compte"
+                    value={row.account_number}
+                    onChange={(value) => updateAccount(row.key, { account_number: value })}
+                  />
+                  <Text
+                    label="Mouvements créditeurs sur 3 mois"
+                    type="number"
+                    value={row.credit_movement_count}
+                    onChange={(value) => updateAccount(row.key, { credit_movement_count: value })}
+                  />
+                  <Text
+                    label="Volume des mouvements créditeurs"
+                    type="number"
+                    value={row.credit_movement_volume}
+                    onChange={(value) => updateAccount(row.key, { credit_movement_volume: value })}
+                  />
+                  <label className="field">
+                    <span>Relevé de compte</span>
+                    {row.statement && !row.file ? (
+                      <a className="doc-chip" href={row.statement} target="_blank" rel="noreferrer">
+                        <ExternalLink size={14} /> Voir le relevé
+                      </a>
+                    ) : null}
+                    <input
+                      type="file"
+                      accept="image/*,application/pdf"
+                      onChange={(event) => updateAccount(row.key, { file: event.target.files?.[0] ?? null })}
+                    />
+                    {row.file ? <span className="muted small">{row.file.name}</span> : null}
+                  </label>
+                </div>
+              </div>
+            ))}
+            <button
+              type="button"
+              className="btn btn-ghost"
+              onClick={() => setExternalAccounts((prev) => [...prev, emptyAccount()])}
+            >
+              <Plus size={15} /> Ajouter un compte
+            </button>
           </FormSection>
         )}
 
@@ -1146,15 +1438,30 @@ export function CreditApplicationForm({
             id="sec-compliance"
             icon={ShieldCheck}
             title="Conformité (LBC-FT)"
-            description="Lutte contre le blanchiment et le financement du terrorisme."
+            description="Personne politiquement exposée. Pour une personne morale, le bénéficiaire effectif."
           >
-            <div className="form-grid two-col">
-              {isLegalEntity && (
-                <Text label="Bénéficiaire effectif" value={text.beneficial_owner} onChange={set("beneficial_owner")} />
-              )}
-              <Text label="Origine des fonds / apport" value={text.funds_origin} onChange={set("funds_origin")} />
-            </div>
-            <Check label="Personne politiquement exposée (PPE)" checked={bools.is_pep} onChange={setBool("is_pep")} />
+            {isLegalEntity && (
+              <Text label="Bénéficiaire effectif" value={text.beneficial_owner} onChange={set("beneficial_owner")} />
+            )}
+            <Check
+              label="Personne politiquement exposée (PPE)"
+              checked={bools.is_pep}
+              onChange={(value) => {
+                setBool("is_pep")(value);
+                if (!value) set("pep_details")("");
+              }}
+            />
+            {bools.is_pep && (
+              <label className="field">
+                <span>Explication</span>
+                <textarea
+                  rows={2}
+                  value={text.pep_details}
+                  onChange={(e) => set("pep_details")(e.target.value)}
+                  placeholder="Fonction, lien et pays"
+                />
+              </label>
+            )}
           </FormSection>
         )}
 
@@ -1180,54 +1487,25 @@ export function CreditApplicationForm({
           <FormSection
             id="sec-documents"
             icon={ClipboardList}
-            title="Pièces du dossier"
-            description="Liste des pièces requises, avec scan à joindre."
+            title="Pièces à réunir"
+            description="Uniquement les pièces qui n'ont pas encore de fichier. Un scan déjà versé apparaît dans Fichiers déjà joints."
           >
             <div className="checklist">
-              {checklist.length === 0 && (
-                <p className="muted small">Aucune pièce listée pour le moment.</p>
+              {checklist.filter((item) => !docByLabel[item.label]).length === 0 && (
+                <p className="muted small">
+                  {checklist.length === 0
+                    ? "Aucune pièce listée pour le moment."
+                    : "Toutes les pièces listées sont déjà jointes."}
+                </p>
               )}
               {checklist.map((item, idx) => {
-                const existingDoc = docByLabel[item.label];
+                if (docByLabel[item.label]) return null;
                 const pending = pendingFiles[item.label];
                 return (
                   <div className="checklist-row" key={`${item.label}-${idx}`}>
-                    <label className="check-inline">
-                      <input
-                        type="checkbox"
-                        checked={item.provided}
-                        onChange={(e) =>
-                          setChecklist((prev) =>
-                            prev.map((it, i) =>
-                              i === idx ? { ...it, provided: e.target.checked } : it,
-                            ),
-                          )
-                        }
-                      />
-                      <span>{item.label}</span>
-                    </label>
+                    <span>{item.label}</span>
                     <div className="checklist-doc">
-                      {existingDoc ? (
-                        <>
-                          <a
-                            className="doc-chip"
-                            href={existingDoc.file}
-                            target="_blank"
-                            rel="noreferrer"
-                          >
-                            <ExternalLink size={14} />
-                            Voir le scan
-                          </a>
-                          <button
-                            type="button"
-                            className="btn btn-ghost btn-icon"
-                            onClick={() => removeExistingDoc(existingDoc)}
-                            aria-label="Retirer le scan"
-                          >
-                            <Trash2 size={15} />
-                          </button>
-                        </>
-                      ) : pending ? (
+                      {pending ? (
                         <>
                           <span className="doc-chip">
                             <FileText size={14} />
@@ -1270,6 +1548,41 @@ export function CreditApplicationForm({
                 );
               })}
             </div>
+            {checklist.some((item) => docByLabel[item.label]) && (
+              <div className="stack" style={{ marginTop: 12 }}>
+                <span className="muted small">Déjà jointes</span>
+                <div className="checklist">
+                  {checklist.map((item, idx) => {
+                    const existingDoc = docByLabel[item.label];
+                    if (!existingDoc) return null;
+                    return (
+                      <div className="checklist-row" key={`done-${item.label}-${idx}`}>
+                        <span>{item.label}</span>
+                        <div className="checklist-doc">
+                          <a
+                            className="doc-chip"
+                            href={existingDoc.file}
+                            target="_blank"
+                            rel="noreferrer"
+                          >
+                            <ExternalLink size={14} />
+                            Voir le scan
+                          </a>
+                          <button
+                            type="button"
+                            className="btn btn-ghost btn-icon"
+                            onClick={() => removeExistingDoc(existingDoc)}
+                            aria-label="Retirer le scan"
+                          >
+                            <Trash2 size={15} />
+                          </button>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
             <div className="checklist-add">
               <input
                 value={newItem}
@@ -1343,6 +1656,28 @@ function FormSection({
       </div>
       <div className="card-body">{children}</div>
     </section>
+  );
+}
+
+function showDate(value: string | null | undefined) {
+  if (!value) return "";
+  const [year, month, day] = value.slice(0, 10).split("-");
+  if (!year || !month || !day) return value;
+  return `${day}/${month}/${year}`;
+}
+
+function labelOf(map: Record<string, string>, key: string | null | undefined) {
+  if (!key) return "";
+  return map[key] || key;
+}
+
+function ReadOnly({ label, value }: { label: string; value?: string | null }) {
+  if (!value) return null;
+  return (
+    <label className="field">
+      <span>{label}</span>
+      <input value={value} readOnly className="readonly" />
+    </label>
   );
 }
 

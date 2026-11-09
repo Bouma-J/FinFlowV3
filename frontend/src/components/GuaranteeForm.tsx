@@ -1,4 +1,4 @@
-import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   Banknote,
   Car,
@@ -12,12 +12,12 @@ import {
   TriangleAlert,
   UploadCloud,
 } from "lucide-react";
-import { useMemo, useState, type FormEvent } from "react";
+import { useEffect, useMemo, useState, type FormEvent } from "react";
 import { createPortal } from "react-dom";
 import { Link } from "react-router-dom";
 
 import { api } from "@/api/client";
-import type { Guarantee } from "@/api/types";
+import { CLIENT_LABELS, type Guarantee, type Surety } from "@/api/types";
 import {
   FreeDocumentsEditor,
   appendFreeDocuments,
@@ -69,16 +69,6 @@ const VEHICLE_DOCUMENT_TYPES = [
   { value: "INSURANCE_CERT", label: "Attestation d'assurance" },
   { value: "TECH_INSPECTION", label: "Visite technique" },
   { value: "OTHER_VEHICLE", label: "Autre document véhicule" },
-];
-const MARITAL = [
-  { value: "SINGLE", label: "Célibataire" },
-  { value: "MARRIED", label: "Marié(e)" },
-  { value: "DIVORCED", label: "Divorcé(e)" },
-  { value: "WIDOWED", label: "Veuf/Veuve" },
-];
-const MATRIMONIAL_REGIME = [
-  { value: "COMMUNITY", label: "Communauté de biens" },
-  { value: "SEPARATION", label: "Séparation de biens" },
 ];
 const OCCUPANCY = [
   { value: "FREE", label: "Libre" },
@@ -235,6 +225,41 @@ function initJewelry(initial?: Guarantee): JewelryItem[] {
   }));
 }
 
+const REGIME_LABELS: Record<string, string> = {
+  COMMUNITY: "Communauté de biens",
+  SEPARATION: "Séparation de biens",
+};
+
+function draftKey(applicationId?: string) {
+  return applicationId ? `finflow-guarantee-draft:${applicationId}` : "";
+}
+
+function peekPendingDraft(applicationId?: string): {
+  gType?: string;
+  pledgeCat?: string;
+  isInsured?: boolean;
+  text?: Partial<TextState>;
+  jewelry?: JewelryItem[];
+} | null {
+  const key = draftKey(applicationId);
+  if (!key) return null;
+  try {
+    const raw = sessionStorage.getItem(key);
+    if (!raw) return null;
+    const draft = JSON.parse(raw) as {
+      pending?: boolean;
+      gType?: string;
+      pledgeCat?: string;
+      isInsured?: boolean;
+      text?: Partial<TextState>;
+      jewelry?: JewelryItem[];
+    };
+    return draft?.pending ? draft : null;
+  } catch {
+    return null;
+  }
+}
+
 function initText(initial?: Guarantee): TextState {
   const state = Object.fromEntries(TEXT_KEYS.map((k) => [k, ""])) as TextState;
   if (!initial) return state;
@@ -260,6 +285,10 @@ export interface GuaranteeFormProps {
   /** Lien de retour / annulation. */
   backTo: string;
   onSaved: () => void;
+  /** Caution choisie au retour de sa création. */
+  initialSuretyId?: string;
+  /** Ouvre le formulaire de caution existant, puis revient ici. */
+  onCreateSurety?: () => void;
 }
 
 export function GuaranteeForm({
@@ -271,26 +300,36 @@ export function GuaranteeForm({
   loanAmount = 0,
   backTo,
   onSaved,
+  initialSuretyId = "",
+  onCreateSurety,
 }: GuaranteeFormProps) {
   const qc = useQueryClient();
   const [error, setError] = useState<string | null>(null);
   const [existingAlert, setExistingAlert] = useState<AlreadyTaken | null>(null);
+  const [draft] = useState(() => peekPendingDraft(applicationId));
+  useEffect(() => {
+    const key = draftKey(applicationId);
+    if (key && draft) sessionStorage.removeItem(key);
+  }, [applicationId, draft]);
 
-  const [gType, setGType] = useState(initial?.guarantee_type || "MORTGAGE");
+  const [gType, setGType] = useState(draft?.gType || initial?.guarantee_type || "MORTGAGE");
   const [pledgeCat, setPledgeCat] = useState(
-    initial?.pledge_category || "VEHICLE",
+    draft?.pledgeCat || initial?.pledge_category || "VEHICLE",
   );
-  const [isInsured, setIsInsured] = useState(initial?.is_insured ?? false);
-  const [text, setText] = useState<TextState>(() => initText(initial));
+  const [isInsured, setIsInsured] = useState(draft?.isInsured ?? initial?.is_insured ?? false);
+  const [text, setText] = useState<TextState>(() => ({
+    ...initText(initial),
+    ...(draft?.text ?? {}),
+  }));
   const [files, setFiles] = useState<FileState>(emptyFiles());
   const [photos, setPhotos] = useState<File[]>([]);
   const [jewelry, setJewelry] = useState<JewelryItem[]>(() =>
-    initJewelry(initial),
+    draft?.jewelry?.length ? draft.jewelry : initJewelry(initial),
   );
   const [belongsToApplicant, setBelongsToApplicant] = useState(
-    initial?.belongs_to_applicant ?? true,
+    draft || initialSuretyId ? false : (initial?.belongs_to_applicant ?? true),
   );
-  const [suretyId, setSuretyId] = useState(initial?.surety ?? "");
+  const [suretyId, setSuretyId] = useState(initial?.surety || initialSuretyId || "");
   const [docDrafts, setDocDrafts] = useState<FreeDocumentDraft[]>([]);
   const [deletedDocIds, setDeletedDocIds] = useState<string[]>([]);
 
@@ -319,9 +358,21 @@ export function GuaranteeForm({
         if (applicationId) fd.append("application", applicationId);
       }
       for (const key of TEXT_KEYS) {
+        if (
+          key === "owner_last_name" ||
+          key === "owner_first_name" ||
+          key === "owner_marital_status" ||
+          key === "matrimonial_regime"
+        ) {
+          continue;
+        }
         const value = text[key].trim();
         if (value) fd.append(key, value);
       }
+      fd.append("owner_last_name", "");
+      fd.append("owner_first_name", "");
+      fd.append("owner_marital_status", "");
+      fd.append("matrimonial_regime", "");
       for (const key of FILE_KEYS) {
         const f = files[key];
         if (f) fd.append(key, f);
@@ -344,6 +395,8 @@ export function GuaranteeForm({
       return (await api.post("/guarantees/", fd)).data;
     },
     onSuccess: () => {
+      const key = draftKey(applicationId);
+      if (key) sessionStorage.removeItem(key);
       qc.invalidateQueries({ queryKey: ["guarantees"] });
       if (guaranteeId)
         qc.invalidateQueries({ queryKey: ["guarantee", guaranteeId] });
@@ -404,7 +457,30 @@ export function GuaranteeForm({
     setText((prev) => ({ ...prev, [key]: value }));
   const setFile = (key: FileKey) => (f: File | null) =>
     setFiles((prev) => ({ ...prev, [key]: f }));
-  const isMarried = text.owner_marital_status === "MARRIED";
+  const suretyQuery = useQuery({
+    queryKey: ["surety", suretyId],
+    enabled: Boolean(suretyId),
+    queryFn: async () => (await api.get<Surety>(`/sureties/${suretyId}/`)).data,
+  });
+  const selectedSurety = suretyQuery.data ?? null;
+
+  function leaveToCreateSurety() {
+    const key = draftKey(applicationId);
+    if (key) {
+      sessionStorage.setItem(
+        key,
+        JSON.stringify({
+          pending: true,
+          gType,
+          pledgeCat,
+          isInsured,
+          text,
+          jewelry,
+        }),
+      );
+    }
+    onCreateSurety?.();
+  }
 
   function submit(e: FormEvent) {
     e.preventDefault();
@@ -608,15 +684,37 @@ export function GuaranteeForm({
         </label>
         {!belongsToApplicant && (
           <div style={{ marginTop: 14 }}>
-            <p className="muted small" style={{ marginBottom: 8 }}>
-              Sélectionnez la caution propriétaire du bien. Les cautions hors
-              garantie (engagements) restent gérées séparément dans le dossier.
-            </p>
-            <SuretyAutocomplete
-              value={suretyId}
-              initialLabel={initial?.surety_display ?? ""}
-              onChange={(id) => setSuretyId(id)}
-            />
+            {suretyId && selectedSurety ? (
+              <SuretySummary
+                surety={selectedSurety}
+                onChange={() => setSuretyId("")}
+              />
+            ) : suretyId && suretyQuery.isLoading ? (
+              <p className="muted small">Chargement de la caution…</p>
+            ) : (
+              <>
+                <p className="muted small" style={{ marginBottom: 8 }}>
+                  La caution est le propriétaire du bien. Un engagement de
+                  caution sur le crédit reste une démarche à part.
+                </p>
+                <SuretyAutocomplete
+                  value={suretyId}
+                  initialLabel={initial?.surety_display ?? selectedSurety?.display_name ?? ""}
+                  onChange={(id) => setSuretyId(id)}
+                />
+                {onCreateSurety && (
+                  <>
+                    <div className="or-divider">
+                      <span>ou</span>
+                    </div>
+                    <button type="button" className="btn btn-ghost" onClick={leaveToCreateSurety}>
+                      <Plus size={15} />
+                      Créer une caution
+                    </button>
+                  </>
+                )}
+              </>
+            )}
           </div>
         )}
       </Card>
@@ -633,7 +731,6 @@ export function GuaranteeForm({
           existingPhotos={initial?.photos}
           isInsured={isInsured}
           setIsInsured={setIsInsured}
-          isMarried={isMarried}
           ltv={ltv}
         />
       )}
@@ -729,6 +826,65 @@ type SetText = (key: TextKey) => (v: string) => void;
 type SetFile = (key: FileKey) => (f: File | null) => void;
 type Existing = (key: FileKey) => string | null;
 
+function SuretySummary({
+  surety,
+  onChange,
+}: {
+  surety: Surety;
+  onChange: () => void;
+}) {
+  const physical = surety.surety_type !== "MORAL";
+  const piece = [
+    CLIENT_LABELS.id_document_type[surety.id_document_type] || surety.id_document_type,
+    surety.national_id,
+  ].filter(Boolean).join(" · ");
+  return (
+    <div>
+      <div className="picked-row">
+        <span className="picked-chip">{surety.display_name}</span>
+        <button type="button" className="btn btn-ghost btn-sm" onClick={onChange}>
+          Changer
+        </button>
+      </div>
+      <dl className="def-list two" style={{ marginTop: 14 }}>
+        <SummaryLine term="Téléphone" value={surety.phone} />
+        <SummaryLine term="E-mail" value={surety.email} />
+        <SummaryLine term="Adresse" value={surety.address} />
+        {physical ? (
+          <>
+            <SummaryLine term="Activité" value={surety.activity} />
+            <SummaryLine term="Pièce d'identité" value={piece} />
+            <SummaryLine
+              term="Situation matrimoniale"
+              value={surety.marital_status ? CLIENT_LABELS.marital_status[surety.marital_status] || surety.marital_status : ""}
+            />
+            <SummaryLine term="Régime matrimonial" value={REGIME_LABELS[surety.matrimonial_regime || ""] || ""} />
+          </>
+        ) : (
+          <>
+            <SummaryLine term="IFU" value={surety.ifu} />
+            <SummaryLine term="RCCM" value={surety.rccm} />
+            <SummaryLine
+              term="Gérant"
+              value={[surety.manager_first_name, surety.manager_last_name].filter(Boolean).join(" ")}
+            />
+          </>
+        )}
+      </dl>
+    </div>
+  );
+}
+
+function SummaryLine({ term, value }: { term: string; value?: string | null }) {
+  if (!value) return null;
+  return (
+    <div>
+      <dt>{term}</dt>
+      <dd>{value}</dd>
+    </div>
+  );
+}
+
 function MortgageSection({
   text,
   set,
@@ -740,7 +896,6 @@ function MortgageSection({
   existingPhotos,
   isInsured,
   setIsInsured,
-  isMarried,
   ltv,
 }: {
   text: TextState;
@@ -753,28 +908,10 @@ function MortgageSection({
   existingPhotos?: Guarantee["photos"];
   isInsured: boolean;
   setIsInsured: (b: boolean) => void;
-  isMarried: boolean;
   ltv: number | null;
 }) {
   return (
     <>
-      <Card
-        title={
-          <>
-            <Landmark size={17} /> Propriétaire du bien
-          </>
-        }
-      >
-        <div className="form-grid two-col">
-          <Text label="Nom du propriétaire" value={text.owner_last_name} onChange={set("owner_last_name")} />
-          <Text label="Prénom du propriétaire" value={text.owner_first_name} onChange={set("owner_first_name")} />
-          <Select label="Situation matrimoniale" value={text.owner_marital_status} onChange={set("owner_marital_status")} options={MARITAL} />
-          {isMarried && (
-            <Select label="Régime matrimonial" value={text.matrimonial_regime} onChange={set("matrimonial_regime")} options={MATRIMONIAL_REGIME} />
-          )}
-        </div>
-      </Card>
-
       <Card
         title={
           <>
@@ -900,8 +1037,6 @@ function VehicleSection({
         }
       >
         <div className="form-grid two-col">
-          <Text label="Nom du propriétaire" value={text.owner_last_name} onChange={set("owner_last_name")} />
-          <Text label="Prénom du propriétaire" value={text.owner_first_name} onChange={set("owner_first_name")} />
           <Text
             label="Numéro de châssis *"
             value={text.chassis_number}

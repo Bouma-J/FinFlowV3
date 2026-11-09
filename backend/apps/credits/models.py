@@ -70,9 +70,28 @@ class ContractType(models.TextChoices):
     CDI = "CDI", "CDI"
     CDD = "CDD", "CDD"
     CIVIL_SERVANT = "CIVIL_SERVANT", "Fonctionnaire"
+    DAILY = "DAILY", "Journalier"
     INDEPENDENT = "INDEPENDENT", "Indépendant"
     RETIRED = "RETIRED", "Retraité"
     OTHER = "OTHER", "Autre"
+
+
+class EarningPath(models.TextChoices):
+    SALARIE = "SALARIE", "Salarié"
+    INDEPENDANT = "INDEPENDANT", "Activité"
+    MIXTE = "MIXTE", "Les deux"
+
+
+class MaritalRegime(models.TextChoices):
+    COMMUNITY = "COMMUNITY", "Communauté"
+    SEPARATION = "SEPARATION", "Séparation de biens"
+    OTHER = "OTHER", "Autre"
+
+
+class HousingStatus(models.TextChoices):
+    OWNER = "OWNER", "Propriétaire"
+    TENANT = "TENANT", "Locataire"
+    HOSTED = "HOSTED", "Hébergé"
 
 
 class RiskClass(models.TextChoices):
@@ -329,12 +348,52 @@ class CreditApplication(TenantScopedModel, AuthoredModel):
     contract_type = models.CharField(
         "type de contrat", max_length=20, choices=ContractType.choices, blank=True
     )
+    contract_end_date = models.DateField(
+        "date de fin du contrat", null=True, blank=True,
+    )
     salary_domiciliation = models.BooleanField(
         "domiciliation du salaire dans l'institution", default=False
     )
     dependents_count = models.PositiveIntegerField(
         "nombre de personnes à charge", null=True, blank=True
     )
+    earning_path = models.CharField(
+        "parcours de revenu", max_length=20, choices=EarningPath.choices, blank=True,
+    )
+    marital_regime = models.CharField(
+        "régime matrimonial", max_length=20, choices=MaritalRegime.choices, blank=True,
+    )
+    spouse_has_income = models.BooleanField(
+        "le conjoint a un revenu", null=True, blank=True,
+    )
+    children_count = models.PositiveIntegerField(
+        "enfants à charge", null=True, blank=True,
+    )
+    housing_status = models.CharField(
+        "statut du logement", max_length=15, choices=HousingStatus.choices, blank=True,
+    )
+    housing_seniority_months = models.PositiveIntegerField(
+        "ancienneté dans le logement (mois)", null=True, blank=True,
+    )
+    employer_address = models.CharField("adresse de l'employeur", max_length=255, blank=True)
+    employer_phone = models.CharField("téléphone de l'employeur", max_length=50, blank=True)
+    employer_sector = models.CharField("secteur de l'employeur", max_length=150, blank=True)
+    employment_profession = models.CharField("profession", max_length=150, blank=True)
+    job_title = models.CharField("poste occupé", max_length=150, blank=True)
+    job_seniority_months = models.PositiveIntegerField(
+        "ancienneté dans l'emploi (mois)", null=True, blank=True,
+    )
+    career_seniority_months = models.PositiveIntegerField(
+        "ancienneté professionnelle totale (mois)", null=True, blank=True,
+    )
+    activity_name = models.CharField("nom de l'activité", max_length=200, blank=True)
+    activity_trade = models.CharField("métier de l'activité", max_length=150, blank=True)
+    activity_sector = models.CharField("secteur de l'activité", max_length=150, blank=True)
+    activity_premises_status = models.CharField(
+        "statut du local d'activité", max_length=15,
+        choices=HousingStatus.choices, blank=True,
+    )
+    activity_ifu = models.CharField("IFU de l'activité", max_length=50, blank=True)
 
     # ------------------------------------------------------------------ #
     # Relation bancaire
@@ -380,6 +439,7 @@ class CreditApplication(TenantScopedModel, AuthoredModel):
         "bénéficiaire effectif", max_length=200, blank=True
     )
     is_pep = models.BooleanField("personne politiquement exposée (PPE)", default=False)
+    pep_details = models.TextField("explication PPE", blank=True)
     funds_origin = models.CharField("origine des fonds / apport", max_length=255, blank=True)
 
     # ------------------------------------------------------------------ #
@@ -588,6 +648,38 @@ class StockPhoto(TenantScopedModel):
 
     def __str__(self):
         return self.caption or f"Photo {self.pk}"
+
+
+class ExternalBankAccount(TenantScopedModel):
+    """Compte tenu dans une autre institution, joint au dossier."""
+
+    application = models.ForeignKey(
+        CreditApplication,
+        on_delete=models.CASCADE,
+        related_name="external_accounts",
+        verbose_name="dossier",
+    )
+    institution_name = models.CharField("nom de l'institution", max_length=200, blank=True)
+    opened_on = models.DateField("date d'ouverture", null=True, blank=True)
+    account_number = models.CharField("numéro de compte", max_length=50, blank=True)
+    credit_movement_count = models.PositiveIntegerField(
+        "mouvements créditeurs sur 3 mois", null=True, blank=True,
+    )
+    credit_movement_volume = models.DecimalField(
+        "volume des mouvements créditeurs",
+        max_digits=18, decimal_places=2, null=True, blank=True,
+    )
+    statement = models.FileField(
+        "relevé de compte", upload_to=credit_file_path, max_length=255, blank=True,
+    )
+
+    class Meta:
+        verbose_name = "compte hors institution"
+        verbose_name_plural = "comptes hors institution"
+        ordering = ["created_at"]
+
+    def __str__(self):
+        return self.institution_name or self.account_number or "Compte hors institution"
 
 
 class CreditDocument(TenantScopedModel):
@@ -1613,6 +1705,8 @@ class FinancialAnalysis(TenantScopedModel, AuthoredModel):
             + _dec(self.other_income) + _dec(self.variable_income)
             + _dec(self.pension_income)
         )
+        from .analysis_details import extra_line_total
+        base += extra_line_total(self.analysis_details, "extra_income")
         if self.has_side_activity:
             base += _dec(self.activity_turnover) - _dec(self.activity_expenses)
         return base
@@ -1690,14 +1784,15 @@ class FinancialAnalysis(TenantScopedModel, AuthoredModel):
 
     @property
     def total_household_charges(self):
+        from .analysis_details import extra_line_total
         return (
             _dec(self.rent_expense) + _dec(self.food_expense)
             + _dec(self.utilities_expense) + _dec(self.transport_expense)
             + _dec(self.education_expense) + _dec(self.health_expense)
-            + _dec(self.other_household_expenses)
             + _dec(self.tontine_expense) + _dec(self.social_contributions)
             + _dec(self.family_support_expense)
             + _dec(self.other_monthly_obligations)
+            + extra_line_total(self.analysis_details, "extra_charges")
         )
 
     @property
@@ -1955,6 +2050,42 @@ class FinancialAnalysis(TenantScopedModel, AuthoredModel):
             return -limit
         return value
 
+    def _apply_dossier_profile(self):
+        """Recopie le profil du dossier. Sans parcours, l'analyse garde ses propres faits."""
+        app = self.application if self.application_id else None
+        path = getattr(app, "earning_path", "") or ""
+        if not self.is_individual or path not in {"SALARIE", "INDEPENDANT", "MIXTE"}:
+            return False
+        self.individual_profile = path
+        self.has_side_activity = path in {"INDEPENDANT", "MIXTE"}
+        self.employer_name = (app.employer_name or "")[:250]
+        self.employer_sector = app.employer_sector or ""
+        self.employment_seniority_months = app.job_seniority_months
+        self.salary_paid_through_bank = bool(app.salary_domiciliation)
+        employment = {
+            "CDI": self.EmploymentType.PERMANENT,
+            "CIVIL_SERVANT": self.EmploymentType.PERMANENT,
+            "CDD": self.EmploymentType.FIXED_TERM,
+            "RETIRED": self.EmploymentType.RETIRED,
+            "DAILY": self.EmploymentType.DAILY,
+            "INDEPENDENT": self.EmploymentType.OTHER,
+            "OTHER": self.EmploymentType.OTHER,
+        }.get(app.contract_type or "")
+        if app.contract_type:
+            self.employment_type = employment or ""
+        self.activity_name = (app.activity_name or "")[:250]
+        if app.tax_regime:
+            self.activity_is_formal = app.tax_regime != "INFORMAL"
+        if app.activity_start_date:
+            today = timezone.localdate()
+            months = (today.year - app.activity_start_date.year) * 12 + (
+                today.month - app.activity_start_date.month
+            )
+            if today.day < app.activity_start_date.day:
+                months -= 1
+            self.activity_business_age_months = max(months, 0)
+        return True
+
     @transaction.atomic
     def save(self, *args, **kwargs):
         # Sérialiser la désignation de référence sur le dossier parent.
@@ -1992,6 +2123,9 @@ class FinancialAnalysis(TenantScopedModel, AuthoredModel):
         ):
             self.has_side_activity = True
 
+        # Le parcours saisi sur le dossier prime sur la ressaisie dans l'analyse.
+        dossier_profile_applied = self._apply_dossier_profile()
+
         # Période de référence : défaut selon le type de client.
         if not self.reference_period:
             if self.client_type == "CORPORATE":
@@ -2019,12 +2153,19 @@ class FinancialAnalysis(TenantScopedModel, AuthoredModel):
         self.score_breakdown = breakdown
 
         if kwargs.get("update_fields") is not None:
-            kwargs["update_fields"] = set(kwargs["update_fields"]) | {
+            extra = {
                 "client_type", "individual_profile", "has_side_activity", "net_salary",
                 "new_installment", "repayment_capacity", "debt_ratio", "dscr",
                 "debt_ratio_stress", "dscr_stress", "guarantee_coverage",
                 "internal_score", "score_breakdown",
             }
+            if dossier_profile_applied:
+                extra |= {
+                    "employer_name", "employer_sector", "employment_type",
+                    "employment_seniority_months", "salary_paid_through_bank",
+                    "activity_name", "activity_is_formal", "activity_business_age_months",
+                }
+            kwargs["update_fields"] = set(kwargs["update_fields"]) | extra
         super().save(*args, **kwargs)
 
         # Une seule analyse de référence par dossier.
@@ -2062,8 +2203,29 @@ class FinancialDocument(TenantScopedModel):
         return self.label or f"Document {self.pk}"
 
 
+def visit_file_path(instance, filename):
+    return (
+        f"credits/{instance.tenant_id}/{instance.application_id}/visites/"
+        f"{safe_filename(filename)}"
+    )
+
+
 class FieldVisit(TenantScopedModel):
     """Compte rendu de visite terrain."""
+
+    class Place(models.TextChoices):
+        HOME = "HOME", "Domicile"
+        ACTIVITY = "ACTIVITY", "Lieu d'activité"
+        GUARANTEE = "GUARANTEE", "Bien donné en garantie"
+
+    class PersonMet(models.TextChoices):
+        CLIENT = "CLIENT", "Le client"
+        OTHER = "OTHER", "Quelqu'un d'autre"
+        ABSENT = "ABSENT", "Personne"
+
+    class Conclusion(models.TextChoices):
+        COHERENT = "COHERENT", "Conforme au dossier"
+        GAP = "GAP", "Écart constaté"
 
     application = models.ForeignKey(
         CreditApplication,
@@ -2089,7 +2251,17 @@ class FieldVisit(TenantScopedModel):
         blank=True,
         help_text="Ex. 5.359952, -4.008256 (collé depuis Maps).",
     )
+    visited_places = models.JSONField("lieux visités", default=list, blank=True)
+    person_met = models.CharField(
+        "personne rencontrée", max_length=20, choices=PersonMet.choices, blank=True,
+    )
+    conclusion = models.CharField(
+        "conclusion", max_length=20, choices=Conclusion.choices, blank=True,
+    )
     report = models.TextField("compte rendu", blank=True)
+    minutes = models.FileField(
+        "PV de visite", upload_to=visit_file_path, max_length=255, blank=True,
+    )
 
     class Meta:
         verbose_name = "visite terrain"
@@ -2098,6 +2270,34 @@ class FieldVisit(TenantScopedModel):
 
     def __str__(self):
         return f"Visite {self.application} — {self.visit_date}"
+
+
+def visit_photo_path(instance, filename):
+    visit = instance.visit
+    return (
+        f"credits/{instance.tenant_id}/{visit.application_id}/visites/"
+        f"{safe_filename(filename)}"
+    )
+
+
+class FieldVisitPhoto(TenantScopedModel):
+    """Photo prise pendant une visite terrain."""
+
+    visit = models.ForeignKey(
+        FieldVisit,
+        on_delete=models.CASCADE,
+        related_name="photos",
+        verbose_name="visite",
+    )
+    image = models.ImageField("photo", upload_to=visit_photo_path, max_length=255)
+
+    class Meta:
+        verbose_name = "photo de visite"
+        verbose_name_plural = "photos de visite"
+        ordering = ["created_at"]
+
+    def __str__(self):
+        return f"Photo {self.visit_id}"
 
 
 class Loan(TenantScopedModel):

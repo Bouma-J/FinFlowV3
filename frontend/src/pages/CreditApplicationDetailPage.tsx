@@ -329,31 +329,29 @@ const SectionCollapseContext = createContext<{
 } | null>(null);
 
 const DOSSIER_SECTION_ORDER: Record<string, number> = {
-  "sec-client-profile": 10,
-  "sec-compliance": 20,
-  "sec-activity": 30,
+  "sec-readiness": 10,
+  "sec-client-profile": 20,
+  "sec-compliance": 30,
   "sec-applicant": 40,
   "sec-terms": 50,
-  "sec-banking": 60,
-  "sec-exposure": 70,
-  "sec-financial": 80,
-  "sec-patrimoine": 90,
-  "sec-financing": 100,
-  "sec-setup": 110,
-  "sec-insurance": 120,
-  "sec-special": 130,
-  "sec-schedule": 140,
-  "sec-decision": 150,
-  "sec-conditions": 160,
-  "sec-readiness": 170,
-  "sec-workflow": 180,
-  "sec-visits": 190,
-  "sec-checklist": 200,
-  "sec-documents": 210,
-  "sec-aftersales": 220,
-  "sec-restructure": 230,
-  "sec-contracts": 240,
-  "sec-timeline": 250,
+  "sec-patrimoine": 60,
+  "sec-special": 70,
+  "sec-financing": 80,
+  "sec-schedule": 90,
+  "sec-banking": 100,
+  "sec-exposure": 110,
+  "sec-activity": 120,
+  "sec-visits": 130,
+  "sec-financial": 140,
+  "sec-checklist": 150,
+  "sec-documents": 160,
+  "sec-aftersales": 170,
+  "sec-restructure": 180,
+  "sec-contracts": 190,
+  "sec-decision": 200,
+  "sec-conditions": 210,
+  "sec-timeline": 220,
+  "sec-workflow": 230,
 };
 
 function ViewSection({
@@ -1156,6 +1154,25 @@ function FinancialAnalysesSection({
   );
 }
 
+const VISIT_PLACES = [
+  { value: "HOME", label: "Domicile" },
+  { value: "ACTIVITY", label: "Lieu d'activité" },
+  { value: "GUARANTEE", label: "Bien donné en garantie" },
+];
+const VISIT_PEOPLE = [
+  { value: "CLIENT", label: "Le client" },
+  { value: "OTHER", label: "Quelqu'un d'autre" },
+  { value: "ABSENT", label: "Personne" },
+];
+const VISIT_CONCLUSIONS = [
+  { value: "COHERENT", label: "Conforme au dossier" },
+  { value: "GAP", label: "Écart constaté" },
+];
+
+function visitLabel(options: { value: string; label: string }[], value?: string) {
+  return options.find((item) => item.value === value)?.label;
+}
+
 function FieldVisitsCard({
   appId,
   canAdd,
@@ -1168,6 +1185,11 @@ function FieldVisitsCard({
   const [visitDate, setVisitDate] = useState("");
   const [report, setReport] = useState("");
   const [geoCoordinates, setGeoCoordinates] = useState("");
+  const [places, setPlaces] = useState<string[]>([]);
+  const [personMet, setPersonMet] = useState("");
+  const [conclusion, setConclusion] = useState("");
+  const [photos, setPhotos] = useState<File[]>([]);
+  const [minutes, setMinutes] = useState<File | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   const { data: visits } = useQuery({
@@ -1182,21 +1204,30 @@ function FieldVisitsCard({
   });
 
   const addMutation = useMutation({
-    mutationFn: async () =>
-      (
-        await api.post("/field-visits/", {
-          application: appId,
-          visit_date: visitDate,
-          report,
-          geo_coordinates: geoCoordinates.trim(),
-        })
-      ).data,
+    mutationFn: async () => {
+      const fd = new FormData();
+      fd.append("application", appId);
+      fd.append("visit_date", visitDate);
+      fd.append("report", report);
+      fd.append("geo_coordinates", geoCoordinates.trim());
+      fd.append("visited_places", JSON.stringify(places));
+      fd.append("person_met", personMet);
+      fd.append("conclusion", conclusion);
+      photos.forEach((file) => fd.append("photos", file));
+      if (minutes) fd.append("minutes", minutes);
+      return (await api.post("/field-visits/", fd)).data;
+    },
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["field-visits", appId] });
       setOpen(false);
       setVisitDate("");
       setReport("");
       setGeoCoordinates("");
+      setPlaces([]);
+      setPersonMet("");
+      setConclusion("");
+      setPhotos([]);
+      setMinutes(null);
       setError(null);
     },
     onError: () => setError("Enregistrement de la visite impossible."),
@@ -1231,7 +1262,33 @@ function FieldVisitsCard({
                   <MapPin size={14} /> {formatDate(v.visit_date)}
                 </span>
               </div>
+              {(v.visited_places?.length || v.person_met || v.conclusion) && (
+                <dl className="def-list two">
+                  <Row
+                    term="Lieu visité"
+                    value={(v.visited_places ?? [])
+                      .map((code) => visitLabel(VISIT_PLACES, code) || code)
+                      .join(", ") || undefined}
+                  />
+                  <Row term="Personne rencontrée" value={visitLabel(VISIT_PEOPLE, v.person_met)} />
+                  <Row term="Conclusion" value={visitLabel(VISIT_CONCLUSIONS, v.conclusion)} />
+                </dl>
+              )}
               {v.report && <p className="prose">{v.report}</p>}
+              {v.minutes && (
+                <a href={v.minutes} target="_blank" rel="noreferrer">
+                  <FileText size={14} /> PV de visite
+                </a>
+              )}
+              {v.photos && v.photos.length > 0 && (
+                <div className="photo-gallery" style={{ marginTop: 10 }}>
+                  {v.photos.map((photo) => (
+                    <a key={photo.id} href={photo.image} target="_blank" rel="noreferrer">
+                      <img src={photo.image} alt="Photo de la visite" />
+                    </a>
+                  ))}
+                </div>
+              )}
               {v.geo_coordinates?.trim() && (
                 <a
                   className="muted small"
@@ -1277,6 +1334,45 @@ function FieldVisitsCard({
                 placeholder="ex. 5.359952, -4.008256"
               />
             </label>
+            <label className="field">
+              <span>Personne rencontrée</span>
+              <select value={personMet} onChange={(e) => setPersonMet(e.target.value)}>
+                <option value="">—</option>
+                {VISIT_PEOPLE.map((item) => (
+                  <option key={item.value} value={item.value}>{item.label}</option>
+                ))}
+              </select>
+            </label>
+            <label className="field">
+              <span>Conclusion</span>
+              <select value={conclusion} onChange={(e) => setConclusion(e.target.value)}>
+                <option value="">—</option>
+                {VISIT_CONCLUSIONS.map((item) => (
+                  <option key={item.value} value={item.value}>{item.label}</option>
+                ))}
+              </select>
+            </label>
+          </div>
+          <div className="field">
+            <span>Lieu visité</span>
+            <div className="checklist">
+              {VISIT_PLACES.map((item) => (
+                <label className="check-inline" key={item.value}>
+                  <input
+                    type="checkbox"
+                    checked={places.includes(item.value)}
+                    onChange={(e) =>
+                      setPlaces((prev) =>
+                        e.target.checked
+                          ? [...prev, item.value]
+                          : prev.filter((code) => code !== item.value),
+                      )
+                    }
+                  />
+                  <span>{item.label}</span>
+                </label>
+              ))}
+            </div>
           </div>
           <label className="field">
             <span>Compte rendu</span>
@@ -1285,6 +1381,27 @@ function FieldVisitsCard({
               value={report}
               onChange={(e) => setReport(e.target.value)}
             />
+          </label>
+          <label className="field">
+            <span>PV de visite</span>
+            <input
+              type="file"
+              accept=".pdf,.jpg,.jpeg,.png,.tif,.tiff,application/pdf,image/*"
+              onChange={(e) => setMinutes(e.target.files?.[0] ?? null)}
+            />
+            {minutes && <span className="muted small">{minutes.name}</span>}
+          </label>
+          <label className="field">
+            <span>Photos de la visite</span>
+            <input
+              type="file"
+              accept="image/*"
+              multiple
+              onChange={(e) => setPhotos([...(e.target.files ?? [])])}
+            />
+            {photos.length > 0 && (
+              <span className="muted small">{photos.map((file) => file.name).join(", ")}</span>
+            )}
           </label>
           {error && <div className="form-error">{error}</div>}
           <div className="page-actions">
@@ -2126,27 +2243,20 @@ export function CreditApplicationDetailPage() {
     app.catchment_area ||
     (app.stock_photos && app.stock_photos.length > 0)
   );
-  const showApplicant = !!(
+  const showApplicant = app.client_type === "INDIVIDUAL" || !!(
     app.employer_name ||
     app.contract_type ||
     app.dependents_count != null ||
-    app.salary_domiciliation
+    app.salary_domiciliation ||
+    app.earning_path ||
+    app.housing_status ||
+    app.children_count != null
   );
-  const showBanking = !!(
-    app.client_account_number ||
-    app.relationship_start_date ||
-    Number(app.avg_monthly_credit_movements) > 0
-  );
-  const showInsurance = !!(
-    app.has_credit_insurance ||
-    app.insurance_company ||
-    Number(app.insurance_premium) > 0
-  );
+  const showBanking = (app.external_accounts?.length ?? 0) > 0;
   const showSpecial = !!(app.special_conditions || app.suspensive_conditions);
   const showCompliance = !!(
-    app.beneficial_owner ||
-    app.is_pep ||
-    app.funds_origin
+    (app.client_type !== "INDIVIDUAL" && app.beneficial_owner) ||
+    app.is_pep
   );
   const hasChecklist = !!(
     app.document_checklist && app.document_checklist.length > 0
@@ -2162,31 +2272,29 @@ export function CreditApplicationDetailPage() {
     app.cbs_operation_date
   );
   const navSections = [
-    { id: "sec-client-profile", icon: UserRound, label: "Profil client", show: true, group: "Client" },
-    { id: "sec-compliance", icon: ShieldCheck, label: "Conformité (LBC-FT)", show: showCompliance, group: "Client" },
-    { id: "sec-activity", icon: Store, label: "Activité", show: showActivity, group: "Client" },
-    { id: "sec-applicant", icon: Briefcase, label: "Demandeur et emploi", show: showApplicant, group: "Client" },
-    { id: "sec-terms", icon: Banknote, label: "Caractéristiques du prêt", show: true, group: "Prêt" },
-    { id: "sec-banking", icon: History, label: "Relation bancaire", show: showBanking, group: "Historique" },
-    { id: "sec-exposure", icon: Wallet, label: "Engagements", show: hasPerm(user, "credits.view_creditexposureobservation"), group: "Historique" },
-    { id: "sec-financial", icon: LineChart, label: "Analyse financière", show: true, group: "Analyse" },
-    { id: "sec-patrimoine", icon: Landmark, label: "Garanties et cautions", show: true, group: "Garanties" },
-    { id: "sec-financing", icon: Wallet, label: "Plan de financement", show: true, group: "Financement" },
-    { id: "sec-setup", icon: Cable, label: "Frais et mise en place", show: showSetup, group: "Conditions" },
-    { id: "sec-insurance", icon: ShieldCheck, label: "Assurance", show: showInsurance, group: "Conditions" },
-    { id: "sec-special", icon: NotebookPen, label: "Conditions particulières", show: showSpecial, group: "Conditions" },
-    { id: "sec-schedule", icon: CalendarClock, label: "Échéancier", show: !!schedule, group: "Conditions" },
-    { id: "sec-decision", icon: Gavel, label: "Décision à rendre", show: !!myTask, group: "Décision" },
-    { id: "sec-conditions", icon: ClipboardCheck, label: "Réserves", show: hasConditions, group: "Décision" },
-    { id: "sec-readiness", icon: ClipboardCheck, label: "Préparation à la soumission", show: Boolean(canSubmit && readiness?.show_checklist && editableStatus), group: "Décision" },
-    { id: "sec-workflow", icon: GitBranch, label: "Circuit d'approbation", show: true, group: "Décision" },
-    { id: "sec-visits", icon: MapPin, label: "Visites terrain", show: true, group: "Pièces" },
-    { id: "sec-checklist", icon: ClipboardList, label: "Pièces du dossier", show: hasChecklist, group: "Pièces" },
-    { id: "sec-documents", icon: Paperclip, label: "Documents", show: true, group: "Pièces" },
+    { id: "sec-readiness", icon: ClipboardCheck, label: "Préparation à la soumission", show: Boolean(canSubmit && readiness?.show_checklist && editableStatus) },
+    { id: "sec-client-profile", icon: UserRound, label: "Profil client", show: true },
+    { id: "sec-compliance", icon: ShieldCheck, label: "Conformité (LBC-FT)", show: showCompliance },
+    { id: "sec-applicant", icon: Briefcase, label: "Profil du demandeur", show: showApplicant },
+    { id: "sec-terms", icon: Banknote, label: "Caractéristiques du prêt", show: true },
+    { id: "sec-patrimoine", icon: Landmark, label: "Garanties et cautions", show: true },
+    { id: "sec-special", icon: NotebookPen, label: "Conditions particulières", show: showSpecial },
+    { id: "sec-financing", icon: Wallet, label: "Plan de financement", show: true },
+    { id: "sec-schedule", icon: CalendarClock, label: "Échéancier", show: !!schedule },
+    { id: "sec-banking", icon: History, label: "Comptes hors institution", show: showBanking },
+    { id: "sec-exposure", icon: Wallet, label: "Engagements", show: hasPerm(user, "credits.view_creditexposureobservation") },
+    { id: "sec-activity", icon: Store, label: "Activité", show: showActivity },
+    { id: "sec-visits", icon: MapPin, label: "Visites terrain", show: true },
+    { id: "sec-financial", icon: LineChart, label: "Analyse financière", show: true },
+    { id: "sec-checklist", icon: ClipboardList, label: "Pièces à réunir", show: hasChecklist },
+    { id: "sec-documents", icon: Paperclip, label: "Fichiers déjà joints", show: true },
     { id: "sec-aftersales", icon: Scale, label: "Après-vente", show: showAfterSales, group: "Suite" },
     { id: "sec-restructure", icon: RefreshCw, label: "Restructuration", show: showRestructure, group: "Suite" },
     { id: "sec-contracts", icon: FileSignature, label: "Contrats", show: showContracts, group: "Suite" },
-    { id: "sec-timeline", icon: History, label: "Historique et audit", show: true, group: "Suite" },
+    { id: "sec-decision", icon: Gavel, label: "Décision à rendre", show: !!myTask, group: "Décision" },
+    { id: "sec-conditions", icon: ClipboardCheck, label: "Réserves", show: hasConditions, group: "Décision" },
+    { id: "sec-timeline", icon: History, label: "Historique et audit", show: true, group: "Décision" },
+    { id: "sec-workflow", icon: GitBranch, label: "Circuit d'approbation", show: true, group: "Décision" },
   ].filter((s) => s.show);
 
   const collapseCtx = {
@@ -2854,22 +2962,8 @@ export function CreditApplicationDetailPage() {
               </a>
             </div>
           )}
-          </ViewSection>
-
-          <ViewSection id="sec-financing" icon={Wallet} title="Plan de financement">
-            {(Number(app.project_total_cost) > 0 || Number(app.personal_contribution) > 0 || app.financed_quota) ? (
-              <dl className="def-list two">
-                <Row term="Coût total du projet" value={Number(app.project_total_cost) > 0 ? formatMoney(app.project_total_cost!, cur) : undefined} />
-                <Row term="Apport personnel" value={Number(app.personal_contribution) > 0 ? formatMoney(app.personal_contribution!, cur) : undefined} />
-                <Row term="Quotité financée" value={app.financed_quota ? `${Number(app.financed_quota).toFixed(1)} %` : undefined} />
-              </dl>
-            ) : (
-              <p className="muted small">Coût du projet, apport et quotité financée non renseignés.</p>
-            )}
-          </ViewSection>
-
           {showSetup && (
-          <ViewSection id="sec-setup" icon={Cable} title="Frais et mise en place">
+          <>
           {app.cbs_refs && (
             <details className="subsection"><summary className="subsection-title">Informations de transmission au CBS</summary>
               <dl className="def-list two">
@@ -3017,8 +3111,22 @@ export function CreditApplicationDetailPage() {
               </div>
             </SubSection>
           )}
-          </ViewSection>
+          </>
           )}
+          </ViewSection>
+
+          <ViewSection id="sec-financing" icon={Wallet} title="Plan de financement">
+            {(Number(app.project_total_cost) > 0 || Number(app.personal_contribution) > 0 || app.financed_quota) ? (
+              <dl className="def-list two">
+                <Row term="Coût total du projet" value={Number(app.project_total_cost) > 0 ? formatMoney(app.project_total_cost!, cur) : undefined} />
+                <Row term="Apport personnel" value={Number(app.personal_contribution) > 0 ? formatMoney(app.personal_contribution!, cur) : undefined} />
+                <Row term="Quotité financée" value={app.financed_quota ? `${Number(app.financed_quota).toFixed(1)} %` : undefined} />
+              </dl>
+            ) : (
+              <p className="muted small">Coût du projet, apport et quotité financée non renseignés.</p>
+            )}
+          </ViewSection>
+
 
           <FinancialAnalysesSection
             analyses={analyses}
@@ -3379,13 +3487,50 @@ export function CreditApplicationDetailPage() {
           <ViewSection
             id="sec-applicant"
             icon={Briefcase}
-            title="Demandeur & emploi"
+            title="Profil du demandeur"
           >
             <dl className="def-list two">
-              <Row term="Employeur" value={app.employer_name} />
-              <Row term="Type de contrat" value={app.contract_type && lbl(CREDIT_LABELS.contract_type, app.contract_type)} />
+              <Row term="Civilité" value={client?.civility ? lbl(CLIENT_LABELS.civility, client.civility) : undefined} />
+              <Row term="Nom" value={client?.last_name} />
+              <Row term="Prénom" value={client?.first_name} />
+              <Row term="Date de naissance" value={client?.birth_date && formatDate(client.birth_date)} />
+              <Row term="Pays de naissance" value={client?.birth_country} />
+              <Row term="Nationalité" value={client?.nationality} />
+              <Row term="Profession" value={client?.profession} />
+              <Row term="Téléphone" value={client?.phone} />
+              <Row term="E-mail" value={client?.email} />
+              <Row term="Adresse" value={[client?.address, client?.city].filter(Boolean).join(", ")} />
+              <Row term="Pièce d'identité" value={client?.national_id} />
+              <Row term="Situation matrimoniale" value={client?.marital_status ? lbl(CLIENT_LABELS.marital_status, client.marital_status) : undefined} />
+              <Row term="Régime matrimonial" value={app.marital_regime && lbl(CREDIT_LABELS.marital_regime, app.marital_regime)} />
+              <Row term="Conjoint" value={[client?.spouse_last_name, client?.spouse_first_name].filter(Boolean).join(" ")} />
+              <Row term="Téléphone du conjoint" value={client?.spouse_phone} />
+              <Row term="Profession du conjoint" value={client?.spouse_profession} />
+              <Row term="Le conjoint a un revenu" value={app.spouse_has_income == null ? undefined : app.spouse_has_income ? "Oui" : "Non"} />
+              <Row term="Enfants à charge" value={app.children_count ?? undefined} />
               <Row term="Personnes à charge" value={app.dependents_count ?? undefined} />
+              <Row term="Logement" value={app.housing_status && lbl(CREDIT_LABELS.housing_status, app.housing_status)} />
+              <Row term="Ancienneté dans le logement (mois)" value={app.housing_seniority_months ?? undefined} />
+              <Row term="Parcours" value={app.earning_path && lbl(CREDIT_LABELS.earning_path, app.earning_path)} />
+              <Row term="Profession" value={app.employment_profession} />
+              <Row term="Poste occupé" value={app.job_title} />
+              <Row term="Employeur" value={app.employer_name} />
+              <Row term="Adresse de l'employeur" value={app.employer_address} />
+              <Row term="Téléphone de l'employeur" value={app.employer_phone} />
+              <Row term="Secteur de l'employeur" value={app.employer_sector} />
+              <Row term="Type de contrat" value={app.contract_type && lbl(CREDIT_LABELS.contract_type, app.contract_type)} />
+              <Row term="Date de fin du contrat" value={app.contract_type === "CDD" && app.contract_end_date ? formatDate(app.contract_end_date) : undefined} />
+              <Row term="Ancienneté dans l'emploi (mois)" value={app.job_seniority_months ?? undefined} />
+              <Row term="Ancienneté professionnelle (mois)" value={app.career_seniority_months ?? undefined} />
               <Row term="Domiciliation du salaire" value={app.salary_domiciliation ? "Oui" : undefined} />
+              <Row term="Activité" value={app.activity_name} />
+              <Row term="Métier" value={app.activity_trade} />
+              <Row term="Secteur de l'activité" value={app.activity_sector} />
+              <Row term="Début de l'activité" value={app.activity_start_date && formatDate(app.activity_start_date)} />
+              <Row term="Régime fiscal" value={app.tax_regime && lbl(CREDIT_LABELS.tax_regime, app.tax_regime)} />
+              <Row term="Adresse de l'activité" value={app.exact_address} />
+              <Row term="Local de l'activité" value={app.activity_premises_status && lbl(CREDIT_LABELS.housing_status, app.activity_premises_status)} />
+              <Row term="IFU de l'activité" value={app.activity_ifu} />
             </dl>
           </ViewSection>
           )}
@@ -3394,31 +3539,19 @@ export function CreditApplicationDetailPage() {
           <ViewSection
             id="sec-banking"
             icon={History}
-            title="Relation bancaire"
+            title="Comptes hors institution"
           >
-            <dl className="def-list two">
-              <Row term="Numéro de compte" value={app.client_account_number} />
-              <Row term="Début de la relation" value={app.relationship_start_date && formatDate(app.relationship_start_date)} />
-              <Row
-                term="Mouvements créditeurs moyens"
-                value={Number(app.avg_monthly_credit_movements) > 0 ? formatMoney(app.avg_monthly_credit_movements!, cur) : undefined}
-              />
-            </dl>
-          </ViewSection>
-          )}
-
-          {showInsurance && (
-          <ViewSection id="sec-insurance" icon={ShieldCheck} title="Assurance">
-            <dl className="def-list two">
-              <Row term="Assurance décès-invalidité (ADI)" value={app.has_credit_insurance ? "Oui" : "Non"} />
-              <Row term="Compagnie d'assurance" value={app.insurance_company} />
-              <Row term="Numéro de police" value={app.insurance_policy_number} />
-              <Row term="Fin de couverture" value={app.insurance_expiry_date ? formatDate(app.insurance_expiry_date) : undefined} />
-              <Row
-                term="Prime d'assurance"
-                value={Number(app.insurance_premium) > 0 ? formatMoney(app.insurance_premium!, cur) : undefined}
-              />
-            </dl>
+            {(app.external_accounts ?? []).map((account, index) => (
+              <SubSection key={account.id} icon={History} title={account.institution_name || `Compte ${index + 1}`}>
+                <dl className="def-list two">
+                  <Row term="Date d'ouverture" value={account.opened_on ? formatDate(account.opened_on) : undefined} />
+                  <Row term="Numéro de compte" value={account.account_number} />
+                  <Row term="Mouvements créditeurs sur 3 mois" value={account.credit_movement_count ?? undefined} />
+                  <Row term="Volume des mouvements créditeurs" value={account.credit_movement_volume ? formatMoney(account.credit_movement_volume, cur) : undefined} />
+                  <Row term="Relevé de compte" value={account.statement ? <a href={account.statement} target="_blank" rel="noreferrer">Voir le relevé</a> : undefined} />
+                </dl>
+              </SubSection>
+            ))}
           </ViewSection>
           )}
 
@@ -3448,10 +3581,12 @@ export function CreditApplicationDetailPage() {
             title="Conformité (LBC-FT)"
           >
             <dl className="def-list two">
-              <Row term="Bénéficiaire effectif" value={app.beneficial_owner} />
-              <Row term="Origine des fonds / apport" value={app.funds_origin} />
+              {app.client_type !== "INDIVIDUAL" && (
+                <Row term="Bénéficiaire effectif" value={app.beneficial_owner} />
+              )}
               <Row term="Personne politiquement exposée (PPE)" value={app.is_pep ? "Oui" : undefined} />
             </dl>
+            {app.is_pep && app.pep_details ? <p className="prose">{app.pep_details}</p> : null}
           </ViewSection>
           )}
 
@@ -3530,44 +3665,53 @@ export function CreditApplicationDetailPage() {
           <ViewSection
             id="sec-checklist"
             icon={ClipboardList}
-            title="Pièces du dossier"
+            title="Pièces à réunir"
           >
-            <div className="checklist-badges">
-              {app.document_checklist.map((item, idx) => {
-                const scan = app.documents?.find(
-                  (d) => d.label === item.label,
+            {(() => {
+              const attached = new Set(
+                (app.documents ?? []).map((doc) => doc.label).filter(Boolean),
+              );
+              const remaining = app.document_checklist.filter(
+                (item) => !attached.has(item.label),
+              );
+              if (remaining.length === 0) {
+                return (
+                  <p className="muted small">Toutes les pièces listées sont déjà jointes.</p>
                 );
-                return scan ? (
-                  <a
-                    key={`${item.label}-${idx}`}
-                    className="doc-badge ok as-link"
-                    href={scan.file}
-                    target="_blank"
-                    rel="noreferrer"
-                  >
-                    <Check size={13} />
-                    {item.label}
-                    <Paperclip size={12} />
-                  </a>
-                ) : (
-                  <span
-                    key={`${item.label}-${idx}`}
-                    className={`doc-badge ${item.provided ? "ok" : "missing"}`}
-                  >
-                    {item.provided ? <Check size={13} /> : <X size={13} />}
-                    {item.label}
-                  </span>
-                );
-              })}
-            </div>
+              }
+              return (
+                <div className="checklist-badges">
+                  {remaining.map((item, idx) => (
+                    <span key={`${item.label}-${idx}`} className="doc-badge missing">
+                      <X size={13} />
+                      {item.label}
+                    </span>
+                  ))}
+                </div>
+              );
+            })()}
           </ViewSection>
           )}
 
           <ViewSection
             id="sec-documents"
             icon={Paperclip}
-            title="Documents du dossier"
+            title="Fichiers déjà joints"
           >
+          {(app.documents?.length ?? 0) > 0 && (
+            <SubSection icon={ClipboardList} title="Pièces réunies">
+              <div className="doc-row">
+                {app.documents!.map((doc) => (
+                  <DocLink
+                    key={doc.id}
+                    label={doc.label || "Pièce"}
+                    url={doc.file}
+                  />
+                ))}
+              </div>
+            </SubSection>
+          )}
+
           <SubSection icon={FileText} title="Dossier de prêt">
             {app.request_letter_scan || (app.stock_photos?.length ?? 0) > 0 ? (
               <>

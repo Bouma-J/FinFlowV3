@@ -31,6 +31,17 @@ const ID_DOCS = [
   { value: "CONSULAR_CARD", label: "Carte consulaire" },
 ];
 
+const MARITAL = [
+  { value: "SINGLE", label: "Célibataire" },
+  { value: "MARRIED", label: "Marié(e)" },
+  { value: "DIVORCED", label: "Divorcé(e)" },
+  { value: "WIDOWED", label: "Veuf/Veuve" },
+];
+const MATRIMONIAL_REGIME = [
+  { value: "COMMUNITY", label: "Communauté de biens" },
+  { value: "SEPARATION", label: "Séparation de biens" },
+];
+
 const LEGAL_FORMS = [
   { value: "SARL", label: "SARL" },
   { value: "SA", label: "SA" },
@@ -45,7 +56,7 @@ const LEGAL_FORMS = [
 const TEXT_KEYS = [
   // Physique
   "last_name", "first_name", "birth_date", "birth_country",
-  "activity", "estimated_income",
+  "activity", "marital_status", "matrimonial_regime", "estimated_income",
   "id_document_type", "national_id", "id_document_issue_date",
   "id_document_expiry_date",
   // Entreprise
@@ -129,6 +140,17 @@ export function SuretyForm({
       const fd = new FormData();
       fd.append("surety_type", suretyType);
       for (const key of TEXT_KEYS) {
+        if (
+          isMoral &&
+          (key === "marital_status" || key === "matrimonial_regime")
+        ) {
+          if (isEdit) fd.append(key, "");
+          continue;
+        }
+        if (key === "matrimonial_regime" && text.marital_status !== "MARRIED") {
+          if (isEdit) fd.append(key, "");
+          continue;
+        }
         const value = text[key].trim();
         if (isEdit) {
           if (OMIT_IF_EMPTY.has(key)) {
@@ -280,6 +302,10 @@ export function SuretyForm({
               <Text label="Date de naissance" type="date" value={text.birth_date} onChange={set("birth_date")} />
               <Text label="Pays de naissance" value={text.birth_country} onChange={set("birth_country")} />
               <Text label="Activité de la caution" value={text.activity} onChange={set("activity")} />
+              <Select label="Situation matrimoniale" value={text.marital_status} onChange={set("marital_status")} options={MARITAL} />
+              {text.marital_status === "MARRIED" && (
+                <Select label="Régime matrimonial" value={text.matrimonial_regime} onChange={set("matrimonial_regime")} options={MATRIMONIAL_REGIME} />
+              )}
               <Text label="Estimation de revenu (XOF)" type="number" value={text.estimated_income} onChange={set("estimated_income")} />
             </div>
           </Card>

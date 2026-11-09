@@ -10,9 +10,11 @@ import {
   Images,
   Landmark,
   Leaf,
+  Plus,
   ReceiptText,
   Shield,
   Store,
+  Trash2,
   UploadCloud,
   Users,
   Wallet,
@@ -85,7 +87,7 @@ const NUMERIC_KEYS = [
   "other_activity_income", "other_income",
   // Particulier — charges
   "rent_expense", "food_expense", "utilities_expense", "transport_expense",
-  "education_expense", "health_expense", "other_household_expenses",
+  "education_expense", "health_expense",
   "tontine_expense", "social_contributions", "family_support_expense",
   // Particulier — stabilité & quotité
   "salary_deductions", "employment_seniority_months",
@@ -137,6 +139,31 @@ const INDIVIDUAL_PROFILES: { value: IndividualProfile; label: string }[] = [
   { value: "INDEPENDANT", label: "Indépendant" },
   { value: "MIXTE", label: "Mixte (salarié + activité)" },
 ];
+
+function dossierEarningPath(application: CreditApplication): IndividualProfile | "" {
+  const value = application.earning_path;
+  if (value === "SALARIE" || value === "INDEPENDANT" || value === "MIXTE") return value;
+  return "";
+}
+
+function contractToEmployment(contract: string | undefined): string {
+  if (contract === "CDI" || contract === "CIVIL_SERVANT") return "PERMANENT";
+  if (contract === "CDD") return "FIXED_TERM";
+  if (contract === "RETIRED") return "RETIRED";
+  if (contract === "DAILY") return "DAILY";
+  if (contract === "INDEPENDENT" || contract === "OTHER") return "OTHER";
+  return "";
+}
+
+function monthsSince(iso: string | null | undefined): number | null {
+  if (!iso) return null;
+  const start = new Date(`${iso.slice(0, 10)}T00:00:00`);
+  if (Number.isNaN(start.getTime())) return null;
+  const today = new Date();
+  let months = (today.getFullYear() - start.getFullYear()) * 12 + (today.getMonth() - start.getMonth());
+  if (today.getDate() < start.getDate()) months -= 1;
+  return Math.max(0, months);
+}
 
 function inferIndividualProfile(
   initial?: FinancialAnalysis,
@@ -230,6 +257,8 @@ const FIELD_LABELS: Record<string, string> = {
   individual_profile: "Profil particulier",
   salary_income: "Salaire net",
   activity_turnover: "CA / recettes activité",
+  extra_income: "Revenus ajoutés",
+  extra_charges: "Charges ajoutées",
 };
 
 function num(v: string | null | undefined): string {
@@ -356,12 +385,19 @@ export function FinancialAnalysisForm({
   const [docs, setDocs] = useState<File[]>([]);
   const dependents = application.dependents_count;
 
-  const [hasSideActivity, setHasSideActivity] = useState(
-    Boolean((initial as { has_side_activity?: boolean } | undefined)?.has_side_activity),
-  );
+  const dossierProfile = isIndividual ? dossierEarningPath(application) : "";
+  const [hasSideActivity, setHasSideActivity] = useState(() => {
+    if (dossierProfile) return dossierProfile !== "SALARIE";
+    return Boolean((initial as { has_side_activity?: boolean } | undefined)?.has_side_activity);
+  });
   const [individualProfile, setIndividualProfile] = useState<IndividualProfile>(
-    () => inferIndividualProfile(initial),
+    () => dossierProfile || inferIndividualProfile(initial),
   );
+  useEffect(() => {
+    if (!dossierProfile) return;
+    setIndividualProfile(dossierProfile);
+    setHasSideActivity(dossierProfile !== "SALARIE");
+  }, [dossierProfile]);
   const configuration = useQuery({
     queryKey: ["credit-configuration", application.id, individualProfile],
     queryFn: async () => (await api.get<EffectiveConfiguration>(`/credit-applications/${application.id}/configuration/`, {
@@ -578,9 +614,11 @@ export function FinancialAnalysisForm({
     const charges =
       val("rent_expense") + val("food_expense") + val("utilities_expense") +
       val("transport_expense") + val("education_expense") +
-      val("health_expense") + val("other_household_expenses") +
+      val("health_expense") +
       val("tontine_expense") + val("social_contributions") +
-      val("family_support_expense") + val("other_monthly_obligations");
+      val("family_support_expense") + val("other_monthly_obligations") +
+      completeLineTotal(readMoneyLines(details, "extra_charges"));
+    income += completeLineTotal(readMoneyLines(details, "extra_income"));
     const monthlyFactor = period === "ANNUAL" ? 1 / 12 : period === "QUARTERLY" ? 1 / 3 : 1;
     const externalMonthly = externalCredits.reduce((total, row) => total + (Number(row.monthly_payment) || 0), 0);
     const disposable = (income - charges) * monthlyFactor - externalMonthly;
@@ -662,6 +700,21 @@ export function FinancialAnalysisForm({
       for (const k of ANALYSIS_BOOL_KEYS) {
         fd.append(k, String(analysisBool[k]));
       }
+      if (dossierProfile) {
+        fd.set("individual_profile", dossierProfile);
+        fd.set("has_side_activity", String(dossierProfile !== "SALARIE"));
+        fd.set("employer_name", application.employer_name || "");
+        fd.set("employer_sector", application.employer_sector || "");
+        fd.set("employment_seniority_months", application.job_seniority_months == null ? "" : String(application.job_seniority_months));
+        fd.set("salary_paid_through_bank", String(Boolean(application.salary_domiciliation)));
+        if (application.contract_type) fd.set("employment_type", contractToEmployment(application.contract_type));
+        if (dossierProfile !== "SALARIE") {
+          fd.set("activity_name", application.activity_name || "");
+          if (application.tax_regime) fd.set("activity_is_formal", String(application.tax_regime !== "INFORMAL"));
+          const age = monthsSince(application.activity_start_date);
+          if (age != null) fd.set("activity_business_age_months", String(age));
+        }
+      }
       fd.append("recommendation", recommendation);
       fd.append("analysis_date", analysisDate);
       fd.append("comment", comment);
@@ -692,15 +745,7 @@ export function FinancialAnalysisForm({
           ? (data as { errors: unknown }).errors
           : data;
       if (errors && typeof errors === "object" && !Array.isArray(errors)) {
-        setError(
-          Object.entries(errors as Record<string, unknown>)
-            .map(([k, v]) => {
-              const label = FIELD_LABELS[k] ?? k;
-              const msg = Array.isArray(v) ? v.join(", ") : String(v);
-              return `${label} : ${msg}`;
-            })
-            .join(" · "),
-        );
+        setError(flattenErrors(errors as Record<string, unknown>).join(" · "));
         return;
       }
       const status = resp?.status;
@@ -807,14 +852,17 @@ export function FinancialAnalysisForm({
               onChange={(checked) => setDetails((current) => ({ ...current, statement_basis: checked ? "STATEMENTS" : "RECONSTITUTED" }))}
             />
           )}
-          {isIndividual && individualProfile === "SALARIE" && (
+          {isIndividual && !dossierProfile && individualProfile === "SALARIE" && (
             <Checkbox
               label="Exerce aussi une activité génératrice de revenus"
               checked={hasSideActivity}
               onChange={setHasSideActivity}
             />
           )}
-          {isIndividual && (
+          {isIndividual && dossierProfile && (
+            <p className="muted small">Parcours fixé sur le dossier : <strong>{INDIVIDUAL_PROFILES.find((item) => item.value === dossierProfile)?.label}</strong>. Employeur, ancienneté et domiciliation s'y lisent.</p>
+          )}
+          {isIndividual && !dossierProfile && (
             <Select
               label="Situation professionnelle"
               value={individualProfile}
@@ -1238,6 +1286,12 @@ export function FinancialAnalysisForm({
               <Money label="Autres revenus" value={numbers.other_income} onChange={set("other_income")} cur={cur} />
               {!showStabilityBlock && <Money label="Pondération des revenus informels (%) — vide : seuil établissement" value={numbers.informal_income_weight} onChange={set("informal_income_weight")} />}
             </div>
+            <MoneyLines
+              rows={readMoneyLines(details, "extra_income")}
+              onChange={(rows) => setDetails((current) => ({ ...current, extra_income: rows }))}
+              addLabel="Ajouter un revenu"
+              currency={cur}
+            />
             <div className="finance-recap">
               <RecapItem label="Total revenus" value={formatMoney(recap.income, cur)} strong />
             </div>
@@ -1270,16 +1324,20 @@ export function FinancialAnalysisForm({
                 {detailText("sales_verification", "Reconstitution des ventes : recettes journalières, cahier de caisse et mobile money")}
                 {creationOpen && <p className="muted small">Activité en création : ces recettes passées ne sont pas exigées. Elles ne sont pas recopiées dans la prévision.</p>}
                 <div className="form-grid two-col" style={{ marginTop: "0.75rem" }}>
-                  <Text
-                    label="Activité principale / produit ou service"
-                    value={analysisStr.activity_name}
-                    onChange={setAnalysis("activity_name")}
-                  />
+                  {!dossierProfile && (
+                    <Text
+                      label="Activité principale / produit ou service"
+                      value={analysisStr.activity_name}
+                      onChange={setAnalysis("activity_name")}
+                    />
+                  )}
+                  {!dossierProfile && (
                   <Money
                     label="Ancienneté de l'activité (mois)"
                     value={numbers.activity_business_age_months}
                     onChange={set("activity_business_age_months")}
                   />
+                  )}
                   <Money
                     label="Jours de vente sur la période"
                     value={numbers.activity_sales_days}
@@ -1305,11 +1363,13 @@ export function FinancialAnalysisForm({
                   />
                 </div>
                 <div className="form-grid two-col">
+                  {!dossierProfile && (
                   <Checkbox
                     label="Activité formalisée"
                     checked={analysisBool.activity_is_formal}
                     onChange={toggleAnalysis("activity_is_formal")}
                   />
+                  )}
                   <Checkbox
                     label="Cahier de caisse ou pièces d'activité disponibles"
                     checked={analysisBool.activity_records_available}
@@ -1378,8 +1438,13 @@ export function FinancialAnalysisForm({
               <Money label="Cotisations sociales / assurances" value={numbers.social_contributions} onChange={set("social_contributions")} cur={cur} />
               <Money label="Soutien familial / transferts" value={numbers.family_support_expense} onChange={set("family_support_expense")} cur={cur} />
               <Money label="Autres obligations récurrentes" value={numbers.other_monthly_obligations} onChange={set("other_monthly_obligations")} cur={cur} />
-              <Money label="Autres charges" value={numbers.other_household_expenses} onChange={set("other_household_expenses")} cur={cur} />
             </div>
+            <MoneyLines
+              rows={readMoneyLines(details, "extra_charges")}
+              onChange={(rows) => setDetails((current) => ({ ...current, extra_charges: rows }))}
+              addLabel="Ajouter une charge"
+              currency={cur}
+            />
             <div className="finance-recap">
               <RecapItem label="Total charges" value={formatMoney(recap.charges, cur)} />
               <RecapItem label="Reste à vivre mensuel (avant nouvelle échéance)" value={formatMoney(recap.disposable, cur)} strong />
@@ -1404,19 +1469,19 @@ export function FinancialAnalysisForm({
             id="fa-stability"
             icon={Landmark}
             title="Stabilité salariale et quotité cessible"
-            description="Employeur, traçabilité du salaire, ancienneté et retenues à la source."
+            description={dossierProfile ? "Retenues à la source et vérification du salaire. L'employeur et l'ancienneté sont sur le dossier." : "Employeur, traçabilité du salaire, ancienneté et retenues à la source."}
           >
             {detailText("employment_outlook", "Contrat, échéance du CDD, retraite, régularité de paiement et stabilité de l'employeur")}
             <div className="form-grid two-col">
-              <Select label="Type d'emploi" value={analysisStr.employment_type} onChange={setAnalysis("employment_type")} options={EMPLOYMENT_TYPES} />
-              <Text label="Employeur" value={analysisStr.employer_name} onChange={setAnalysis("employer_name")} />
-              <Text label="Secteur de l'employeur" value={analysisStr.employer_sector} onChange={setAnalysis("employer_sector")} />
+              {!dossierProfile && <Select label="Type d'emploi" value={analysisStr.employment_type} onChange={setAnalysis("employment_type")} options={EMPLOYMENT_TYPES} />}
+              {!dossierProfile && <Text label="Employeur" value={analysisStr.employer_name} onChange={setAnalysis("employer_name")} />}
+              {!dossierProfile && <Text label="Secteur de l'employeur" value={analysisStr.employer_sector} onChange={setAnalysis("employer_sector")} />}
               <Money label="Retenues déjà prélevées à la source" value={numbers.salary_deductions} onChange={set("salary_deductions")} cur={cur} />
-              <Money label="Ancienneté emploi / activité (mois)" value={numbers.employment_seniority_months} onChange={set("employment_seniority_months")} />
+              {!dossierProfile && <Money label="Ancienneté emploi / activité (mois)" value={numbers.employment_seniority_months} onChange={set("employment_seniority_months")} />}
               <Money label="Pondération revenus informels (%)" value={numbers.informal_income_weight} onChange={set("informal_income_weight")} />
             </div>
             <div className="form-grid two-col">
-              <Checkbox label="Salaire domicilié ou traçable en banque" checked={analysisBool.salary_paid_through_bank} onChange={toggleAnalysis("salary_paid_through_bank")} />
+              {!dossierProfile && <Checkbox label="Salaire domicilié ou traçable en banque" checked={analysisBool.salary_paid_through_bank} onChange={toggleAnalysis("salary_paid_through_bank")} />}
               <Checkbox label="Salaire vérifié sur bulletin ou relevé" checked={analysisBool.salary_verified} onChange={toggleAnalysis("salary_verified")} />
             </div>
             <p className="muted small">
@@ -1932,6 +1997,99 @@ function RecapItem({
     <div className={`recap-item${strong ? " strong" : ""}`}>
       <span className="recap-label">{label}</span>
       <span className="recap-value">{value}</span>
+    </div>
+  );
+}
+
+type MoneyLine = { label: string; amount: string };
+
+function readMoneyLines(details: AnalysisDetails, key: string): MoneyLine[] {
+  const value = details[key];
+  if (!Array.isArray(value)) return [];
+  return value.map((row) => ({
+    label: String(row.label ?? ""),
+    amount: row.amount == null ? "" : String(row.amount),
+  }));
+}
+
+function completeLineTotal(rows: MoneyLine[]) {
+  return rows.reduce((sum, row) => {
+    if (!row.label.trim() || row.amount.trim() === "") return sum;
+    const amount = Number(row.amount);
+    return Number.isFinite(amount) ? sum + amount : sum;
+  }, 0);
+}
+
+function flattenErrors(errors: Record<string, unknown>, prefix = ""): string[] {
+  return Object.entries(errors).flatMap(([key, value]) => {
+    const label = prefix
+      ? `${prefix} — ${FIELD_LABELS[key] ?? key}`
+      : (FIELD_LABELS[key] ?? key);
+    if (Array.isArray(value)) return [`${label} : ${value.join(", ")}`];
+    if (value && typeof value === "object") {
+      return flattenErrors(value as Record<string, unknown>, label);
+    }
+    return [`${label} : ${String(value)}`];
+  });
+}
+
+function MoneyLines({
+  rows,
+  onChange,
+  addLabel,
+  currency,
+}: {
+  rows: MoneyLine[];
+  onChange: (rows: MoneyLine[]) => void;
+  addLabel: string;
+  currency: string;
+}) {
+  return (
+    <div className="stack" style={{ marginTop: "0.75rem" }}>
+      {rows.map((row, index) => (
+        <div
+          key={index}
+          className="form-grid"
+          style={{ gridTemplateColumns: "minmax(0, 1fr) 180px auto", alignItems: "end" }}
+        >
+          <label className="field">
+            <span>Libellé</span>
+            <input
+              value={row.label}
+              onChange={(event) => {
+                const next = rows.slice();
+                next[index] = { ...row, label: event.target.value };
+                onChange(next);
+              }}
+            />
+          </label>
+          <Money
+            label="Montant"
+            value={row.amount}
+            onChange={(amount) => {
+              const next = rows.slice();
+              next[index] = { ...row, amount };
+              onChange(next);
+            }}
+            cur={currency}
+          />
+          <button
+            type="button"
+            className="btn btn-ghost btn-icon"
+            aria-label="Retirer la ligne"
+            onClick={() => onChange(rows.filter((_, item) => item !== index))}
+          >
+            <Trash2 size={16} />
+          </button>
+        </div>
+      ))}
+      <button
+        type="button"
+        className="btn btn-ghost btn-sm"
+        onClick={() => onChange([...rows, { label: "", amount: "" }])}
+      >
+        <Plus size={16} /> {addLabel}
+      </button>
     </div>
   );
 }

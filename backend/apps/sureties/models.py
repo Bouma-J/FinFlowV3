@@ -1,7 +1,7 @@
 """Gestion des cautions (personnes physiques et morales)."""
 from django.db import models
 
-from apps.clients.models import IdDocumentType, LegalForm
+from apps.clients.models import IdDocumentType, LegalForm, MaritalStatus
 from apps.common.files import safe_filename
 from apps.common.models import AuthoredModel, TenantScopedModel
 
@@ -10,6 +10,11 @@ def surety_file_path(instance, filename):
     """Chemin de stockage des pièces jointes d'une caution (scan, photo)."""
     surety_id = getattr(instance, "surety_id", None) or instance.id
     return f"sureties/{instance.tenant_id}/{surety_id}/{safe_filename(filename)}"
+
+
+class SuretyMatrimonialRegime(models.TextChoices):
+    COMMUNITY = "COMMUNITY", "Communauté de biens"
+    SEPARATION = "SEPARATION", "Séparation de biens"
 
 
 class Surety(TenantScopedModel, AuthoredModel):
@@ -42,6 +47,14 @@ class Surety(TenantScopedModel, AuthoredModel):
     birth_date = models.DateField("date de naissance", null=True, blank=True)
     birth_country = models.CharField("pays de naissance", max_length=100, blank=True)
     activity = models.CharField("activité de la caution", max_length=200, blank=True)
+    marital_status = models.CharField(
+        "situation matrimoniale", max_length=15,
+        choices=MaritalStatus.choices, blank=True,
+    )
+    matrimonial_regime = models.CharField(
+        "régime matrimonial", max_length=15,
+        choices=SuretyMatrimonialRegime.choices, blank=True,
+    )
     estimated_income = models.DecimalField(
         "estimation de revenu", max_digits=18, decimal_places=2,
         null=True, blank=True,

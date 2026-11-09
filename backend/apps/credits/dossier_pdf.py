@@ -175,16 +175,33 @@ def _collect(application, user) -> dict:
     analyses = _analyses(application, currency)
     guarantees = _guarantees(application, currency)
     sureties = _sureties(application, currency)
-    visits = [
-        (
-            _date(visit.visit_date),
-            _person(visit.visited_by),
-            visit.visitor_role or "—",
-            visit.geo_coordinates or "—",
-            visit.report or "—",
+    from .models import FieldVisit
+
+    place_labels = dict(FieldVisit.Place.choices)
+    visits = []
+    for visit in application.field_visits.select_related("visited_by").prefetch_related("photos").all():
+        places = ", ".join(
+            place_labels.get(code, code) for code in (visit.visited_places or [])
         )
-        for visit in application.field_visits.select_related("visited_by").all()
-    ]
+        if visit.geo_coordinates:
+            places = f"{places} ({visit.geo_coordinates})" if places else visit.geo_coordinates
+        author = _person(visit.visited_by)
+        if visit.visitor_role:
+            author = f"{author} — {visit.visitor_role}"
+        report = visit.report or "—"
+        photo_count = len(visit.photos.all())
+        if photo_count:
+            report = f"{report} — {photo_count} photo{'s' if photo_count > 1 else ''}"
+        if visit.minutes:
+            report = f"{report} — PV joint"
+        visits.append((
+            _date(visit.visit_date),
+            author,
+            places or "—",
+            visit.get_person_met_display() if visit.person_met else "—",
+            visit.get_conclusion_display() if visit.conclusion else "—",
+            report,
+        ))
     documents = _documents(application)
     contracts = [
         (
@@ -575,32 +592,56 @@ def _profile_blocks(application) -> list[tuple[str, list[tuple[str, str]]]]:
         ("Quotité financée", application.financed_quota),
     ])
     add("Demandeur et emploi", [
+        ("Parcours", application.get_earning_path_display() if application.earning_path else ""),
+        ("Régime matrimonial", application.get_marital_regime_display() if application.marital_regime else ""),
+        ("Le conjoint a un revenu", _yes(application.spouse_has_income) if application.spouse_has_income is not None else ""),
+        ("Enfants à charge", application.children_count if application.children_count is not None else ""),
+        ("Personnes à charge", application.dependents_count if application.dependents_count is not None else ""),
+        ("Logement", application.get_housing_status_display() if application.housing_status else ""),
+        ("Ancienneté dans le logement (mois)", application.housing_seniority_months if application.housing_seniority_months is not None else ""),
+        ("Profession", application.employment_profession),
+        ("Poste occupé", application.job_title),
         ("Employeur", application.employer_name),
+        ("Adresse de l'employeur", application.employer_address),
+        ("Téléphone de l'employeur", application.employer_phone),
+        ("Secteur de l'employeur", application.employer_sector),
         ("Type de contrat", application.get_contract_type_display() if application.contract_type else ""),
-        ("Salaire domicilié", _yes(application.salary_domiciliation) if application.employer_name or application.contract_type else ""),
-        ("Personnes à charge", application.dependents_count or ""),
+        ("Fin du contrat", _date(application.contract_end_date) if application.contract_type == "CDD" and application.contract_end_date else ""),
+        ("Ancienneté dans l'emploi (mois)", application.job_seniority_months if application.job_seniority_months is not None else ""),
+        ("Ancienneté professionnelle (mois)", application.career_seniority_months if application.career_seniority_months is not None else ""),
+        ("Salaire domicilié", _yes(application.salary_domiciliation) if application.employer_name or application.contract_type or application.salary_domiciliation else ""),
+        ("Activité", application.activity_name),
+        ("Métier", application.activity_trade),
+        ("Secteur de l'activité", application.activity_sector),
+        ("Local de l'activité", application.get_activity_premises_status_display() if application.activity_premises_status else ""),
+        ("IFU de l'activité", application.activity_ifu),
     ])
-    add("Relation bancaire", [
-        ("Compte du client", application.client_account_number),
-        ("Début de relation", _date(application.relationship_start_date) if application.relationship_start_date else ""),
-        ("Mouvements créditeurs mensuels moyens", application.avg_monthly_credit_movements),
-    ])
-    add("Assurance", [
-        ("Assurance crédit", _yes(application.has_credit_insurance) if application.has_credit_insurance or application.insurance_company else ""),
-        ("Compagnie", application.insurance_company),
-        ("Prime", application.insurance_premium),
-        ("Police", application.insurance_policy_number),
-        ("Fin de couverture", _date(application.insurance_expiry_date) if application.insurance_expiry_date else ""),
-    ])
+    outside = []
+    for index, account in enumerate(application.external_accounts.all(), start=1):
+        prefix = f"{index}. "
+        outside.extend([
+            (f"{prefix}Institution", account.institution_name),
+            (f"{prefix}Ouverture", _date(account.opened_on) if account.opened_on else ""),
+            (f"{prefix}Numéro de compte", account.account_number),
+            (f"{prefix}Mouvements créditeurs (3 mois)", account.credit_movement_count if account.credit_movement_count is not None else ""),
+            (f"{prefix}Volume créditeur", account.credit_movement_volume if account.credit_movement_volume is not None else ""),
+            (f"{prefix}Relevé", "Joint" if account.statement else ""),
+        ])
+    add("Comptes hors institution", outside)
     add("Conditions particulières", [
         ("Conditions particulières", application.special_conditions),
         ("Conditions suspensives", application.suspensive_conditions),
     ])
-    add("Conformité", [
-        ("Bénéficiaire effectif", application.beneficial_owner),
-        ("Personne politiquement exposée", _yes(application.is_pep) if application.is_pep or application.beneficial_owner or application.funds_origin else ""),
-        ("Origine des fonds", application.funds_origin),
-    ])
+    client_type = getattr(getattr(application, "client", None), "client_type", "")
+    compliance = []
+    if client_type != "INDIVIDUAL":
+        compliance.append(("Bénéficiaire effectif", application.beneficial_owner))
+    if application.is_pep:
+        compliance.extend([
+            ("Personne politiquement exposée", "Oui"),
+            ("Explication", application.pep_details),
+        ])
+    add("Conformité", compliance)
     return blocks
 
 
@@ -645,6 +686,15 @@ def _analyses(application, currency: str) -> list[dict]:
                 value = None
             if value not in (None, "", 0, Decimal("0")):
                 rows.append((label, _money(value, currency)))
+        for key in ("extra_income", "extra_charges"):
+            for line in (item.analysis_details or {}).get(key) or []:
+                if not isinstance(line, dict):
+                    continue
+                label = str(line.get("label") or "").strip()
+                amount = line.get("amount")
+                if not label or amount in (None, ""):
+                    continue
+                rows.append((label, _money(amount, currency)))
         if item.strengths:
             rows.append(("Points forts", item.strengths))
         if item.weaknesses:
@@ -665,9 +715,12 @@ def _analyses(application, currency: str) -> list[dict]:
 def _guarantees(application, currency: str) -> list[tuple]:
     rows = []
     for item in application.guarantees.all().order_by("created_at"):
-        owner = " ".join(
-            part for part in (item.owner_first_name, item.owner_last_name) if part
-        ) or item.owners or "—"
+        if item.belongs_to_applicant:
+            owner = item.client.display_name if item.client_id else "—"
+        elif item.surety_id:
+            owner = item.surety.display_name
+        else:
+            owner = item.owners or "—"
         rows.append((
             item.reference or "—",
             item.get_guarantee_type_display(),
@@ -696,16 +749,20 @@ def _sureties(application, currency: str) -> list[tuple]:
 
 def _documents(application) -> list[tuple[str, str, str]]:
     rows = []
+    attached = {
+        (doc.label or "").strip()
+        for doc in application.documents.all()
+        if (doc.label or "").strip()
+    }
     checklist = application.document_checklist or []
     if isinstance(checklist, list):
         for item in checklist:
             if not isinstance(item, dict):
                 continue
             label = str(item.get("label") or "").strip()
-            if not label:
+            if not label or label in attached:
                 continue
-            state = "Fournie" if item.get("provided") is True else "Non fournie"
-            rows.append((label, "Checklist", state))
+            rows.append((label, "À réunir", "Non jointe"))
     if application.request_letter_scan:
         rows.append(("Lettre de demande", "Scan", _file_name(application.request_letter_scan)))
     for photo in application.stock_photos.all():
@@ -1037,11 +1094,11 @@ def _render(data: dict, brand: dict, font: str, font_b: str) -> bytes:
         parts.append(kv(data["cbs_rows"]))
         blocks.append(("Mise en place et références CBS", parts))
     blocks.append(("8. Visites terrain", grid(
-        ["Date", "Auteur", "Profil", "Lieu", "Compte rendu"],
+        ["Date", "Auteur", "Lieu visité", "Personne", "Conclusion", "Compte rendu"],
         data["visits"],
-        [24 * mm, 32 * mm, 28 * mm, 30 * mm, 60 * mm],
+        [22 * mm, 28 * mm, 32 * mm, 26 * mm, 26 * mm, 40 * mm],
     )))
-    blocks.append(("9. Pièces du dossier", grid(
+    blocks.append(("9. Pièces à réunir et fichiers joints", grid(
         ["Libellé", "Nature", "État ou fichier"],
         data["documents"],
         [70 * mm, 34 * mm, 70 * mm],

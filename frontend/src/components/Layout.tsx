@@ -237,14 +237,10 @@ const ADMIN_GROUPS: AdminGroup[] = [
     icon: Package,
     items: [
       {
-        to: "/produits",
+        to: "/admin/produits",
         label: "Produits",
         icon: Boxes,
         anyOf: [...PERM_PRODUCTS, ...PERM_ADMIN_PRODUCTS],
-        resolveTo: (user) =>
-          isFinflowAdmin(user) && hasAnyPerm(user, PERM_ADMIN_PRODUCTS)
-            ? "/admin/produits"
-            : "/produits",
       },
       {
         to: "/admin/referentiels-cbs",

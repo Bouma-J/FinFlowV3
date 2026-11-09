@@ -1,4 +1,5 @@
 """Régressions : périodes, bilan et reconstitution des engagements."""
+from datetime import date
 from decimal import Decimal
 
 import pytest
@@ -9,7 +10,7 @@ from apps.common.tenancy import tenant_context
 from apps.credits.analysis_details import apply_reference_statement, validate_details, detail_metrics
 from apps.credits.models import CreditApplication, FinancialAnalysis, AnalysisThreshold, FinancialDocument
 from apps.credits.analytics import compute_metrics
-from apps.credits.serializers import FinancialAnalysisSerializer
+from apps.credits.serializers import CreditApplicationSerializer, FinancialAnalysisSerializer
 from django.http import QueryDict
 from unittest.mock import patch
 
@@ -403,3 +404,87 @@ def test_minimal_cash_document_stays_out_of_the_ratios(tenant_a, client_a, produ
         assert analysis.repayment_capacity == Decimal("100000.00")
         assert analysis.turnover == Decimal("0")
         assert analysis.analysis_details["minimal_cash_inflows"] == "50"
+
+
+@pytest.mark.django_db
+def test_dossier_profile_drives_the_analysis(tenant_a, client_a, product_a):
+    with tenant_context(tenant_a.id):
+        app = CreditApplication.objects.create(
+            tenant=tenant_a, client=client_a, product=product_a,
+            reference="FA-PROFILE", amount_requested=100000, duration_months=12,
+            earning_path="MIXTE", employer_name="Atelier Nord",
+            employer_sector="Bâtiment", contract_type="DAILY",
+            job_seniority_months=18, salary_domiciliation=True,
+            activity_name="Couture", tax_regime="INFORMAL",
+            activity_start_date=date(2024, 1, 15),
+        )
+        analysis = FinancialAnalysis.objects.create(
+            tenant=tenant_a, application=app, reference_period="MONTHLY",
+            individual_profile="SALARIE", has_side_activity=False,
+            employer_name="Ancien", salary_income=100000, activity_turnover=50000,
+        )
+        assert analysis.individual_profile == "MIXTE"
+        assert analysis.has_side_activity is True
+        assert analysis.employer_name == "Atelier Nord"
+        assert analysis.employer_sector == "Bâtiment"
+        assert analysis.employment_type == "DAILY"
+        assert analysis.employment_seniority_months == 18
+        assert analysis.salary_paid_through_bank is True
+        assert analysis.activity_name == "Couture"
+        assert analysis.activity_is_formal is False
+        assert analysis.activity_business_age_months > 0
+
+        app.earning_path = "SALARIE"
+        app.save(update_fields=["earning_path"])
+        analysis.individual_profile = "MIXTE"
+        analysis.has_side_activity = True
+        analysis.save()
+        assert analysis.individual_profile == "SALARIE"
+        assert analysis.has_side_activity is False
+
+        app.earning_path = ""
+        app.save(update_fields=["earning_path"])
+        analysis.employer_name = "Saisi dans l'analyse"
+        analysis.save()
+        assert analysis.employer_name == "Saisi dans l'analyse"
+
+        serializer = CreditApplicationSerializer(
+            app,
+            data={"children_count": "3", "dependents_count": "1", "spouse_first_name": "Awa"},
+            partial=True,
+        )
+        assert not serializer.is_valid()
+        assert "children_count" in serializer.errors
+        serializer = CreditApplicationSerializer(
+            app,
+            data={"children_count": "1", "dependents_count": "2", "spouse_first_name": "Awa", "spouse_phone": "0700", "spouse_profession": "Couture"},
+            partial=True,
+        )
+        assert serializer.is_valid(), serializer.errors
+        kept_name = client_a.spouse_last_name
+        serializer.save()
+        client_a.refresh_from_db()
+        assert client_a.spouse_first_name == "Awa"
+        assert client_a.spouse_phone == "0700"
+        assert client_a.spouse_profession == "Couture"
+        assert client_a.spouse_last_name == kept_name
+
+
+def test_extra_household_lines_enter_the_totals():
+    details = validate_details({
+        "extra_income": [
+            {"label": " Bourse ", "amount": "15000"},
+            {"label": "", "amount": ""},
+        ],
+        "extra_charges": [{"label": "Garde d'enfants", "amount": "8000"}],
+    })
+    assert details["extra_income"] == [{"label": "Bourse", "amount": "15000"}]
+    analysis = FinancialAnalysis(
+        analysis_details=details,
+        salary_income=Decimal("100000"),
+        rent_expense=Decimal("20000"),
+    )
+    assert analysis.total_income == Decimal("115000")
+    assert analysis.total_household_charges == Decimal("28000")
+    with pytest.raises(ValidationError):
+        validate_details({"extra_charges": [{"label": "Loyer école", "amount": ""}]})

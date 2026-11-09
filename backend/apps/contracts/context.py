@@ -702,6 +702,44 @@ def build_context(
         PledgeCategory,
     )
 
+    def _guarantee_owner(g) -> dict:
+        last = first = full = marital = regime = ""
+        if g.belongs_to_applicant and g.client_id:
+            client = g.client
+            if client.is_legal_entity:
+                last = client.company_name or client.display_name
+            else:
+                first = client.first_name or ""
+                last = client.last_name or ""
+            full = client.display_name
+            marital = client.marital_status or ""
+            application = g.application
+            if application and application.marital_regime:
+                regime = application.get_marital_regime_display()
+        elif g.surety_id:
+            surety = g.surety
+            if surety.surety_type == surety.SuretyType.MORAL:
+                last = surety.display_name
+            else:
+                first = surety.first_name or ""
+                last = surety.last_name or ""
+            full = surety.display_name
+            marital = surety.get_marital_status_display() if surety.marital_status else ""
+            regime = surety.get_matrimonial_regime_display() if surety.matrimonial_regime else ""
+        else:
+            first = g.owner_first_name or ""
+            last = g.owner_last_name or ""
+            full = f"{first} {last}".strip() or (g.owners or "")
+            marital = g.owner_marital_status or ""
+            regime = _display(g.matrimonial_regime, MatrimonialRegime.choices)
+        return {
+            "proprietaire_nom": last,
+            "proprietaire_prenom": first,
+            "proprietaire_nom_complet": full,
+            "proprietaire_situation_matrimoniale": marital,
+            "regime_matrimonial": regime,
+        }
+
     def build_garantie(g) -> dict:
         gt = g.guarantee_type
         bijoux = [
@@ -728,15 +766,7 @@ def build_context(
             "reference": g.reference or "",
             "description": g.description or "",
             "proprietaires": g.owners or "",
-            "proprietaire_nom": g.owner_last_name or "",
-            "proprietaire_prenom": g.owner_first_name or "",
-            "proprietaire_nom_complet": (
-                f"{g.owner_first_name} {g.owner_last_name}".strip()
-            ),
-            "proprietaire_situation_matrimoniale": g.owner_marital_status or "",
-            "regime_matrimonial": _display(
-                g.matrimonial_regime, MatrimonialRegime.choices
-            ),
+            **_guarantee_owner(g),
             "valeur": fmt_money(g.current_value or g.expertise_value),
             "valeur_expertise": fmt_money(g.expertise_value),
             "valeur_consideree": fmt_money(g.value_to_consider),
