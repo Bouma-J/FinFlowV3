@@ -40,6 +40,9 @@ DETAIL_SCHEMAS = {
     },
     "extra_income": {"label": "text", "amount": "amount"},
     "extra_charges": {"label": "text", "amount": "amount"},
+    "household_assets": {"label": "text", "amount": "amount"},
+    "activity_extra_charges": {"label": "text", "amount": "amount"},
+    "extra_activities": {"label": "text", "turnover": "amount", "expenses": "amount"},
     "bank_flows": {
         "institution": "text", "period": "text", "tmc": "amount",
         "balance": "signed", "average_tmc": "amount",
@@ -57,6 +60,27 @@ DETAIL_SCHEMAS = {
         "period": "text", "turnover": "amount", "net_result": "signed",
         "cashflow": "signed", "equity": "signed", "comment": "text",
     },
+    "suppliers": {
+        "name": "text", "place": "text", "product": "text",
+        "share": "amount", "amount": "amount",
+        "payment_mode": "text", "delay_days": "amount",
+    },
+    "purchase_methods": {"method": "text"},
+    "purchase_history": {
+        "date": "date", "product": "text", "supplier": "text",
+        "quantity": "amount", "unit": "text", "unit_price": "amount",
+    },
+    "supplier_payments": {
+        "date": "date", "supplier": "text", "amount": "amount", "payment_mode": "text",
+    },
+    "sales_periods": {
+        "date": "date", "start": "date", "end": "date",
+        "amount": "amount", "appreciation": "text",
+    },
+    "collection_periods": {
+        "date": "date", "start": "date", "end": "date",
+        "amount": "amount", "appreciation": "text",
+    },
 }
 DETAIL_TEXTS = {
     "business_model", "seasonality", "sales_verification", "stock_risks",
@@ -73,22 +97,41 @@ DETAIL_TEXTS = {
     "campaign_calendar", "campaign_sales", "campaign_comment",
     "creation_activity", "creation_ramp", "creation_assumptions",
     "minimal_cash_label", "minimal_cash_comment",
+    "purchase_comment", "patrimony_comment", "analysis_context_comment",
 }
 
 DETAIL_CHOICES = {
     "sales_method": {"", "CAHIER", "BANK", "THREE_DAYS", "STOCK", "HYPOTHESIS", "OTHER"},
     "purchase_method": {"", "INVOICES", "LEDGER", "COST_RATE", "OTHER"},
+    "sales_rhythm": {"", "DAY", "WEEK", "MONTH"},
+    "collection_rhythm": {"", "DAY", "WEEK", "MONTH"},
+    "analysis_period_mode": {"", "DAY", "WEEK", "MONTH", "SEMESTER"},
+    "sales_period_mode": {"", "DAY", "WEEK", "MONTH", "SEMESTER"},
+    "collection_period_mode": {"", "DAY", "WEEK", "MONTH", "SEMESTER"},
     "statement_basis": {"", "STATEMENTS", "RECONSTITUTED"},
     "manufactures": {"", "yes", "no"},
     "group_has_activity": {"", "yes", "no"},
     "campaign_open": {"", "yes", "no"},
     "activity_creation": {"", "yes", "no"},
     "minimal_cash_open": {"", "yes", "no"},
+    "consulted_sales_book": {"", "yes"},
+    "consulted_sales_invoices": {"", "yes"},
+    "consulted_bank_statements": {"", "yes"},
+    "consulted_purchase_invoices": {"", "yes"},
+    "consulted_purchase_ledger": {"", "yes"},
 }
 
-DETAIL_DATES = {"last_purchase_date", "cash_control_date", "minimal_cash_start", "minimal_cash_end"}
+DETAIL_DATES = {
+    "last_purchase_date", "cash_control_date", "minimal_cash_start", "minimal_cash_end",
+    "purchase_period_start", "purchase_period_end",
+    "analysis_period_start", "analysis_period_end",
+}
+
+# Délais moyens observés du cycle. Distincts du choc de stress receivable_delay_days.
+OBSERVED_DELAYS = {"observed_client_payment_days", "observed_supplier_payment_days"}
 
 SALES_OBSERVATION_KINDS = {"", "Observé", "Hypothèse"}
+SALES_APPRECIATIONS = {"", "FAIBLE", "MOYENNE", "BONNE"}
 REFERENCE_KINDS = {"", "Familiale", "Professionnelle"}
 
 # Compléments facultatifs : l'absence reste distincte d'un zéro renseigné.
@@ -104,6 +147,14 @@ DETAIL_AMOUNTS = {
     "receivable_delay_days": "amount",
     "activity_days_per_month": "amount", "retained_daily_sales": "amount",
     "sales_control_monthly": "amount",
+    "sales_amount": "amount", "collection_amount": "amount",
+    "activity_charge_place": "amount", "activity_charge_staff": "amount",
+    "activity_charge_transport": "amount", "activity_charge_utilities": "amount",
+    "activity_charge_telecom": "amount", "activity_charge_maintenance": "amount",
+    "activity_charge_fees": "amount", "activity_charge_supplies": "amount",
+    "activity_stock_prev": "amount", "activity_receivables_prev": "amount",
+    "activity_cash_prev": "amount", "activity_fixed_assets_prev": "amount",
+    "activity_supplier_debt_prev": "amount",
     "purchase_average": "amount", "purchase_frequency": "amount",
     "safety_provision_pct": "percent", "last_purchase_amount": "amount",
     "cash_at_last_purchase": "signed", "charges_paid_in_window": "amount",
@@ -122,10 +173,48 @@ DETAIL_AMOUNTS = {
     "minimal_cash_closing": "signed",
 }
 
+PURCHASE_METHOD_CODES = ("INVOICES", "LEDGER", "COST_RATE", "OTHER")
+PURCHASE_METRIC_KEYS = {
+    "INVOICES": "tpe_purchases_invoices",
+    "LEDGER": "tpe_purchases_ledger",
+    "COST_RATE": "tpe_purchases_cost_rate",
+}
+SUPPLIER_PAYMENT_MODES = {"", "CASH", "CREDIT"}
+EXECUTED_PAYMENT_MODES = {"", "CASH", "MOBILE", "TRANSFER", "CHEQUE"}
 PRODUCT_NATURES = {"", "RESOLD", "MANUFACTURED", "SERVICE"}
 PRODUCTION_COST_KEYS = ("material_cost", "direct_labor", "other_production_cost")
 
 MONEY = Decimal("0.01")
+
+
+def iter_complete_extra_activities(details):
+    """Recettes et charges des autres activités complètes."""
+    rows = (details or {}).get("extra_activities") or []
+    if not isinstance(rows, list):
+        return
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        label = str(row.get("label") or "").strip()
+        turnover = row.get("turnover")
+        expenses = row.get("expenses")
+        if not label or (turnover in (None, "") and expenses in (None, "")):
+            continue
+        yield _dec_amount(turnover), _dec_amount(expenses)
+
+
+def extra_activity_net(details):
+    """Résultat des autres activités complètes. Une ligne sans libellé ne compte pas."""
+    return sum(
+        (turnover - expenses for turnover, expenses in iter_complete_extra_activities(details)),
+        Decimal("0"),
+    )
+
+
+def _dec_amount(value):
+    if value in (None, ""):
+        return Decimal("0")
+    return Decimal(str(value))
 
 
 def extra_line_total(details, key):
@@ -155,7 +244,7 @@ def validate_details(value):
         raise ValidationError("Le détail de l'analyse doit être un objet.")
     unknown = (
         set(value) - set(DETAIL_SCHEMAS) - DETAIL_TEXTS - set(DETAIL_AMOUNTS)
-        - set(DETAIL_CHOICES) - DETAIL_DATES
+        - set(DETAIL_CHOICES) - DETAIL_DATES - OBSERVED_DELAYS
         - {"cash_detail_mode", "fixed_assets_detail_mode", "financial_statements", "minimal_cash_document"}
     )
     if unknown:
@@ -173,6 +262,20 @@ def validate_details(value):
         if key in {"cash_detail_mode", "fixed_assets_detail_mode"}:
             if text not in ("", "DETAIL", "LEGACY"):
                 raise ValidationError({key: "Choisissez DETAIL ou LEGACY."})
+            continue
+        if key in OBSERVED_DELAYS:
+            if text in (None, ""):
+                continue
+            try:
+                number = Decimal(str(text))
+                if (
+                    not number.is_finite() or number < 0
+                    or number != number.to_integral_value()
+                    or number >= Decimal("100000")
+                ):
+                    raise InvalidOperation
+            except (InvalidOperation, TypeError, ValueError):
+                raise ValidationError({key: "Saisissez un nombre de jours entier, ou laissez vide."}) from None
             continue
         if key in DETAIL_AMOUNTS:
             if text in (None, ""):
@@ -209,6 +312,7 @@ def validate_details(value):
         if not isinstance(rows, list) or len(rows) > 120:
             raise ValidationError({key: "Tableau attendu, limité à 120 lignes."})
         months = set()
+        seen_methods = set()
         for index, row in enumerate(rows):
             if not isinstance(row, dict) or set(row) - set(DETAIL_SCHEMAS[key]):
                 raise ValidationError({key: f"Ligne {index + 1} : colonnes invalides."})
@@ -248,6 +352,42 @@ def validate_details(value):
                 raise ValidationError({key: f"Ligne {index + 1} : indiquez Observé ou Hypothèse."})
             if key == "references" and str(row.get("kind") or "") not in REFERENCE_KINDS:
                 raise ValidationError({key: f"Ligne {index + 1} : indiquez Familiale ou Professionnelle."})
+            if key == "purchase_methods":
+                method = str(row.get("method") or "")
+                if method not in PURCHASE_METHOD_CODES or method in seen_methods:
+                    raise ValidationError({key: f"Ligne {index + 1} : méthode inconnue ou déjà retenue."})
+                seen_methods.add(method)
+            if key == "suppliers":
+                mode = str(row.get("payment_mode") or "")
+                if mode not in SUPPLIER_PAYMENT_MODES:
+                    raise ValidationError({key: f"Ligne {index + 1} : indiquez Comptant ou À crédit."})
+                share = row.get("share")
+                if share not in (None, ""):
+                    try:
+                        if Decimal(str(share)) > 100:
+                            raise InvalidOperation
+                    except (InvalidOperation, ValueError):
+                        raise ValidationError({key: f"Ligne {index + 1} : la part est un pourcentage, au plus 100."}) from None
+                delay = row.get("delay_days")
+                if delay not in (None, ""):
+                    try:
+                        days = Decimal(str(delay))
+                        if days < 0 or days != days.to_integral_value():
+                            raise InvalidOperation
+                    except (InvalidOperation, ValueError):
+                        raise ValidationError({key: f"Ligne {index + 1} : le délai se saisit en jours entiers."}) from None
+            if key == "supplier_payments":
+                mode = str(row.get("payment_mode") or "")
+                if mode not in EXECUTED_PAYMENT_MODES:
+                    raise ValidationError({key: f"Ligne {index + 1} : indiquez Espèces, Mobile Money, Virement ou Chèque."})
+            if key in {"sales_periods", "collection_periods"}:
+                appreciation = str(row.get("appreciation") or "")
+                if appreciation not in SALES_APPRECIATIONS:
+                    raise ValidationError({key: f"Ligne {index + 1} : indiquez Faible, Moyenne ou Bonne."})
+                start = str(row.get("start") or "")
+                end = str(row.get("end") or "")
+                if start and end and end < start:
+                    raise ValidationError({key: f"Ligne {index + 1} : la fin est antérieure au début."})
             if key == "external_credits":
                 checked = str(row.get("bureau_checked") or "")
                 incidents = str(row.get("incidents") or "")
@@ -267,7 +407,31 @@ def validate_details(value):
                             raise InvalidOperation
                     except (InvalidOperation, ValueError):
                         raise ValidationError({key: f"Ligne {index + 1} : le retard se saisit en jours entiers."}) from None
-        if key in {"extra_income", "extra_charges"}:
+        if key == "suppliers":
+            kept = []
+            for row in rows:
+                if any(str(row.get(field) or "").strip() for field in DETAIL_SCHEMAS["suppliers"]):
+                    kept.append(row)
+            value[key] = kept
+        if key == "purchase_history":
+            kept = []
+            for row in rows:
+                if any(str(row.get(field) or "").strip() for field in DETAIL_SCHEMAS["purchase_history"]):
+                    kept.append(row)
+            value[key] = kept
+        if key == "supplier_payments":
+            kept = []
+            for row in rows:
+                if any(str(row.get(field) or "").strip() for field in DETAIL_SCHEMAS["supplier_payments"]):
+                    kept.append(row)
+            value[key] = kept
+        if key in {"sales_periods", "collection_periods"}:
+            kept = []
+            for row in rows:
+                if any(str(row.get(field) or "").strip() for field in DETAIL_SCHEMAS[key]):
+                    kept.append(row)
+            value[key] = kept
+        if key in {"extra_income", "extra_charges", "activity_extra_charges", "household_assets"}:
             kept = []
             for index, row in enumerate(rows):
                 label = str(row.get("label") or "").strip()
@@ -285,6 +449,22 @@ def validate_details(value):
     end = str(value.get("minimal_cash_end") or "")
     if start and end and end < start:
         raise ValidationError({"minimal_cash_end": "La date de fin est antérieure à la date de début."})
+    analysis_start = str(value.get("analysis_period_start") or "")
+    analysis_end = str(value.get("analysis_period_end") or "")
+    if analysis_start and analysis_end and analysis_end < analysis_start:
+        raise ValidationError({"analysis_period_end": "La fin de l'analyse est antérieure au début."})
+    if analysis_start and analysis_end:
+        value["purchase_period_start"] = analysis_start
+        value["purchase_period_end"] = analysis_end
+    period_start = str(value.get("purchase_period_start") or "")
+    period_end = str(value.get("purchase_period_end") or "")
+    if period_start and period_end and period_end < period_start:
+        raise ValidationError({"purchase_period_end": "La fin de la période est antérieure au début."})
+    _apply_purchase_history(value)
+    mode = str(value.get("analysis_period_mode") or "")
+    if mode in {"DAY", "WEEK", "MONTH", "SEMESTER"}:
+        value["sales_period_mode"] = mode
+        value["collection_period_mode"] = mode
     return value
 
 
@@ -299,6 +479,163 @@ def _validate_tpe_bounds(value):
     end = value.get("cash_control_date") or ""
     if start and end and end < start:
         raise ValidationError({"cash_control_date": "La date du contrôle est antérieure au dernier achat."})
+
+
+def _purchase_line_amount(row):
+    quantity = _present_decimal(row, "quantity")
+    price = _present_decimal(row, "unit_price")
+    if quantity is None or price is None:
+        return None
+    return quantity * price
+
+
+def _apply_purchase_history(details):
+    """Le dernier achat se lit sur l'historique dès que celui-ci est présent."""
+    if not isinstance(details, dict) or "purchase_history" not in details:
+        return
+    latest_date = ""
+    latest = Decimal("0")
+    found = False
+    for row in details.get("purchase_history") or []:
+        if not isinstance(row, dict):
+            continue
+        day = str(row.get("date") or "")
+        amount = _purchase_line_amount(row)
+        if not day or amount is None:
+            continue
+        if not found or day > latest_date:
+            latest_date, latest, found = day, amount, True
+        elif day == latest_date:
+            latest += amount
+    if found:
+        details["last_purchase_date"] = latest_date
+        details["last_purchase_amount"] = str(_money(latest))
+    else:
+        details["last_purchase_date"] = ""
+        details["last_purchase_amount"] = ""
+
+
+def purchase_history_indicators(details):
+    """Indicateurs de la période. Une ligne sans date, quantité ou prix ne compte pas."""
+    empty = {
+        "count": None, "total": None, "average": None, "per_month": None,
+        "last_date": "", "last_amount": None, "supplier_count": None,
+        "main_supplier": "", "main_share": None,
+    }
+    if not isinstance(details, dict) or "purchase_history" not in details:
+        return empty
+    start = str(details.get("purchase_period_start") or "")
+    end = str(details.get("purchase_period_end") or "")
+    if not start or not end or end < start:
+        return empty
+    lines = []
+    for row in details.get("purchase_history") or []:
+        if not isinstance(row, dict):
+            continue
+        day = str(row.get("date") or "")
+        amount = _purchase_line_amount(row)
+        if not day or amount is None or day < start or day > end:
+            continue
+        lines.append((day, amount, str(row.get("supplier") or "").strip()))
+    if not lines:
+        return empty
+    total = sum((amount for _, amount, _ in lines), Decimal("0"))
+    count = len(lines)
+    days = (date.fromisoformat(end) - date.fromisoformat(start)).days + 1
+    last_date = max(day for day, _, _ in lines)
+    last_amount = sum((amount for day, amount, _ in lines if day == last_date), Decimal("0"))
+    suppliers = {}
+    order = []
+    for _, amount, supplier in lines:
+        if not supplier:
+            continue
+        key = supplier.casefold()
+        if key not in suppliers:
+            suppliers[key] = {"label": supplier, "amount": Decimal("0")}
+            order.append(key)
+        suppliers[key]["amount"] += amount
+    main_supplier = ""
+    main_share = None
+    if order:
+        main_key = max(order, key=lambda item: (suppliers[item]["amount"], -order.index(item)))
+        main_supplier = suppliers[main_key]["label"]
+        if total > 0:
+            main_share = _money(suppliers[main_key]["amount"] / total * Decimal("100"))
+    return {
+        "count": count,
+        "total": _money(total),
+        "average": _money(total / Decimal(count)),
+        "per_month": _money(Decimal(count) / Decimal(days) * Decimal("30")) if days > 0 else None,
+        "last_date": last_date,
+        "last_amount": _money(last_amount),
+        "supplier_count": len(order) or None,
+        "main_supplier": main_supplier,
+        "main_share": main_share,
+    }
+
+
+def purchase_period_total(details):
+    """Somme des achats datés dans la période. None si l'historique ne la couvre pas."""
+    return purchase_history_indicators(details)["total"]
+
+
+def _analysis_window(details):
+    start = str((details or {}).get("analysis_period_start") or "")
+    end = str((details or {}).get("analysis_period_end") or "")
+    if start and end and end >= start:
+        return start, end
+    return "", ""
+
+
+def purchase_monthly_total(details):
+    """Achats de l'intervalle d'analyse, ramenés à 30 jours.
+
+    Sans les deux dates, l'ancienne somme de la fenêtre d'achats reste en place.
+    """
+    if not isinstance(details, dict):
+        return None
+    start, end = _analysis_window(details)
+    if not start:
+        return None
+    scoped = dict(details)
+    scoped["purchase_period_start"] = start
+    scoped["purchase_period_end"] = end
+    total = purchase_history_indicators(scoped)["total"]
+    if total is None:
+        return None
+    days = (date.fromisoformat(end) - date.fromisoformat(start)).days + 1
+    if days <= 0:
+        return None
+    return _money(total / Decimal(days) * Decimal("30"))
+
+
+def supplier_payment_indicators(details):
+    """Paiements datés et chiffrés. La dette et le délai restent saisis à part."""
+    empty = {"count": None, "total": None, "average": None, "last_date": "", "last_amount": None}
+    if not isinstance(details, dict) or "supplier_payments" not in details:
+        return empty
+    lines = []
+    for row in details.get("supplier_payments") or []:
+        if not isinstance(row, dict):
+            continue
+        day = str(row.get("date") or "")
+        amount = _present_decimal(row, "amount")
+        if not day or amount is None:
+            continue
+        lines.append((day, amount))
+    if not lines:
+        return empty
+    total = sum((amount for _, amount in lines), Decimal("0"))
+    count = len(lines)
+    last_date = max(day for day, _ in lines)
+    last_amount = sum((amount for day, amount in lines if day == last_date), Decimal("0"))
+    return {
+        "count": count,
+        "total": _money(total),
+        "average": _money(total / Decimal(count)),
+        "last_date": last_date,
+        "last_amount": _money(last_amount),
+    }
 
 
 def product_nature(row):
@@ -341,6 +678,25 @@ def product_line_figures(row):
         cost = None if unit is None or sold is None else unit * sold
     margin = None if sales is None or cost is None else sales - cost
     return {"sales": sales, "cost": cost, "unit_cost": unit, "margin": margin}
+
+
+def inventory_stock_value(details):
+    """Valeur du stock saisi dans l'inventaire. Une ligne compte quand la quantité et le prix d'achat sont connus."""
+    rows = details.get("products") if isinstance(details, dict) else None
+    if not isinstance(rows, list):
+        return None
+    total = None
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        quantity = _present_decimal(row, "quantity")
+        cost = _present_decimal(row, "unit_cost")
+        if quantity is None or cost is None:
+            continue
+        total = (Decimal("0") if total is None else total) + quantity * cost
+    if total is None:
+        return None
+    return total.quantize(Decimal("0.01"))
 
 
 def detail_metrics(analysis):
@@ -439,6 +795,254 @@ def _optional(details, key):
     return Decimal(str(value))
 
 
+def rhythm_monthly_total(details, rhythm_key, amount_key):
+    """Ramène un montant journalier, hebdomadaire ou mensuel au mois.
+
+    Jour : montant × jours d'activité. Semaine : montant × 4.
+    Mois : le montant lui-même. Un rythme sans montant reste vide.
+    """
+    if not isinstance(details, dict):
+        return None
+    rhythm = str(details.get(rhythm_key) or "")
+    if rhythm not in {"DAY", "WEEK", "MONTH"}:
+        return None
+    amount = _optional(details, amount_key)
+    if amount is None:
+        return None
+    if rhythm == "MONTH":
+        return _money(amount)
+    if rhythm == "WEEK":
+        return _money(amount * Decimal("4"))
+    days = _optional(details, "activity_days_per_month")
+    if days is None or not (Decimal("0") < days <= Decimal("31")):
+        return None
+    return _money(amount * days)
+
+
+def sales_monthly_total(details):
+    """CA du mois issu des périodes datées, sinon de l'ancien montant unique."""
+    if isinstance(details, dict) and "sales_periods" in details:
+        return sales_period_indicators(details)["monthly"]
+    return rhythm_monthly_total(details, "sales_rhythm", "sales_amount")
+
+
+def sales_period_indicators(details):
+    """Périodes datées et chiffrées. Le mois est la somme ramenée à 30 jours."""
+    return _dated_period_indicators(details, "sales_period_mode", "sales_periods")
+
+
+def _dated_period_indicators(details, mode_key, rows_key):
+    empty = {
+        "count": None, "total": None, "average": None, "days": None, "monthly": None,
+        "high_label": "", "high_amount": None, "low_label": "", "low_amount": None,
+        "appreciation": "",
+    }
+    if not isinstance(details, dict):
+        return empty
+    mode = str(details.get(mode_key) or "")
+    if mode not in {"", "DAY", "WEEK", "MONTH", "SEMESTER"}:
+        return empty
+    lines = []
+    for row in details.get(rows_key) or []:
+        if not isinstance(row, dict):
+            continue
+        amount = _present_decimal(row, "amount")
+        if amount is None:
+            continue
+        window_start, window_end = _analysis_window(details)
+        if mode == "DAY":
+            day = str(row.get("date") or "")
+            if not day:
+                continue
+            if window_start and (day < window_start or day > window_end):
+                continue
+            lines.append((day, day, 1, amount, str(row.get("appreciation") or "")))
+            continue
+        start = str(row.get("start") or "")
+        end = str(row.get("end") or "")
+        if not start or not end or end < start:
+            continue
+        if window_start and (start < window_start or end > window_end):
+            continue
+        covered = (date.fromisoformat(end) - date.fromisoformat(start)).days + 1
+        if covered <= 0:
+            continue
+        lines.append((start, end, covered, amount, str(row.get("appreciation") or "")))
+    if not lines:
+        return empty
+    total = sum((amount for _, _, _, amount, _ in lines), Decimal("0"))
+    covered_days = sum(days for _, _, days, _, _ in lines)
+    labels = {"FAIBLE": "Faible", "MOYENNE": "Moyenne", "BONNE": "Bonne"}
+    counts = {}
+    order = []
+    for _, _, _, _, appreciation in lines:
+        if appreciation not in labels:
+            continue
+        if appreciation not in counts:
+            counts[appreciation] = 0
+            order.append(appreciation)
+        counts[appreciation] += 1
+    main = ""
+    if order:
+        main = labels[max(order, key=lambda item: (counts[item], -order.index(item)))]
+    high = max(range(len(lines)), key=lambda index: (lines[index][3], -index))
+    low = min(range(len(lines)), key=lambda index: (lines[index][3], index))
+
+    def span(index):
+        start, end, _, amount, _ = lines[index]
+        when = start if mode == "DAY" else f"{start} – {end}"
+        return when, _money(amount)
+
+    high_label, high_amount = span(high)
+    low_label, low_amount = span(low)
+    return {
+        "count": len(lines),
+        "total": _money(total),
+        "average": _money(total / Decimal(len(lines))),
+        "days": covered_days,
+        "monthly": _money(total / Decimal(covered_days) * Decimal("30")) if covered_days else None,
+        "high_label": high_label,
+        "high_amount": high_amount,
+        "low_label": low_label,
+        "low_amount": low_amount,
+        "appreciation": main,
+    }
+
+
+def collection_period_indicators(details):
+    return _dated_period_indicators(details, "collection_period_mode", "collection_periods")
+
+
+OPERATING_CHARGE_KEYS = (
+    "activity_charge_place", "activity_charge_staff", "activity_charge_transport",
+    "activity_charge_utilities", "activity_charge_telecom", "activity_charge_maintenance",
+    "activity_charge_fees", "activity_charge_supplies",
+)
+
+
+def operating_charges_excluding_purchases(details):
+    """Charges d'exploitation hors achats. Une case vide reste vide ; zéro compte.
+
+    None tant qu'aucune charge n'est saisie. Les achats ne sont pas inclus :
+    ils viennent déjà de la section fournisseurs.
+    """
+    if not isinstance(details, dict):
+        return None
+    present = []
+    for key in OPERATING_CHARGE_KEYS:
+        amount = _optional(details, key)
+        if amount is not None:
+            present.append(amount)
+    for row in details.get("activity_extra_charges") or []:
+        if not isinstance(row, dict):
+            continue
+        amount = _present_decimal(row, "amount")
+        if amount is not None:
+            present.append(amount)
+    if not present:
+        return None
+    return _money(sum(present, Decimal("0")))
+
+
+def activity_expenses_with_purchases(details, purchases):
+    """Total des charges : détail hors achats plus achats déjà retenus."""
+    excluding = operating_charges_excluding_purchases(details)
+    if excluding is None:
+        return None
+    base = Decimal("0") if purchases in (None, "") else Decimal(str(purchases))
+    return _money(excluding + base)
+
+
+def _present_number(value):
+    if value in (None, ""):
+        return None
+    return Decimal(str(value))
+
+
+def _sum_present(values):
+    present = [item for item in values if item is not None]
+    if not present:
+        return None
+    return _money(sum(present, Decimal("0")))
+
+
+def _variation(current, previous):
+    if current is None or previous is None:
+        return None
+    return _money(current - previous)
+
+
+def _variation_rate(current, previous):
+    if current is None or previous is None or previous == 0:
+        return None
+    change = (current - previous) / abs(previous) * Decimal("100")
+    return change.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+
+
+def activity_balance_reading(current, previous):
+    """Actif, BFR et situation nette. Une année entièrement vide reste vide."""
+    def amount(source, key):
+        return _present_number((source or {}).get(key))
+
+    def assets(source):
+        return _sum_present([amount(source, key) for key in ("stock", "receivables", "cash", "fixed")])
+
+    def bfr(source):
+        parts = [amount(source, key) for key in ("stock", "receivables", "debt")]
+        if all(item is None for item in parts):
+            return None
+        return _money((parts[0] or Decimal("0")) + (parts[1] or Decimal("0")) - (parts[2] or Decimal("0")))
+
+    def net(assets_value, debt_value):
+        if assets_value is None and debt_value is None:
+            return None
+        return _money((assets_value or Decimal("0")) - (debt_value or Decimal("0")))
+
+    assets_now = assets(current)
+    assets_prev = assets(previous)
+    bfr_now = bfr(current)
+    bfr_prev = bfr(previous)
+    net_now = net(assets_now, amount(current, "debt"))
+    net_prev = net(assets_prev, amount(previous, "debt"))
+    return {
+        "assets": assets_now,
+        "assets_prev": assets_prev,
+        "assets_variation": _variation(assets_now, assets_prev),
+        "assets_rate": _variation_rate(assets_now, assets_prev),
+        "bfr": bfr_now,
+        "bfr_prev": bfr_prev,
+        "bfr_variation": _variation(bfr_now, bfr_prev),
+        "bfr_rate": _variation_rate(bfr_now, bfr_prev),
+        "net": net_now,
+        "net_prev": net_prev,
+        "net_variation": _variation(net_now, net_prev),
+    }
+
+
+def household_patrimony_total(details, savings, real_estate, vehicles, productive):
+    values = [_present_number(item) for item in (savings, real_estate, vehicles, productive)]
+    for row in (details or {}).get("household_assets") or []:
+        if isinstance(row, dict):
+            values.append(_present_number(row.get("amount")))
+    return _sum_present(values)
+
+
+def net_patrimony(activity_net, household):
+    if activity_net is None and household is None:
+        return None
+    return _money((activity_net or Decimal("0")) + (household or Decimal("0")))
+
+
+def collection_monthly_total(details):
+    """Encaissé sur le mois issu des périodes datées, sinon de l'ancien montant unique.
+
+    Ce montant ne devient jamais une créance.
+    """
+    if isinstance(details, dict) and "collection_periods" in details:
+        return collection_period_indicators(details)["monthly"]
+    return rhythm_monthly_total(details, "collection_rhythm", "collection_amount")
+
+
 def minimal_cash_reading(details):
     """Lecture du document court. Elle ne modifie aucun ratio.
 
@@ -512,6 +1116,26 @@ def _relative(gap, base):
     return _money(gap / Decimal(base) * Decimal("100"))
 
 
+def selected_purchase_methods(details):
+    """Méthodes retenues. La liste, si elle est présente, prime sur l'ancien choix unique."""
+    if not isinstance(details, dict):
+        return []
+    if "purchase_methods" in details:
+        rows = details.get("purchase_methods") or []
+        if not isinstance(rows, list):
+            return []
+        selected = []
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            method = str(row.get("method") or "")
+            if method in PURCHASE_METHOD_CODES and method not in selected:
+                selected.append(method)
+        return selected
+    single = str(details.get("purchase_method") or "")
+    return [single] if single in PURCHASE_METHOD_CODES else []
+
+
 def _tpe_metrics(analysis, details, current):
     result = {}
     observed = _average(details.get("sales_observations") or [], "Observé")
@@ -551,17 +1175,29 @@ def _tpe_metrics(analysis, details, current):
     if sales not in (None, 0) and margin is not None:
         margin_rate = Decimal(margin) / Decimal(sales)
     result["tpe_margin_rate_pct"] = _money(margin_rate * Decimal("100")) if margin_rate is not None else None
-    purchase_method = details.get("purchase_method") or ""
-    purchases = None
-    if purchase_method in {"INVOICES", "LEDGER"}:
-        average = _optional(details, "purchase_average")
-        frequency = _optional(details, "purchase_frequency")
-        purchases = _money(average * frequency) if average is not None and frequency is not None else None
+    selected_methods = selected_purchase_methods(details)
+    average = _optional(details, "purchase_average")
+    frequency = _optional(details, "purchase_frequency")
+    counted = _money(average * frequency) if average is not None and frequency is not None else None
+    cost = _money(monthly * (Decimal("1") - margin_rate)) if monthly is not None and margin_rate is not None else None
+    if "COST_RATE" in selected_methods and margin_rate is not None:
+        result["tpe_cost_rate_pct"] = _money((Decimal("1") - margin_rate) * Decimal("100"))
+    amounts = {}
+    if "INVOICES" in selected_methods:
+        amounts["INVOICES"] = counted
+    if "LEDGER" in selected_methods:
+        amounts["LEDGER"] = counted
+    if "COST_RATE" in selected_methods:
+        amounts["COST_RATE"] = cost
+    calculable = [method for method in ("INVOICES", "LEDGER", "COST_RATE") if method in selected_methods]
+    purchases = amounts[calculable[0]] if len(calculable) == 1 else None
+    if len(calculable) == 1:
         result["tpe_purchases_incomplete"] = purchases is None
-    elif purchase_method == "COST_RATE":
-        purchases = _money(monthly * (Decimal("1") - margin_rate)) if monthly is not None and margin_rate is not None else None
-        result["tpe_purchases_incomplete"] = purchases is None
-        result["tpe_cost_rate_pct"] = _money((Decimal("1") - margin_rate) * Decimal("100")) if margin_rate is not None else None
+    elif len(calculable) > 1:
+        result["tpe_purchases_incomplete"] = any(amounts[method] is None for method in calculable)
+        for method, amount in amounts.items():
+            if amount is not None:
+                result[PURCHASE_METRIC_KEYS[method]] = amount
     result["tpe_monthly_purchases"] = purchases
     declared_purchases = None
     if analysis.is_corporate and _dec_positive(analysis.cogs):

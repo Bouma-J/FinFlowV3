@@ -3247,6 +3247,11 @@ table.card > tbody {
   padding-top: 14px;
   border-top: 1px dashed var(--border);
 }
+.subsection-label.subsection-split {
+  margin-top: 28px;
+  padding-top: 22px;
+  border-top: 1px solid var(--border);
+}
 
 /* Bandeau de profil client détecté */
 .profile-banner {
@@ -3628,6 +3633,12 @@ table.card > tbody {
 }
 .collateral-pillar {
   min-width: 0;
+}
+#fa-collateral .collateral-pillars {
+  grid-template-columns: 1fr;
+}
+#fa-collateral .collateral-pillar table.table {
+  width: 100%;
 }
 
 @media (max-width: 960px) {
@@ -5983,6 +5994,28 @@ code {
 .tenant-active-field {
   align-self: end;
   margin-bottom: 2px;
+}
+.purchase-methods-split {
+  margin-top: 28px;
+  padding-top: 22px;
+  border-top: 1px solid var(--border);
+}
+.form-grid .field.purchase-methods {
+  grid-column: 1 / -1;
+}
+.purchase-method-choices {
+  display: flex;
+  flex-wrap: nowrap;
+  align-items: center;
+  gap: 8px 22px;
+}
+.purchase-method-choices .checkbox-inline {
+  white-space: nowrap;
+}
+.purchase-method-choices .checkbox-inline input {
+  width: 16px;
+  height: 16px;
+  padding: 0;
 }
 .form-grid .field.full-span {
   grid-column: 1 / -1;

@@ -180,8 +180,7 @@ def test_purpose_changes_the_required_test_without_a_new_form(tenant_a, product_
             individual_profile=FinancialAnalysis.IndividualProfile.SALARIE,
             salary_income=Decimal("200000"),
         )
-        with pytest.raises(WorkflowError, match="baisse du revenu"):
-            assert_analysis_ready_for_submission(application)
+        assert assert_analysis_ready_for_submission(application) is not None
 
         analysis.analysis_details = {"stress_assumptions": "Le revenu du foyer baisse de 20 %."}
         analysis.salary_income = Decimal("0")

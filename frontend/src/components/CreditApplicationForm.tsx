@@ -90,6 +90,30 @@ const HOUSING = [
   { value: "TENANT", label: "Locataire" },
   { value: "HOSTED", label: "Hébergé" },
 ];
+const ACTIVITY_PREMISES = [
+  ...HOUSING,
+  { value: "STALL", label: "Étal ou marché" },
+  { value: "ITINERANT", label: "Ambulant, sans local fixe" },
+  { value: "FAMILY_LAND", label: "Terre ou exploitation familiale" },
+];
+const ACTIVITY_NATURE = [
+  { value: "TRADE", label: "Commerce" },
+  { value: "CRAFT", label: "Transformation ou artisanat" },
+  { value: "SERVICE", label: "Service" },
+  { value: "AGRICULTURE", label: "Agriculture ou élevage" },
+  { value: "OTHER", label: "Autre" },
+];
+const ACTIVITY_OPERATION = [
+  { value: "SOLO", label: "Seul" },
+  { value: "FAMILY", label: "Avec une aide familiale" },
+  { value: "EMPLOYEES", label: "Avec des salariés" },
+];
+const ACTIVITY_AUTHORIZATION = [
+  { value: "NONE", label: "Aucune" },
+  { value: "PATENT", label: "Patente" },
+  { value: "STALL_RIGHT", label: "Droit de place" },
+  { value: "OTHER", label: "Autre" },
+];
 const EARNING_PATHS = [
   { value: "SALARIE", label: "Salarié" },
   { value: "INDEPENDANT", label: "Activité" },
@@ -124,7 +148,9 @@ const TEXT_KEYS = [
   "employment_profession", "job_title",
   "job_seniority_months", "career_seniority_months",
   "activity_name", "activity_trade", "activity_sector",
-  "activity_premises_status", "activity_ifu",
+  "activity_premises_status", "activity_ifu", "activity_rccm", "activity_ninea",
+  "activity_nature", "activity_offer", "activity_operation",
+  "activity_supply", "activity_authorization", "activity_authorization_ref",
   "client_account_number", "relationship_start_date",
   "avg_monthly_credit_movements",
   "special_conditions", "suspensive_conditions",
@@ -143,7 +169,8 @@ type BoolState = Record<BoolKey, boolean>;
 
 // Champs texte libres où une valeur vide est valide côté backend (blank=True).
 const TEXT_ONLY_KEYS = new Set<string>([
-  "purpose", "exact_address", "clientele",
+  "purpose", "exact_address", "clientele", "activity_offer", "activity_supply", "activity_authorization_ref",
+  "activity_ifu", "activity_rccm", "activity_ninea",
   "employer_name", "client_account_number",
   "special_conditions",
   "suspensive_conditions", "beneficial_owner", "pep_details",
@@ -156,7 +183,9 @@ const PROFILE_ALWAYS = new Set<TextKey>([
   "employment_profession", "job_title",
   "contract_type", "contract_end_date", "job_seniority_months", "career_seniority_months",
   "activity_name", "activity_trade", "activity_sector",
-  "activity_premises_status", "activity_ifu", "tax_regime", "exact_address",
+  "activity_premises_status", "activity_ifu", "activity_rccm", "activity_ninea",
+  "activity_nature", "activity_offer", "activity_operation",
+  "activity_supply", "activity_authorization", "activity_authorization_ref", "tax_regime", "exact_address",
   "activity_start_date",
 ]);
 
@@ -184,6 +213,8 @@ const PURPOSE_TYPES_CORPORATE = new Set(
   PURPOSE_TYPES.filter((p) => p.value !== "CONSUMPTION").map((p) => p.value),
 );
 const PURPOSE_TYPES_INDIVIDUAL = new Set([
+  "WORKING_CAPITAL",
+  "STOCK",
   "CONSUMPTION",
   "REAL_ESTATE",
   "EQUIPMENT",
@@ -192,7 +223,9 @@ const PURPOSE_TYPES_INDIVIDUAL = new Set([
 ]);
 
 const CHECKLIST_COMMON = ["Justificatif de domicile"];
-const CHECKLIST_INDIVIDUAL = ["Attestation de travail"];
+function individualChecklist(earningPath: string) {
+  return earningPath === "INDEPENDANT" ? [] : ["Attestation de travail"];
+}
 const CHECKLIST_CORPORATE = [
   "Statuts de la société",
   "PV autorisant l'emprunt",
@@ -229,7 +262,7 @@ const FIELD_LABELS: Record<string, string> = {
   amount_proposed: "Montant proposé",
   interest_rate: "Taux d'intérêt",
   fees_rate: "Frais de dossier",
-  mandatory_savings_rate: "Taux d'épargne obligatoire",
+  mandatory_savings_rate: "Épargne obligatoire (% du capital à chaque échéance)",
   periodicity: "Périodicité",
   duration_months: "Durée du crédit",
   first_due_date: "Date de première échéance",
@@ -270,6 +303,14 @@ const FIELD_LABELS: Record<string, string> = {
   activity_sector: "Secteur de l'activité",
   activity_premises_status: "Statut du local d'activité",
   activity_ifu: "IFU de l'activité",
+  activity_rccm: "RCCM de l'activité",
+  activity_ninea: "NINEA",
+  activity_nature: "Nature de l'activité",
+  activity_offer: "Offre principale",
+  activity_operation: "Mode d'exploitation",
+  activity_supply: "Approvisionnement",
+  activity_authorization: "Autorisation d'exercer",
+  activity_authorization_ref: "Référence de l'autorisation",
   spouse_first_name: "Prénom du conjoint",
   spouse_phone: "Téléphone du conjoint",
   spouse_profession: "Profession du conjoint",
@@ -407,6 +448,11 @@ export function CreditApplicationForm({
   );
   const [newItem, setNewItem] = useState("");
   const [letter, setLetter] = useState<File | null>(null);
+  const [registrationScans, setRegistrationScans] = useState<{
+    activity_ifu_scan: File | null;
+    activity_rccm_scan: File | null;
+    activity_ninea_scan: File | null;
+  }>({ activity_ifu_scan: null, activity_rccm_scan: null, activity_ninea_scan: null });
   const [stockPhotos, setStockPhotos] = useState<File[]>([]);
   // Scans en attente d'envoi, indexés par libellé de pièce.
   const [pendingFiles, setPendingFiles] = useState<Record<string, File>>({});
@@ -625,7 +671,7 @@ export function CreditApplicationForm({
     if (isEdit || !clientType) return;
     const labels = [
       ...CHECKLIST_COMMON,
-      ...(isLegalEntity ? CHECKLIST_CORPORATE : CHECKLIST_INDIVIDUAL),
+      ...(isLegalEntity ? CHECKLIST_CORPORATE : individualChecklist(text.earning_path)),
     ];
     setChecklist((prev) =>
       labels.map((label) => {
@@ -633,12 +679,17 @@ export function CreditApplicationForm({
         return { label, provided: existing?.provided ?? false };
       }),
     );
-  }, [isEdit, clientType, isLegalEntity]);
+  }, [isEdit, clientType, isLegalEntity, text.earning_path]);
+
+  useEffect(() => {
+    if (text.earning_path !== "INDEPENDANT") return;
+    setChecklist((prev) => prev.filter((item) => item.label !== "Attestation de travail"));
+  }, [text.earning_path]);
 
   function loadDefaultChecklist() {
     const labels = [
       ...CHECKLIST_COMMON,
-      ...(isLegalEntity ? CHECKLIST_CORPORATE : CHECKLIST_INDIVIDUAL),
+      ...(isLegalEntity ? CHECKLIST_CORPORATE : individualChecklist(text.earning_path)),
     ];
     setChecklist((prev) => {
       const existing = new Set(prev.map((i) => i.label));
@@ -708,7 +759,10 @@ export function CreditApplicationForm({
         else if (isEdit && TEXT_ONLY_KEYS.has(key)) fd.append(key, "");
       }
       for (const key of PROFILE_ALWAYS) {
-        const value = key === "contract_end_date" && text.contract_type !== "CDD" ? "" : text[key].trim();
+        const hideContractEnd = key === "contract_end_date" && text.contract_type !== "CDD";
+        const hideAuthorizationRef = key === "activity_authorization_ref" && !["PATENT", "STALL_RIGHT", "OTHER"].includes(text.activity_authorization);
+        const hideRegistration = ["activity_ifu", "activity_rccm", "activity_ninea"].includes(key) && text.tax_regime === "INFORMAL";
+        const value = hideContractEnd || hideAuthorizationRef || hideRegistration ? "" : text[key].trim();
         fd.append(key, value);
       }
       if (isIndividual) {
@@ -751,6 +805,12 @@ export function CreditApplicationForm({
         if (row.file) fd.append(`external_statement__${index}`, row.file);
       });
       if (letter) fd.append("request_letter_scan", letter);
+      if (text.tax_regime !== "INFORMAL") {
+        (["activity_ifu_scan", "activity_rccm_scan", "activity_ninea_scan"] as const).forEach((key) => {
+          const file = registrationScans[key];
+          if (file) fd.append(key, file);
+        });
+      }
       for (const photo of stockPhotos) fd.append("stock_photos", photo);
       const app = isEdit
         ? (
@@ -998,7 +1058,7 @@ export function CreditApplicationForm({
             <Select label="Devise" value={text.currency} onChange={set("currency")} options={currencyOptions} placeholder={null} />
             <Text label="Taux d'intérêt (%) — annuel" type="number" value={text.interest_rate} onChange={set("interest_rate")} />
             <Text label="Frais de dossier (%)" type="number" value={text.fees_rate} onChange={set("fees_rate")} />
-            <Text label="Taux d'épargne obligatoire (%)" type="number" value={text.mandatory_savings_rate} onChange={set("mandatory_savings_rate")} />
+            <Text label="Épargne obligatoire (% du capital à chaque échéance)" type="number" value={text.mandatory_savings_rate} onChange={set("mandatory_savings_rate")} />
             {configuration.data?.pricing.tariff.engine === "CONFIGURED" && <p className="muted small" style={{ gridColumn: "1 / -1" }}>
               Barème {configuration.data.pricing.tariff.currency} : les taux laissés vides sont déterminés par le produit et la tranche de montant / durée, puis fixés à la soumission. {configuration.data.pricing.tariff.charges.length} frais complémentaires configurés s'ajoutent automatiquement au détail des frais. Les taux non négociables et les plafonds sont contrôlés avant soumission.
               {!configuration.data.pricing.tariff.allow_manual_fees && " Les frais manuels sont interdits ; retirez les lignes manuelles existantes avant de soumettre."}
@@ -1340,15 +1400,56 @@ export function CreditApplicationForm({
                 <div className="form-grid two-col">
                   <Text label="Nom de l'activité" value={text.activity_name} onChange={set("activity_name")} />
                   <Text label="Métier" value={text.activity_trade} onChange={set("activity_trade")} />
+                  <Select label="Nature de l'activité" value={text.activity_nature} onChange={set("activity_nature")} options={ACTIVITY_NATURE} />
+                  <Text label="Offre principale" value={text.activity_offer} onChange={set("activity_offer")} />
                   <Text label="Secteur de l'activité" value={text.activity_sector} onChange={set("activity_sector")} />
                   <Text label="Date de début" type="date" value={text.activity_start_date} onChange={set("activity_start_date")} />
-                  <Select label="Régime fiscal" value={text.tax_regime} onChange={set("tax_regime")} options={TAX_REGIME} />
+                  <Select
+                    label="Régime fiscal"
+                    value={text.tax_regime}
+                    onChange={(value) => {
+                      set("tax_regime")(value);
+                      if (value === "INFORMAL") {
+                        set("activity_ifu")("");
+                        set("activity_rccm")("");
+                        set("activity_ninea")("");
+                        setRegistrationScans({ activity_ifu_scan: null, activity_rccm_scan: null, activity_ninea_scan: null });
+                      }
+                    }}
+                    options={TAX_REGIME}
+                  />
                   <Text label="Adresse du lieu d'activité" value={text.exact_address} onChange={set("exact_address")} />
-                  <Select label="Statut du local d'activité" value={text.activity_premises_status} onChange={set("activity_premises_status")} options={HOUSING} />
+                  <Select label="Statut du local d'activité" value={text.activity_premises_status} onChange={set("activity_premises_status")} options={ACTIVITY_PREMISES} />
+                  <Select label="Mode d'exploitation" value={text.activity_operation} onChange={set("activity_operation")} options={ACTIVITY_OPERATION} />
+                  <Text label="Clientèle" value={text.clientele} onChange={set("clientele")} />
+                  <Select label="Zone de chalandise" value={text.catchment_area} onChange={set("catchment_area")} options={CATCHMENT} />
+                  <Text label="Approvisionnement" value={text.activity_supply} onChange={set("activity_supply")} />
+                  <Select
+                    label="Autorisation d'exercer"
+                    value={text.activity_authorization}
+                    onChange={(value) => {
+                      set("activity_authorization")(value);
+                      if (value !== "PATENT" && value !== "STALL_RIGHT" && value !== "OTHER") {
+                        set("activity_authorization_ref")("");
+                      }
+                    }}
+                    options={ACTIVITY_AUTHORIZATION}
+                  />
+                  {(text.activity_authorization === "PATENT" || text.activity_authorization === "STALL_RIGHT" || text.activity_authorization === "OTHER") && (
+                    <Text label="Référence de l'autorisation" value={text.activity_authorization_ref} onChange={set("activity_authorization_ref")} />
+                  )}
                   {text.tax_regime !== "INFORMAL" && (
-                    <Text label="IFU de l'activité" value={text.activity_ifu} onChange={set("activity_ifu")} />
+                    <>
+                      <Text label="IFU de l'activité" value={text.activity_ifu} onChange={set("activity_ifu")} />
+                      <FileField label="Fichier IFU" file={registrationScans.activity_ifu_scan} currentUrl={initial?.activity_ifu_scan} onChange={(file) => setRegistrationScans((current) => ({ ...current, activity_ifu_scan: file }))} accept="image/*,application/pdf" />
+                      <Text label="RCCM de l'activité" value={text.activity_rccm} onChange={set("activity_rccm")} />
+                      <FileField label="Fichier RCCM" file={registrationScans.activity_rccm_scan} currentUrl={initial?.activity_rccm_scan} onChange={(file) => setRegistrationScans((current) => ({ ...current, activity_rccm_scan: file }))} accept="image/*,application/pdf" />
+                      <Text label="NINEA" value={text.activity_ninea} onChange={set("activity_ninea")} />
+                      <FileField label="Fichier NINEA" file={registrationScans.activity_ninea_scan} currentUrl={initial?.activity_ninea_scan} onChange={(file) => setRegistrationScans((current) => ({ ...current, activity_ninea_scan: file }))} accept="image/*,application/pdf" />
+                    </>
                   )}
                 </div>
+                <MultiFileField label="Photos du stock" files={stockPhotos} onChange={setStockPhotos} />
               </>
             )}
           </FormSection>
@@ -1769,20 +1870,25 @@ function FileField({
   file,
   onChange,
   accept,
+  currentUrl,
 }: {
   label: string;
   file: File | null;
   onChange: (f: File | null) => void;
   accept?: string;
+  currentUrl?: string | null;
 }) {
   return (
     <label className="field file-field">
       <span>{label}</span>
-      <div className={`file-drop${file ? " has-file" : ""}`}>
+      <div className={`file-drop${file || currentUrl ? " has-file" : ""}`}>
         <UploadCloud size={18} />
-        <span className="file-name">{file ? file.name : "Choisir un fichier…"}</span>
+        <span className="file-name">{file ? file.name : currentUrl ? "Remplacer le fichier joint" : "Choisir un fichier…"}</span>
         <input type="file" accept={accept} onChange={(e) => onChange(e.target.files?.[0] ?? null)} />
       </div>
+      {currentUrl && !file && (
+        <a href={currentUrl} target="_blank" rel="noreferrer">Voir le fichier joint</a>
+      )}
     </label>
   );
 }

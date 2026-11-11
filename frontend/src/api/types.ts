@@ -1041,6 +1041,7 @@ export interface CreditApplication {
   client_display: string;
   client_reference: string;
   client_type: string;
+  client_marital_status?: string;
   product: string;
   product_label: string;
   agency: string | null;
@@ -1125,6 +1126,17 @@ export interface CreditApplication {
   activity_sector?: string;
   activity_premises_status?: string;
   activity_ifu?: string;
+  activity_rccm?: string;
+  activity_ninea?: string;
+  activity_ifu_scan?: string | null;
+  activity_rccm_scan?: string | null;
+  activity_ninea_scan?: string | null;
+  activity_nature?: string;
+  activity_offer?: string;
+  activity_operation?: string;
+  activity_supply?: string;
+  activity_authorization?: string;
+  activity_authorization_ref?: string;
   // Relation bancaire
   client_account_number: string;
   relationship_start_date: string | null;
@@ -1594,6 +1606,32 @@ export const CREDIT_LABELS = {
     OWNER: "Propriétaire",
     TENANT: "Locataire",
     HOSTED: "Hébergé",
+  } as Record<string, string>,
+  activity_premises_status: {
+    OWNER: "Propriétaire",
+    TENANT: "Locataire",
+    HOSTED: "Hébergé",
+    STALL: "Étal ou marché",
+    ITINERANT: "Ambulant, sans local fixe",
+    FAMILY_LAND: "Terre ou exploitation familiale",
+  } as Record<string, string>,
+  activity_nature: {
+    TRADE: "Commerce",
+    CRAFT: "Transformation ou artisanat",
+    SERVICE: "Service",
+    AGRICULTURE: "Agriculture ou élevage",
+    OTHER: "Autre",
+  } as Record<string, string>,
+  activity_operation: {
+    SOLO: "Seul",
+    FAMILY: "Avec une aide familiale",
+    EMPLOYEES: "Avec des salariés",
+  } as Record<string, string>,
+  activity_authorization: {
+    NONE: "Aucune",
+    PATENT: "Patente",
+    STALL_RIGHT: "Droit de place",
+    OTHER: "Autre",
   } as Record<string, string>,
   risk_class: {
     A: "A — Excellent",

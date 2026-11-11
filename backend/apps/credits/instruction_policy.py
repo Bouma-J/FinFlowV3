@@ -172,6 +172,16 @@ def build_readiness(application) -> dict:
         if analysis_ok
         else "Ajoutez une analyse de référence avec recommandation.",
     )
+    if reference is not None:
+        from .analysis_validation import capacity_blocks_submission
+
+        capacity_message = capacity_blocks_submission(application, reference)
+        add(
+            "repayment_capacity",
+            "Capacité couvrant l'échéance, l'épargne et les dettes en cours",
+            not capacity_message,
+            message=capacity_message,
+        )
 
     if reference and not policy.allow_unfavorable_analysis_submit:
         fav_ok = (

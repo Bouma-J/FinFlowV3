@@ -80,20 +80,20 @@ const THRESHOLD_FIELDS: {
     label: "Pondération revenus informels (%)",
     group: "Revenus",
   },
-  { key: "haircut_mortgage", label: "Haircut hypothèque (%)", group: "Haircuts" },
-  { key: "haircut_vehicle", label: "Haircut véhicule (%)", group: "Haircuts" },
-  { key: "haircut_jewelry", label: "Haircut bijoux (%)", group: "Haircuts" },
+  { key: "haircut_mortgage", label: "Décote hypothèque (%)", group: "Décotes" },
+  { key: "haircut_vehicle", label: "Décote véhicule (%)", group: "Décotes" },
+  { key: "haircut_jewelry", label: "Décote bijoux (%)", group: "Décotes" },
   {
     key: "haircut_financial_deposit",
-    label: "Haircut DAT / épargne (%)",
-    group: "Haircuts",
+    label: "Décote DAT / épargne (%)",
+    group: "Décotes",
   },
   {
     key: "haircut_financial_security",
-    label: "Haircut titres (%)",
-    group: "Haircuts",
+    label: "Décote titres (%)",
+    group: "Décotes",
   },
-  { key: "haircut_other", label: "Haircut autres (%)", group: "Haircuts" },
+  { key: "haircut_other", label: "Décote autres (%)", group: "Décotes" },
 ];
 
 const EMPTY_THRESHOLD: AnalysisThresholdConfig = {
@@ -682,7 +682,7 @@ export function AdminBusinessReferentialsPage() {
             <Spinner />
           ) : (
             <fieldset disabled style={{ border: 0, padding: 0, margin: 0, minWidth: 0 }}><div>
-              {(["Ratios", "Collatéral", "Revenus", "Haircuts"] as const).map(
+              {(["Ratios", "Collatéral", "Revenus", "Décotes"] as const).map(
                 (group) => (
                   <div key={group} style={{ marginBottom: 18 }}>
                     <p className="section-subtitle">{group}</p>

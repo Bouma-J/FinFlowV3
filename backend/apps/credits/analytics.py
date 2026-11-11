@@ -76,6 +76,55 @@ def guarantee_coverage(analysis, thresholds=None):
     return guarantee_coverage_retained(analysis, thresholds=thresholds)
 
 
+def _apply_activity_weight(amount, analysis, weight):
+    """Une activité formalisée est retenue en entier. Une perte aussi."""
+    amount = _dec(amount)
+    if amount < 0 or analysis.activity_is_formal:
+        return amount
+    return amount * _dec(weight) / Decimal("100")
+
+
+def _retained_activity(analysis, weight):
+    if not analysis.has_side_activity:
+        return Decimal("0")
+    return _apply_activity_weight(analysis.monthly_activity_net, analysis, weight)
+
+
+def _weighted_extra_income(analysis, weight):
+    """Les lignes libres suivent la même pondération que les autres revenus."""
+    from .analysis_details import extra_line_total
+
+    extra = extra_line_total(analysis.analysis_details, "extra_income")
+    return extra * analysis.reference_periods_per_year / Decimal("12") * _dec(weight) / Decimal("100")
+
+
+def _retained_extra_activities(analysis, weight):
+    """Une autre activité s'ajoute. Elle n'est pas remplacée par la campagne."""
+    from .analysis_details import extra_activity_net
+
+    net = extra_activity_net(analysis.analysis_details) * analysis.reference_periods_per_year / Decimal("12")
+    if net < 0:
+        return net
+    return net * _dec(weight) / Decimal("100")
+
+
+def _stressed_extra_activities(analysis, weight, stress):
+    """Même épreuve que l'activité principale : baisse des recettes, charges maintenues."""
+    from .analysis_details import iter_complete_extra_activities
+
+    factor = analysis.reference_periods_per_year / Decimal("12")
+    total = Decimal("0")
+    for turnover, expenses in iter_complete_extra_activities(analysis.analysis_details):
+        turnover *= factor
+        expenses *= factor
+        stressed_net = turnover - expenses - turnover * stress
+        if stressed_net < 0:
+            total += stressed_net
+        else:
+            total += stressed_net * _dec(weight) / Decimal("100")
+    return total
+
+
 def compute_metrics(analysis, th, configuration=None, *, recalculate_installment=False):
     """Renvoie l'ensemble des indicateurs dérivés + les drapeaux de conformité."""
     from apps.configuration.services import application_configuration
@@ -327,18 +376,20 @@ def compute_metrics(analysis, th, configuration=None, *, recalculate_installment
             _dec(analysis.other_activity_income) + _dec(analysis.other_income)
             + _dec(analysis.variable_income)
         ) * ppy / Decimal("12") * weight / Decimal("100")
-        if analysis.has_side_activity:
-            weighted_income += (analysis.monthly_activity_net * weight / Decimal("100")
-                                if analysis.monthly_activity_net >= 0 else analysis.monthly_activity_net)
+        weighted_income += _weighted_extra_income(analysis, weight)
+        weighted_income += _retained_extra_activities(analysis, weight)
+        activity_retained = _retained_activity(analysis, weight)
+        weighted_income += activity_retained
 
-        stressed_income = weighted_income - max(Decimal("0"), weighted_income) * stress
+        extra_retained = _retained_extra_activities(analysis, weight)
+        outside_activities = weighted_income - activity_retained - extra_retained
+        stressed_income = outside_activities - max(Decimal("0"), outside_activities) * stress
         if analysis.has_side_activity:
             activity_loss = (_dec(analysis.activity_turnover) * stress
                              + _dec(analysis.activity_purchases) * detail_amount(analysis, "purchase_stress_pct") / 100) * ppy / 12
             activity_stressed = analysis.monthly_activity_net - activity_loss
-            activity_retained = analysis.monthly_activity_net * weight / 100 if analysis.monthly_activity_net >= 0 else analysis.monthly_activity_net
-            activity_stressed_retained = activity_stressed * weight / 100 if activity_stressed >= 0 else activity_stressed
-            stressed_income = weighted_income - activity_retained - max(Decimal("0"), weighted_income - activity_retained) * stress + activity_stressed_retained
+            stressed_income += _apply_activity_weight(activity_stressed, analysis, weight)
+        stressed_income += _stressed_extra_activities(analysis, weight, stress)
         frac = _dec(th.transferable_quota_fraction) / Decimal("100")
         monthly_net_salary = _dec(analysis.net_salary) * ppy / Decimal("12")
         monthly_salary_deductions = (
@@ -377,6 +428,16 @@ def compute_metrics(analysis, th, configuration=None, *, recalculate_installment
                 )
             ) if analysis.dependents_count is not None else None,
         })
+        if analysis.has_side_activity and _dec(analysis.turnover_prev):
+            m["turnover_growth"] = _q(_pct(
+                _dec(analysis.activity_turnover) - _dec(analysis.turnover_prev),
+                analysis.turnover_prev,
+            ))
+        if analysis.has_side_activity and _dec(analysis.net_result_prev):
+            m["result_growth"] = _q(_pct(
+                analysis.activity_net - _dec(analysis.net_result_prev),
+                abs(_dec(analysis.net_result_prev)),
+            ))
 
         flags = {
             "debt_ratio_ok": _cmp_le(m["debt_ratio"], th.max_debt_ratio) if weighted_income > 0 else False,
@@ -433,7 +494,11 @@ def compute_metrics(analysis, th, configuration=None, *, recalculate_installment
 
 
 def _apply_campaign_capacity(m, flags, analysis, th, existing, total_effort, installment, monthly_savings):
-    """La capacité retient le surplus de campagne. Le taux d'endettement ne change pas."""
+    """Le surplus mensuel de campagne remplace l'activité ordinaire d'une personne physique.
+
+    La capacité et le taux d'endettement lisent ce surplus. Une autre activité
+    reste dans le revenu. L'entreprise et le groupement gardent leur règle.
+    """
     from .analysis_details import campaign_capacity
 
     reading = campaign_capacity(analysis)
@@ -462,17 +527,42 @@ def _apply_campaign_capacity(m, flags, analysis, th, existing, total_effort, ins
         return
     weight = analysis.informal_income_weight
     weight = _dec(weight) if weight is not None else _dec(th.informal_income_weight)
-    activity_part = Decimal("0")
-    if analysis.has_side_activity:
-        net_activity = analysis.monthly_activity_net
-        activity_part = net_activity * weight / Decimal("100") if net_activity >= 0 else net_activity
-    base = _dec(m.get("weighted_income")) - activity_part + spread
+    activity_part = _retained_activity(analysis, weight)
+    extra_part = _retained_extra_activities(analysis, weight)
+    non_activity = _dec(m.get("weighted_income")) - activity_part - extra_part
+    base = non_activity + extra_part + spread
+    stress = _dec(th.stress_pct) / Decimal("100")
+    details = analysis.analysis_details or {}
+    revenue = _dec(details.get("campaign_revenue"))
+    charges = _dec(details.get("campaign_charges"))
+    months = Decimal(str(reading["campaign_duration_months"]))
+    stressed_spread = (revenue * (Decimal("1") - stress) - charges) / months
+    stressed_base = (
+        non_activity - max(Decimal("0"), non_activity) * stress
+        + _stressed_extra_activities(analysis, weight, stress)
+        + stressed_spread
+    )
     household = analysis.monthly_household_charges
     margin = base - household - total_effort
+    service = _dec(m.get("global_debt_service"))
+    m["weighted_income"] = _q(base)
+    m["debt_ratio"] = _q(_pct(service, base)) if base > 0 else None
+    m["debt_ratio_weighted"] = m["debt_ratio"]
+    m["debt_ratio_stress"] = _q(_pct(service, stressed_base)) if stressed_base > 0 else None
     m["repayment_capacity"] = _q(base - household - existing)
     m["safety_margin"] = _q(margin)
     m["residual_after_loan"] = _q(margin)
+    m["stress_residual"] = _q(stressed_base - household - total_effort)
+    if analysis.dependents_count is not None:
+        per_capita = _div(margin, Decimal(analysis.dependents_count) + Decimal("1"))
+        m["disposable_per_capita"] = _q(per_capita)
+        if _dec(th.min_living_wage_per_capita) > 0:
+            flags["living_wage_ok"] = _cmp_ge(per_capita, th.min_living_wage_per_capita)
+    flags["debt_ratio_ok"] = _cmp_le(m["debt_ratio"], th.max_debt_ratio) if base > 0 else False
+    flags["debt_ratio_stress_ok"] = _cmp_le(m["debt_ratio_stress"], th.max_debt_ratio) if stressed_base > 0 else False
+    flags["disposable_ok"] = margin >= 0 and base > 0
     flags["capacity_ok"] = base - household >= total_effort and base > 0
+    flags["capacity_stress_ok"] = stressed_base - household >= total_effort and stressed_base > 0
 
 
 def _apply_creation_dscr(m, flags, analysis, th):
@@ -538,6 +628,13 @@ def _information_quality_score(analysis):
         "VERIFIED": Decimal("80"),
         "AUDITED": Decimal("100"),
     }.get(getattr(analysis, "information_quality", ""), Decimal("30"))
+    application = getattr(analysis, "application", None)
+    if (
+        getattr(application, "tax_regime", "") == "INFORMAL"
+        and getattr(analysis, "is_individual", False)
+        and (getattr(analysis, "has_side_activity", False) or getattr(analysis, "individual_profile", "") in {"INDEPENDANT", "MIXTE"})
+    ):
+        return min(Decimal("100"), base)
     checks = [
         getattr(analysis, "financial_documents_verified", False),
         getattr(analysis, "field_visit_confirmed", False),

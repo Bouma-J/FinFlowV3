@@ -83,7 +83,7 @@ export function CollateralSummaryCard({
       {!embedded && (
         <p className="muted" style={{ marginTop: 0 }}>
           Capacité (ci-dessus) · Garanties réelles · Cautions — piliers séparés.
-          Les haircuts sont ceux de la filiale.
+          Les décotes sont celles de la filiale.
         </p>
       )}
 
@@ -145,7 +145,7 @@ export function CollateralSummaryCard({
                 <tr>
                   <th>Type</th>
                   <th>Brut</th>
-                  <th>Haircut</th>
+                  <th>Décote</th>
                   <th>Retenu</th>
                 </tr>
               </thead>

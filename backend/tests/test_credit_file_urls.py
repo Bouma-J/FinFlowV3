@@ -49,7 +49,12 @@ def test_file_serializers_rewrite_exposed_file_fields():
         FinancialDocumentSerializer: ("file",),
         StockPhotoSerializer: ("image",),
         CreditDocumentSerializer: ("file",),
-        CreditApplicationSerializer: ("request_letter_scan",),
+        CreditApplicationSerializer: (
+            "request_letter_scan",
+            "activity_ifu_scan",
+            "activity_rccm_scan",
+            "activity_ninea_scan",
+        ),
         GuaranteePhotoSerializer: ("image",),
         GuaranteeDocumentSerializer: ("file",),
         GuaranteeSerializer: (

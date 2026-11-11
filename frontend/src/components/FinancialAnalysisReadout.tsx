@@ -1,12 +1,17 @@
 ﻿import { CREDIT_LABELS, type FinancialAnalysis } from "@/api/types";
-import type { ReactNode } from "react";
+import { useState, type ReactNode } from "react";
 import { formatDate, formatMoney } from "@/components/ui";
 import { FINANCIAL_SUPPLEMENTS } from "@/components/FinancialAnalysisSupplements";
 import { savedExternalCredits } from "@/components/externalCredits";
 import { FinancialStatementsReadout, ActivityStatementReading } from "@/components/FinancialStatementsSection";
 import { PRODUCT_NATURES, PRODUCTION_IDENTITY, PRODUCTION_STOCKS, productAmount, productFigures, productNature, retainedActivityMargin } from "@/components/productLine";
+import { purchaseHistoryReading, purchaseLineAmount } from "@/components/purchaseHistory";
+import { supplierPaymentReading } from "@/components/supplierPayments";
+import { rhythmMonthly } from "@/components/salesRhythm";
+import { readSalesPeriodRows, salesPeriodReading } from "@/components/salesPeriods";
+import { OPERATING_CHARGES, operatingChargesExcludingPurchases } from "@/components/operatingCharges";
 import { readStatements } from "@/components/financialStatements";
-import { groupActivityOpen, purposeTestText, resolveAnalysisPath, resolveStatementBasis, themeAllowed } from "@/components/analysisPath";
+import { groupActivityOpen, resolveAnalysisPath, resolveStatementBasis, themeAllowed } from "@/components/analysisPath";
 import { ANALYSIS_TABLES, FinancialAnalysisDetails } from "@/components/FinancialAnalysisDetails";
 
 type Field = [keyof FinancialAnalysis, string, ("money" | "text" | "count" | "bool" | "percent")?];
@@ -15,7 +20,7 @@ const HOUSEHOLD: Field[] = [["rent_expense", "Logement"], ["food_expense", "Alim
 const RESULT: Field[] = [["turnover", "Chiffre d'affaires"], ["cogs", "Coût des marchandises vendues"], ["gross_margin", "Marge brute"], ["other_operating_income", "Autres produits d'exploitation"], ["op_rent", "Loyer"], ["op_salaries", "Salaires"], ["op_utilities", "Eau / électricité"], ["op_transport", "Transport"], ["op_telecom", "Télécoms"], ["op_taxes", "Impôts d'exploitation / patente"], ["op_maintenance", "Entretien"], ["op_other", "Autres charges d'exploitation"], ["total_operating_expenses", "Total charges d'exploitation"], ["ebe", "EBE reconstitué"], ["depreciation", "Amortissements"], ["financial_charges", "Charges financières"], ["net_result", "Résultat reconstitué"], ["cash_flow", "Résultat + charges non décaissées nettes"]];
 const ASSETS: Field[] = [["stock_value", "Stock"], ["receivables", "Créances clients"], ["cash_in_hand", "Caisse"], ["bank_balance", "Banque disponible"], ["cash_available", "Ancien agrégat de trésorerie"], ["other_current_assets", "Autres actifs courants"], ["land_building_value", "Terrains / bâtiments"], ["equipment_value", "Équipements"], ["vehicle_value", "Véhicules"], ["other_fixed_assets", "Autres immobilisations"], ["fixed_assets", "Ancien agrégat d'immobilisations"], ["total_assets", "Total de l'actif retenu"]];
 const DEBTS: Field[] = [["supplier_debt", "Dettes fournisseurs"], ["tax_social_debt", "Dettes fiscales et sociales"], ["other_current_debt", "Autres dettes d'exploitation"], ["short_term_debt", "Autres dettes court terme (hors postes précédents)"], ["ongoing_credit_balance", "Encours financier total"], ["long_term_debt", "Dont part long terme (déjà incluse)"], ["shareholder_debt", "Comptes courants d'associés"], ["total_debts", "Total dettes"], ["equity", "Fonds propres reconstitués (actif − dettes)"]];
-const ACTIVITY: Field[] = [["activity_name", "Activité", "text"], ["activity_business_age_months", "Ancienneté (mois)", "count"], ["activity_sales_days", "Jours de vente sur la période", "count"], ["activity_turnover", "CA / recettes"], ["activity_expenses", "Charges totales, achats inclus"], ["activity_purchases", "Dont achats (déjà inclus)"], ["activity_stock_value", "Stock"], ["activity_receivables", "Créances clients"], ["activity_cash_available", "Trésorerie"], ["activity_fixed_assets", "Actifs productifs"], ["activity_supplier_debt", "Fournisseurs"], ["activity_is_formal", "Activité formalisée", "bool"], ["activity_records_available", "Cahier / pièces disponibles", "bool"]];
+const ACTIVITY: Field[] = [["activity_name", "Activité", "text"], ["activity_business_age_months", "Ancienneté (mois)", "count"], ["activity_sales_days", "Jours de vente sur la période", "count"], ["activity_turnover", "CA / recettes"], ["activity_expenses", "Charges totales, achats inclus"], ["activity_purchases", "Dont achats (déjà inclus)"], ["activity_stock_value", "Stock"], ["activity_receivables", "Créances clients"], ["activity_cash_available", "Trésorerie de l'activité"], ["activity_fixed_assets", "Actifs productifs de l'activité"], ["activity_supplier_debt", "Fournisseurs"], ["activity_is_formal", "Activité formalisée", "bool"], ["activity_records_available", "Cahier / pièces disponibles", "bool"]];
 const GROUP: Field[] = [["members_count", "Membres", "count"], ["active_contributing_members", "Cotisants actifs", "count"], ["members_with_arrears", "Membres en retard", "count"], ["group_age_months", "Ancienneté (mois)", "count"], ["collective_contributions", "Cotisations"], ["collective_other_income", "Autres recettes"], ["group_activity_turnover", "CA commun"], ["collective_operating_expenses", "Fonctionnement"], ["group_activity_expenses", "Charges de l'activité"], ["collective_savings", "Épargne (solde, pas un revenu)"], ["collective_savings_locked", "Épargne mobilisable / nantie", "bool"], ["group_records_verified", "Registres / épargne vérifiés", "bool"], ["solidarity_commitment", "Engagement de solidarité", "bool"]];
 
 function numeric(value: unknown): number | null {
@@ -26,6 +31,18 @@ function numeric(value: unknown): number | null {
 }
 function Theme({ title, children }: { title: string; children: ReactNode }) {
   return <section className="analysis-theme"><h3 className="analysis-chapter-title">{title}</h3>{children}</section>;
+}
+
+function FormulaDisclosure({ children }: { children: ReactNode }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <div className="analysis-block">
+      <button type="button" className="btn btn-ghost btn-sm" onClick={() => setOpen((current) => !current)}>
+        {open ? "Masquer les formules" : "Afficher les formules"}
+      </button>
+      {open && children}
+    </div>
+  );
 }
 
 function Note({ label, text }: { label: string; text: string }) {
@@ -59,6 +76,54 @@ function ForecastChart({ rows, currency }: { rows: Record<string, unknown>[]; cu
 
 type DetailRow = Record<string, string>;
 
+function observedDay(
+  details: FinancialAnalysis["analysis_details"],
+  key: string,
+  fallback: number | null | undefined,
+): string | null {
+  if (details && Object.prototype.hasOwnProperty.call(details, key)) {
+    const raw = details[key];
+    if (typeof raw !== "string" || raw.trim() === "") return null;
+    return `${raw} j`;
+  }
+  if (fallback == null) return null;
+  return `${fallback} j`;
+}
+
+function paymentDelayRows(
+  details: FinancialAnalysis["analysis_details"],
+  cycle?: { client: number | null; supplier: number | null },
+) {
+  const client = observedDay(details, "observed_client_payment_days", cycle?.client);
+  const supplier = observedDay(details, "observed_supplier_payment_days", cycle?.supplier);
+  if (!client && !supplier) return null;
+  return (
+    <dl className="def-list two">
+      {client && <div><dt>Délai moyen paiement clients</dt><dd>{client}</dd></div>}
+      {supplier && <div><dt>Délai moyen paiement fournisseurs</dt><dd>{supplier}</dd></div>}
+    </dl>
+  );
+}
+
+function ExtraActivities({
+  details,
+  currency,
+}: {
+  details: FinancialAnalysis["analysis_details"];
+  currency: string;
+}) {
+  const rows = detailRows(details, "extra_activities").flatMap((row, index) => {
+    const label = String(row.label || "").trim();
+    const turnover = row.turnover;
+    const expenses = row.expenses;
+    if (!label || ((turnover == null || turnover === "") && (expenses == null || expenses === ""))) return [];
+    const net = (numeric(turnover) || 0) - (numeric(expenses) || 0);
+    return [<div key={`activity-${index}`}><dt>{label}</dt><dd>{formatMoney(net, currency)}</dd></div>];
+  });
+  if (rows.length === 0) return null;
+  return <dl className="def-list two">{rows}</dl>;
+}
+
 function ExtraMoneyLines({
   details,
   name,
@@ -81,6 +146,22 @@ function ExtraMoneyLines({
 function detailRows(details: FinancialAnalysis["analysis_details"], key: string): DetailRow[] {
   const value = details?.[key];
   return Array.isArray(value) ? value : [];
+}
+
+const PURCHASE_METHOD_LABELS: Record<string, string> = {
+  INVOICES: "factures",
+  LEDGER: "cahier d'achats",
+  COST_RATE: "taux de coût de la marge",
+  OTHER: "autre",
+};
+
+function purchaseMethodCodes(details: FinancialAnalysis["analysis_details"]): string[] {
+  const rows = details?.purchase_methods;
+  if (Array.isArray(rows)) {
+    return rows.flatMap((row) => typeof row.method === "string" && PURCHASE_METHOD_LABELS[row.method] ? [row.method] : []);
+  }
+  const single = typeof details?.purchase_method === "string" ? details.purchase_method : "";
+  return PURCHASE_METHOD_LABELS[single] ? [single] : [];
 }
 
 function moneyCell(value: number | null, currency: string) {
@@ -219,7 +300,67 @@ function ComparativeTables({ analysis: a, currency, only }: { analysis: Financia
   return <ReadTable caption="Stock — valeur nette, quantité × coût moins dépréciation" headers={["Article", "Quantité", "Coût unitaire", "Dépréciation", "Valeur nette"]} rows={stockRows} />;
 }
 
-export function FinancialAnalysisReadout({ analysis: a, currency, part }: { analysis: FinancialAnalysis; currency: string; part: "topics" | "indicators" }) {
+function DatedPeriodReadout({
+  rows, mode, currency, amountHeader, totalLabel, averageLabel, monthlyLabel, bounds,
+}: {
+  rows: Record<string, string>[];
+  mode: string;
+  currency: string;
+  amountHeader: string;
+  totalLabel: string;
+  averageLabel: string;
+  monthlyLabel: string;
+  bounds?: { start: string; end: string };
+}) {
+  if (!rows.length) return null;
+  const periodLabel: Record<string, string> = { DAY: "Jour", WEEK: "Semaine", MONTH: "Mois", SEMESTER: "Semestre" };
+  const appreciationLabel: Record<string, string> = { FAIBLE: "Faible", MOYENNE: "Moyenne", BONNE: "Bonne" };
+  const reading = salesPeriodReading(rows, mode, bounds);
+  const daily = mode === "DAY";
+  const span = (line: { start: string; end: string; amount: string } | null) => (
+    line ? `${daily ? formatDate(line.start) : `${formatDate(line.start)} – ${formatDate(line.end)}`} · ${formatMoney(line.amount, currency)}` : "—"
+  );
+  const indicators = [
+    ["Découpage", periodLabel[mode] || "—"],
+    ["Nombre de périodes", reading.count == null ? "—" : String(reading.count)],
+    [totalLabel, reading.total == null ? "—" : formatMoney(reading.total, currency)],
+    [averageLabel, reading.average == null ? "—" : formatMoney(reading.average, currency)],
+    ["Jours couverts", reading.days == null ? "—" : String(reading.days)],
+    [monthlyLabel, reading.monthly == null ? "—" : formatMoney(reading.monthly, currency)],
+    ["Période la plus élevée", span(reading.high)],
+    ["Période la plus faible", span(reading.low)],
+    ["Appréciation dominante", reading.appreciation || "—"],
+  ];
+  return (
+    <div className="table-scroll">
+      <table className="table">
+        <thead>
+          <tr>
+            {daily ? <th scope="col">Date</th> : <><th scope="col">Date de début</th><th scope="col">Date de fin</th></>}
+            <th scope="col">{amountHeader}</th>
+            <th scope="col">Appréciation</th>
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((row, index) => (
+            <tr key={index}>
+              {daily ? <td>{row.date ? formatDate(row.date) : "—"}</td> : <><td>{row.start ? formatDate(row.start) : "—"}</td><td>{row.end ? formatDate(row.end) : "—"}</td></>}
+              <td>{moneyCell(numeric(row.amount), currency)}</td>
+              <td>{appreciationLabel[row.appreciation] || "—"}</td>
+            </tr>
+          ))}
+        </tbody>
+        <tfoot>
+          {indicators.map(([label, value]) => (
+            <tr key={label}><th scope="row" colSpan={daily ? 1 : 2}>{label}</th><td colSpan={2}>{value}</td></tr>
+          ))}
+        </tfoot>
+      </table>
+    </div>
+  );
+}
+
+export function FinancialAnalysisReadout({ analysis: a, currency, part, paymentCycle }: { analysis: FinancialAnalysis; currency: string; part: "topics" | "indicators"; paymentCycle?: { client: number | null; supplier: number | null } }) {
   const m = a.metrics;
   const n = (key: string) => numeric(m[key]);
   const money = (key: string) => formatMoney(n(key), currency);
@@ -296,6 +437,7 @@ export function FinancialAnalysisReadout({ analysis: a, currency, part }: { anal
   const profileLabel = ({ SALARIE: "Salarié", INDEPENDANT: "Indépendant", MIXTE: "Mixte — salaire et activité" } as Record<string, string>)[a.individual_profile || ""] || "";
   const employmentLabel = ({ PERMANENT: "CDI / fonctionnaire", FIXED_TERM: "CDD", RETIRED: "Retraité", DAILY: "Journalier / intermittent", OTHER: "Autre" } as Record<string, string>)[a.employment_type] || "";
   const showActivity = !corp && !group && (a.has_side_activity || a.individual_profile === "INDEPENDANT" || a.individual_profile === "MIXTE" || !!a.activity_comment || m.tpe_purchases_aligned === false);
+  const informalActivity = showActivity && a.activity_is_formal === false;
   const purchaseAlert = m.tpe_purchases_aligned === false;
   const pnlExtras = supplementList(["income_tax_expense", "provision_expense", "provision_reversal", "exceptional_income", "exceptional_expense", "fixed_operating_costs", "variable_operating_costs", "period_purchases"]);
   const balanceExtras = supplementList(["opening_receivables", "opening_supplier_debt", "declared_equity", "bfr_change", "maintenance_investment"]);
@@ -368,13 +510,27 @@ export function FinancialAnalysisReadout({ analysis: a, currency, part }: { anal
       <Note label="Perspectives de l'emploi" text={detailText("employment_outlook")} />
     </>, true);
     add("Patrimoine du ménage", <>
-      {fields([["personal_savings", "Épargne disponible"], ["personal_real_estate_value", "Immobilier"], ["personal_vehicle_value", "Véhicules"], ["personal_productive_assets", "Actifs productifs"], ["dependents_count", "Personnes à charge, hors demandeur", "count"]])}
+      {fields([["personal_savings", "Épargne disponible"], ["personal_real_estate_value", "Immobilier"], ["personal_vehicle_value", "Véhicules"], ["personal_productive_assets", "Actifs productifs du ménage"], ["dependents_count", "Personnes à charge, hors demandeur", "count"]])}
+      <ExtraMoneyLines details={a.analysis_details} name="household_assets" currency={currency} />
+      <Note label="Autres détails du patrimoine" text={detailText("patrimony_comment")} />
       {!showActivity && <Note label="Qualité des créances" text={detailText("receivables_quality")} />}
       <Note label="Propriété des actifs" text={detailText("asset_ownership")} />
     </>, true);
   }
   if (showActivity) add("Activité indépendante", <>
-    {fields(ACTIVITY)}
+    {fields(informalActivity ? ACTIVITY.filter(([key]) => key !== "activity_records_available") : ACTIVITY)}
+    {operatingChargesExcludingPurchases(a.analysis_details) != null && (
+      <dl className="def-list two">
+        {OPERATING_CHARGES.flatMap((item) => {
+          const value = numeric(detailText(item.key));
+          if (value == null) return [];
+          return [<div key={item.key}><dt>{item.label}</dt><dd>{formatMoney(value, currency)}</dd></div>];
+        })}
+      </dl>
+    )}
+    <ExtraMoneyLines details={a.analysis_details} name="activity_extra_charges" currency={currency} />
+    {paymentDelayRows(a.analysis_details, paymentCycle)}
+    <ExtraActivities details={a.analysis_details} currency={currency} />
     <Note label="Commentaire sur l'activité" text={a.activity_comment || ""} />
     <Note label="Qualité des créances" text={detailText("receivables_quality")} />
     {alert(purchaseAlert, "Les achats retenus s'écartent de plus de 10 % des achats déclarés, ramenés au mois.")}
@@ -396,8 +552,42 @@ export function FinancialAnalysisReadout({ analysis: a, currency, part }: { anal
     <Note label="Modèle économique" text={detailText("business_model")} />
     {lineNotes("products", "name")}
     <FinancialAnalysisDetails name="sales_observations" value={a.analysis_details || {}} currency={currency} expanded />
+    {(() => {
+      const rhythmLabel = { DAY: "Jour", WEEK: "Semaine", MONTH: "Mois" } as Record<string, string>;
+      const periodRows = readSalesPeriodRows(a.analysis_details?.sales_periods);
+      const sharedPeriod = detailText("analysis_period_mode");
+      const periodMode = sharedPeriod || detailText("sales_period_mode");
+      const collectionRows = readSalesPeriodRows(a.analysis_details?.collection_periods);
+      const collectionMode = sharedPeriod || detailText("collection_period_mode");
+      const windowStart = detailText("analysis_period_start");
+      const windowEnd = detailText("analysis_period_end");
+      const analysisBounds = windowStart && windowEnd && windowEnd >= windowStart ? { start: windowStart, end: windowEnd } : undefined;
+      const collectionRhythm = detailText("collection_rhythm");
+      const days = detailText("activity_days_per_month");
+      const collectedMonth = rhythmMonthly(collectionRhythm, detailText("collection_amount"), days);
+      const salesRhythm = detailText("sales_rhythm");
+      const salesMonth = rhythmMonthly(salesRhythm, detailText("sales_amount"), days);
+      const grainNames: Record<string, string> = { DAY: "Jour", WEEK: "Semaine", MONTH: "Mois", SEMESTER: "Semestre" };
+      const windowText = analysisBounds ? `${formatDate(windowStart)} – ${formatDate(windowEnd)}` : "";
+      const grainText = sharedPeriod ? (grainNames[sharedPeriod] || sharedPeriod) : "";
+      return <>
+        {(windowText || grainText) && <Note label="Période d'analyse" text={[windowText, grainText].filter(Boolean).join(" · ")} />}
+        <DatedPeriodReadout rows={periodRows} mode={periodMode} currency={currency} amountHeader="Chiffre d'affaires" totalLabel="Chiffre d'affaires total" averageLabel="CA moyen" monthlyLabel="CA du mois" bounds={analysisBounds} />
+        <DatedPeriodReadout rows={collectionRows} mode={collectionMode} currency={currency} amountHeader="Montant encaissé" totalLabel="Total encaissé" averageLabel="Encaissement moyen" monthlyLabel="Encaissé sur le mois" bounds={analysisBounds} />
+        {( (!collectionRows.length && (collectionRhythm || detailText("collection_amount"))) || (!periodRows.length && (salesRhythm || detailText("sales_amount"))) ) && (
+          <dl className="def-list two">
+            {!periodRows.length && salesRhythm && <div><dt>Rythme des ventes</dt><dd>{rhythmLabel[salesRhythm] || salesRhythm}</dd></div>}
+            {!periodRows.length && detailText("sales_amount") && <div><dt>Montant des ventes</dt><dd>{moneyCell(numeric(detailText("sales_amount")), currency)}</dd></div>}
+            {!periodRows.length && (salesRhythm || detailText("sales_amount")) && <div><dt>CA du mois</dt><dd>{salesMonth == null ? "—" : formatMoney(salesMonth, currency)}</dd></div>}
+            {!collectionRows.length && collectionRhythm && <div><dt>Rythme des encaissements</dt><dd>{rhythmLabel[collectionRhythm] || collectionRhythm}</dd></div>}
+            {!collectionRows.length && detailText("collection_amount") && <div><dt>Montant encaissé</dt><dd>{moneyCell(numeric(detailText("collection_amount")), currency)}</dd></div>}
+            {!collectionRows.length && (collectionRhythm || detailText("collection_amount")) && <div><dt>Encaissé sur le mois</dt><dd>{collectedMonth == null ? "—" : formatMoney(collectedMonth, currency)}</dd></div>}
+          </dl>
+        )}
+      </>;
+    })()}
     <ComparativeTables analysis={a} currency={currency} only="sales" />
-    <Note label="Vérification du chiffre d'affaires" text={detailText("sales_verification")} />
+    <Note label="Autres détails" text={detailText("sales_verification")} />
     {alert(m.product_details_complete === false, "Des fiches produits sont incomplètes. La marge reconstituée reste inconnue ; compléter les montants, y compris les zéros vérifiés.")}
     {alert(m.sales_reconciled === false, "Écart à expliquer : ventes détaillées et chiffre d'affaires.")}
     {alert(m.tpe_sales_aligned === false, "Le chiffre d'affaires retenu s'écarte de plus de 10 % du chiffre déclaré, ramené au mois.")}
@@ -562,27 +752,42 @@ export function FinancialAnalysisReadout({ analysis: a, currency, part }: { anal
     "household_income_evidence", "employment_outlook", "project_cost", "own_contribution", "financing_plan",
     "stress_assumptions", "monitoring_plan", "bureau_reference", "bureau_discrepancies", "banking_behavior", "cash_check_comment",
     ...Object.keys(FINANCIAL_SUPPLEMENTS), ...Object.keys(ANALYSIS_TABLES),
-    "sales_method", "purchase_method", "last_purchase_date", "cash_control_date", "activity_days_per_month",
+    "sales_method", "purchase_method", "purchase_methods", "purchase_comment", "suppliers", "purchase_history", "purchase_period_start", "purchase_period_end", "supplier_payments", "sales_rhythm", "sales_amount", "sales_period_mode", "analysis_period_mode", "analysis_period_start", "analysis_period_end", "collection_rhythm", "collection_amount", "collection_period_mode", "observed_client_payment_days", "observed_supplier_payment_days", "last_purchase_date", "cash_control_date", "activity_days_per_month",
     "retained_daily_sales", "sales_control_monthly", "purchase_average", "purchase_frequency", "safety_provision_pct",
     "last_purchase_amount", "cash_at_last_purchase", "charges_paid_in_window", "other_outflows_in_window",
     "observed_cash", "cash_tolerance_pct", "cash_detail_mode", "fixed_assets_detail_mode", "statement_basis", "manufactures", "group_has_activity", "group_activity_description",
     "campaign_open", "activity_creation", "campaign_name", "campaign_production", "campaign_scale", "campaign_inflow_months", "campaign_calendar", "campaign_sales", "campaign_comment",
     "campaign_revenue", "campaign_charges", "campaign_input_stock", "campaign_harvest_stock", "creation_activity", "creation_ramp", "creation_assumptions",
     "minimal_cash_open", "minimal_cash_label", "minimal_cash_start", "minimal_cash_end", "minimal_cash_opening", "minimal_cash_inflows", "minimal_cash_outflows", "minimal_cash_closing", "minimal_cash_comment", "minimal_cash_document",
-    "extra_income", "extra_charges",
+    "extra_income", "extra_charges", "activity_extra_charges", "household_assets", "patrimony_comment",
+    "activity_stock_prev", "activity_receivables_prev", "activity_cash_prev", "activity_fixed_assets_prev", "activity_supplier_debt_prev",
+    "activity_charge_place", "activity_charge_staff", "activity_charge_transport", "activity_charge_utilities",
+    "activity_charge_telecom", "activity_charge_maintenance", "activity_charge_fees", "activity_charge_supplies",
+    "consulted_sales_book", "consulted_sales_invoices", "consulted_bank_statements", "consulted_purchase_invoices", "consulted_purchase_ledger", "analysis_context_comment",
     ...PRODUCTION_IDENTITY.map((field) => field.key), ...PRODUCTION_STOCKS.map((stock) => stock.key),
   ]);
   const leftovers = Object.entries(a.analysis_details || {}).filter(([key, value]) => !placed.has(key) && !key.endsWith("_detail_mode") && typeof value === "string" && value.trim());
+  const consultedDocuments = informalActivity ? [
+    ["Cahier de caisse", a.activity_records_available],
+    ["Cahier de ventes", a.analysis_details?.consulted_sales_book === "yes"],
+    ["Factures de vente", a.analysis_details?.consulted_sales_invoices === "yes"],
+    ["Relevés bancaires ou mobile money", a.analysis_details?.consulted_bank_statements === "yes"],
+    ["Inventaire de stock", a.stock_count_verified],
+    ["Factures fournisseurs", a.analysis_details?.consulted_purchase_invoices === "yes" || (a.analysis_details?.consulted_purchase_invoices !== "" && purchaseMethodCodes(a.analysis_details).includes("INVOICES"))],
+    ["Cahier d'achats", a.analysis_details?.consulted_purchase_ledger === "yes" || (a.analysis_details?.consulted_purchase_ledger !== "" && purchaseMethodCodes(a.analysis_details).includes("LEDGER"))],
+    ["Caisse et banques", a.cash_position_verified],
+  ] as const : [];
   add("Fiabilité", <>
     <dl className="def-list two">
       <div><dt>Fiabilité des informations</dt><dd>{({ DECLARED: "Déclarées", PARTIALLY_VERIFIED: "Partiellement vérifiées", VERIFIED: "Vérifiées", AUDITED: "Comptes audités" } as Record<string, string>)[a.information_quality] || "Non renseignée"}</dd></div>
-      {a.financial_statement_date && <div><dt>Date d'arrêté</dt><dd>{shortDate(a.financial_statement_date)}</dd></div>}
-      {a.primary_repayment_source && <div><dt>Source de remboursement</dt><dd>{a.primary_repayment_source}</dd></div>}
-      <div><dt>Pièces financières vérifiées</dt><dd>{a.financial_documents_verified ? "Oui" : "Non"}</dd></div>
+      {!informalActivity && a.financial_statement_date && <div><dt>Date d'arrêté</dt><dd>{shortDate(a.financial_statement_date)}</dd></div>}
+      {!informalActivity && a.primary_repayment_source && <div><dt>Source de remboursement</dt><dd>{a.primary_repayment_source}</dd></div>}
+      {!informalActivity && <div><dt>Pièces financières vérifiées</dt><dd>{a.financial_documents_verified ? "Oui" : "Non"}</dd></div>}
       {a.bank_statement_months != null && <div><dt>Mois de relevés examinés</dt><dd>{a.bank_statement_months}</dd></div>}
       <div><dt>Visite confirmée</dt><dd>{a.field_visit_confirmed ? "Oui" : "Non"}</dd></div>
-      {!hasStock && <div><dt>Inventaire vérifié</dt><dd>{a.stock_count_verified ? "Oui" : "Non"}</dd></div>}
-      {!hasCash && <div><dt>Caisse / banque vérifiées</dt><dd>{a.cash_position_verified ? "Oui" : "Non"}</dd></div>}
+      {consultedDocuments.map(([label, checked]) => <div key={label}><dt>{label}</dt><dd>{checked ? "Oui" : "Non"}</dd></div>)}
+      {!informalActivity && !hasStock && <div><dt>Inventaire vérifié</dt><dd>{a.stock_count_verified ? "Oui" : "Non"}</dd></div>}
+      {!informalActivity && !hasCash && <div><dt>Caisse / banque vérifiées</dt><dd>{a.cash_position_verified ? "Oui" : "Non"}</dd></div>}
     </dl>
     <Note label="Commentaire de vérification" text={a.verification_comment || ""} />
     {!!Object.keys(a.custom_fields || {}).length && <dl className="def-list two">{Object.entries(a.custom_fields || {}).map(([key, value]) => {
@@ -592,7 +797,10 @@ export function FinancialAnalysisReadout({ analysis: a, currency, part }: { anal
     {leftovers.map(([key, value]) => <Note key={key} label={key} text={String(value)} />)}
   </>, true);
 
-  const topics = <>{blocks.map((block) => <Theme key={block.title} title={block.title}>{block.body}</Theme>)}</>;
+  const topics = <>
+    <Note label="Autres détails du contexte" text={detailText("analysis_context_comment")} />
+    {blocks.map((block) => <Theme key={block.title} title={block.title}>{block.body}</Theme>)}
+  </>;
 
 
   const indicators = <>
@@ -620,9 +828,7 @@ export function FinancialAnalysisReadout({ analysis: a, currency, part }: { anal
         {card("Effort moyen sur la durée (hors dettes existantes)", "average_monthly_cash_payment")}
         {card("Pic d'échéance du nouveau crédit, épargne comprise", "peak_cash_payment")}
       </div>
-      {n("campaign_monthly_surplus") != null && <p className="muted small">La capacité retient le surplus de campagne {money("campaign_surplus")} réparti sur {String(m.campaign_duration_months ?? "—")} mois, soit {money("campaign_monthly_surplus")} par mois. Le taux d&apos;endettement reste calculé sur le revenu observé.</p>}
-      {!!context?.purpose_type && <p className="muted small">{purposeTestText(context.purpose_type, path === "RECONSTITUTED" || ((path === "ACTIVITY" || path === "MIXED" || (path === "GROUP" && groupOpen && !groupStatements)) && resolveStatementBasis(a.analysis_details) !== "STATEMENTS"))}</p>}
-      <p className="muted small">Le pic à financer et l'effort moyen sont distincts. Pour un in fine ou un remboursement saisonnier, vérifier les dates et ressources disponibles à chaque échéance. Les frais initiaux ne sont pas des charges mensuelles ; les prévisions doivent inclure les autres prélèvements réels.</p>
+      {n("campaign_monthly_surplus") != null && <p className="muted small">Le surplus de campagne {money("campaign_surplus")} est réparti sur {String(m.campaign_duration_months ?? "—")} mois, soit {money("campaign_monthly_surplus")} par mois. Pour une personne physique, ce montant remplace le chiffre d&apos;affaires ordinaire de l&apos;activité dans le revenu retenu et dans le taux d&apos;endettement.</p>}
       {n("tpe_safety_pct") != null && <>
         <h5>Retenue de prudence</h5>
         <p className="muted small">Base : capacité avant le nouveau crédit, dettes existantes déjà déduites. Les échéances en cours ne sont pas retirées une seconde fois. Cette retenue n'est pas le taux d'endettement.</p>
@@ -635,18 +841,30 @@ export function FinancialAnalysisReadout({ analysis: a, currency, part }: { anal
       </>}
       {corp && <div className="metric-grid">{card("Flux mensuel avant dette, après ajustements renseignés", "cash_before_debt")}{card("Flux mensuel prudent retenu pour le DSCR", "repayment_cash_flow")}{card("Écart fonds propres reconstitués − déclarés", "equity_gap")}</div>}
       {!corp && !group && (a.has_side_activity || a.individual_profile === "INDEPENDANT" || a.individual_profile === "MIXTE") && <div className="metric-grid">{card("Résultat net d'activité / mois avant pondération", "activity_net")}{card("Actif de l'activité", "activity_assets")}{card("BFR simplifié de l'activité", "activity_working_capital_need")}</div>}
-      {!corp && !group && <p className="muted small">Pondération retenue sur les revenus variables et le bénéfice d'activité : {n("income_weight") ?? "—"} %. Les pertes d'activité sont retenues intégralement.</p>}
-      {(path === "RECONSTITUTED" || path === "ACTIVITY" || path === "MIXED" || (path === "GROUP" && groupOpen && !groupStatements)) && (a.analysis_details?.sales_method || a.analysis_details?.purchase_method || n("tpe_monthly_sales") != null) && <>
+      {(path === "RECONSTITUTED" || path === "ACTIVITY" || path === "MIXED" || (path === "GROUP" && groupOpen && !groupStatements)) && (a.analysis_details?.sales_method || purchaseMethodCodes(a.analysis_details).length > 0 || n("tpe_monthly_sales") != null || detailRows(a.analysis_details, "suppliers").length > 0 || detailRows(a.analysis_details, "purchase_history").length > 0 || detailRows(a.analysis_details, "supplier_payments").length > 0 || !!detailText("purchase_comment")) && <>
         <h5>Reconstitution TPE</h5>
-        <p className="muted small">Méthode de ventes : {({ CAHIER: "cahier ou factures", BANK: "relevés ou Mobile Money", THREE_DAYS: "trois jours observés", HYPOTHESIS: "trois hypothèses", STOCK: "inventaire", OTHER: "autre" } as Record<string, string>)[String(a.analysis_details?.sales_method || "")] || "non utilisée"}. Méthode d'achats : {({ INVOICES: "factures", LEDGER: "cahier d'achats", COST_RATE: "taux de coût de la marge", OTHER: "autre" } as Record<string, string>)[String(a.analysis_details?.purchase_method || "")] || "non utilisée"}.</p>
+        <p className="muted small">Méthode de ventes : {({ CAHIER: "cahier ou factures", BANK: "relevés ou Mobile Money", THREE_DAYS: "trois jours observés", HYPOTHESIS: "trois hypothèses", STOCK: "inventaire", OTHER: "autre" } as Record<string, string>)[String(a.analysis_details?.sales_method || "")] || "non utilisée"}. Méthode d&apos;achats : {purchaseMethodCodes(a.analysis_details).filter((code) => !(informalActivity && (code === "INVOICES" || code === "LEDGER"))).map((code) => PURCHASE_METHOD_LABELS[code]).join(", ") || "non utilisée"}.</p>
         <div className="metric-grid">
           {card("CA journalier retenu", "tpe_retained_daily_sales")}
           {card("CA mensuel retenu", "tpe_monthly_sales")}
           {card("CA déclaré ramené au mois", "tpe_declared_monthly_sales")}
           {card("Écart de chiffre d'affaires", "tpe_sales_gap")}
           {card("Achats mensuels retenus", "tpe_monthly_purchases")}
+          {n("tpe_purchases_invoices") != null && card("Achats selon les factures", "tpe_purchases_invoices")}
+          {n("tpe_purchases_ledger") != null && card("Achats selon le cahier", "tpe_purchases_ledger")}
+          {n("tpe_purchases_cost_rate") != null && card("Achats selon le taux de coût", "tpe_purchases_cost_rate")}
           {card("Achats déclarés ramenés au mois", "tpe_declared_monthly_purchases")}
         </div>
+        {detailRows(a.analysis_details, "suppliers").length > 0 && <div className="table-scroll"><table className="table"><thead><tr><th scope="col">Fournisseur</th><th scope="col">Lieu</th><th scope="col">Produit</th><th scope="col">Part</th><th scope="col">Montant</th><th scope="col">Paiement</th><th scope="col">Délai</th></tr></thead><tbody>{detailRows(a.analysis_details, "suppliers").map((row, index) => <tr key={index}><td>{row.name || "—"}</td><td>{row.place || "—"}</td><td>{row.product || "—"}</td><td>{row.share ? `${row.share} %` : "—"}</td><td>{moneyCell(numeric(row.amount), currency)}</td><td>{row.payment_mode === "CASH" ? "Comptant" : row.payment_mode === "CREDIT" ? "À crédit" : "—"}</td><td>{row.delay_days ? `${row.delay_days} j` : "—"}</td></tr>)}</tbody></table></div>}
+        {detailRows(a.analysis_details, "supplier_payments").length > 0 && <>
+          <p className="subsection-label">Paiement fournisseurs</p>
+          <div className="table-scroll"><table className="table"><thead><tr><th scope="col">Date</th><th scope="col">Fournisseur</th><th scope="col">Montant</th><th scope="col">Mode de paiement</th></tr></thead><tbody>{detailRows(a.analysis_details, "supplier_payments").map((row, index) => <tr key={index}><td>{row.date ? formatDate(row.date) : "—"}</td><td>{row.supplier || "—"}</td><td>{row.amount === "" || row.amount == null ? "—" : moneyCell(numeric(row.amount), currency)}</td><td>{({ CASH: "Espèces", MOBILE: "Mobile Money", TRANSFER: "Virement", CHEQUE: "Chèque" } as Record<string, string>)[row.payment_mode] || "—"}</td></tr>)}</tbody><tfoot>{(() => { const reading = supplierPaymentReading(detailRows(a.analysis_details, "supplier_payments")); const lines = [["Total payé", reading.total == null ? "—" : formatMoney(reading.total, currency)], ["Nombre de paiements", reading.count == null ? "—" : String(reading.count)], ["Paiement moyen", reading.average == null ? "—" : formatMoney(reading.average, currency)], ["Dernier paiement", reading.lastDate ? `${formatDate(reading.lastDate)} · ${formatMoney(reading.lastAmount, currency)}` : "—"]]; return lines.map(([label, value]) => <tr key={label}><th scope="row" colSpan={2}>{label}</th><td className="num" colSpan={2}>{value}</td></tr>); })()}</tfoot></table></div>
+        </>}
+        {detailRows(a.analysis_details, "purchase_history").length > 0 && <>
+          <p className="subsection-label">Historique des achats{(detailText("purchase_period_start") || detailText("purchase_period_end")) ? ` · ${formatDate(detailText("purchase_period_start"))} – ${formatDate(detailText("purchase_period_end"))}` : ""}</p>
+          <div className="table-scroll"><table className="table"><thead><tr><th scope="col">Date</th><th scope="col">Produit</th><th scope="col">Fournisseur</th><th scope="col">Quantité</th><th scope="col">Unité</th><th scope="col">Prix unitaire</th><th scope="col">Montant</th></tr></thead><tbody>{detailRows(a.analysis_details, "purchase_history").map((row, index) => { const amount = purchaseLineAmount(row); return <tr key={index}><td>{row.date ? formatDate(row.date) : "—"}</td><td>{row.product || "—"}</td><td>{row.supplier || "—"}</td><td>{row.quantity ? Number(row.quantity).toLocaleString("fr-FR") : "—"}</td><td>{row.unit || "—"}</td><td>{moneyCell(numeric(row.unit_price), currency)}</td><td>{moneyCell(amount, currency)}</td></tr>; })}</tbody><tfoot>{(() => { const reading = purchaseHistoryReading(detailRows(a.analysis_details, "purchase_history"), detailText("purchase_period_start"), detailText("purchase_period_end")); const lines = [["Achats de la période", reading.periodTotal == null ? "—" : formatMoney(reading.periodTotal, currency)], ["Nombre d'achats", reading.count == null ? "—" : String(reading.count)], ["Achat moyen", reading.average == null ? "—" : formatMoney(reading.average, currency)], ["Approvisionnements par mois", reading.perMonth ?? "—"], ["Dernier achat de la période", reading.periodLastDate ? `${formatDate(reading.periodLastDate)} · ${formatMoney(reading.periodLastAmount, currency)}` : "—"], ["Nombre de fournisseurs", reading.supplierCount == null ? "—" : String(reading.supplierCount)], ["Principal fournisseur", reading.mainSupplier ? `${reading.mainSupplier}${reading.mainShare == null ? "" : ` · ${reading.mainShare} %`}` : "—"]]; return lines.map(([label, value]) => <tr key={label}><th scope="row" colSpan={6}>{label}</th><td className="num">{value}</td></tr>); })()}</tfoot></table></div>
+        </>}
+        <Note label="Commentaire sur les achats" text={detailText("purchase_comment")} />
         {n("tpe_margin_rate_pct") != null && <p className="muted small">Taux de marge issu des fiches produits : {n("tpe_margin_rate_pct")} %. Taux de coût : {n("tpe_cost_rate_pct") ?? "—"} %.</p>}
         {n("tpe_tmc_total") != null && <div className="metric-grid">{card("TMC total des institutions", "tpe_tmc_total")}{card("Soldes bancaires détaillés", "tpe_bank_balance_total")}{card("Moyenne des TMC mensuels", "tpe_average_tmc")}</div>}
       </>}
@@ -655,7 +873,7 @@ export function FinancialAnalysisReadout({ analysis: a, currency, part }: { anal
       {!!rows.length && <p className="muted small">Mois à flux négatif : {n("forecast_negative_flow_months") ?? "—"}. Mois à trésorerie de clôture négative : {n("forecast_cash_deficit_months") ?? "Non calculable"}.</p>}
       {warnings.map((warning) => <p className="form-error" role="status" key={warning}>{warning}</p>)}
     </div>
-    <div className="analysis-block">
+    <FormulaDisclosure>
       <h4 className="subsection-title">Formules, seuils et interprétation</h4>
       <p className="muted small">« — » indique une donnée absente, une base non positive ou un calcul non applicable, jamais un zéro implicite. Les seuils sont ceux du dossier.</p>
       <div className="table-scroll"><table className="table"><thead><tr>{["Indicateur", "Valeur", "Base de calcul", "Seuil", "Lecture"].map((label) => <th scope="col" key={label}>{label}</th>)}</tr></thead><tbody>{specs.map((spec) => {
@@ -665,8 +883,8 @@ export function FinancialAnalysisReadout({ analysis: a, currency, part }: { anal
         return <tr key={spec.key}><th scope="row">{spec.label}</th><td>{spec.unit ? value == null ? "—" : `${value.toLocaleString("fr-FR", { maximumFractionDigits: 2 })} ${spec.unit}` : formatMoney(value, currency)}</td><td>{spec.formula}</td><td>{threshold == null ? "Non défini" : `${spec.min ? "≥" : "≤"} ${threshold.toLocaleString("fr-FR")} ${spec.unit || currency}`}</td><td>{status === false ? "Non conforme" : status === true ? "Conforme" : value == null ? "Non calculable" : "Informatif"}</td></tr>;
       })}</tbody></table></div>
       <p className="muted small">Sous stress, les charges restent présentes : baisse du CA ou des revenus de {a.thresholds.stress_pct} %, hausse supplémentaire des achats {String(a.analysis_details?.purchase_stress_pct || 0)} %{corp ? ` et décalage clients de ${a.analysis_details?.receivable_delay_days || 0} jours` : ""}.</p>
-      {!corp && <p>Reste disponible mensuel sous stress : <strong>{money("stress_residual")}</strong>.</p>}
-    </div>
+    </FormulaDisclosure>
+    {!corp && <p>Reste disponible mensuel sous stress : <strong>{money("stress_residual")}</strong>.</p>}
     {a.recorded_indicators && <div className="analysis-block">
       <h4 className="subsection-title">Comparaison avec les derniers indicateurs enregistrés</h4>
       <p className="muted small">Enregistrement du {formatDate(a.recorded_indicators.updated_at)}. La consultation affiche les calculs courants sans réécrire cet historique.</p>

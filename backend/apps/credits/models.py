@@ -94,6 +94,36 @@ class HousingStatus(models.TextChoices):
     HOSTED = "HOSTED", "Hébergé"
 
 
+class ActivityPremises(models.TextChoices):
+    OWNER = "OWNER", "Propriétaire"
+    TENANT = "TENANT", "Locataire"
+    HOSTED = "HOSTED", "Hébergé"
+    STALL = "STALL", "Étal ou marché"
+    ITINERANT = "ITINERANT", "Ambulant, sans local fixe"
+    FAMILY_LAND = "FAMILY_LAND", "Terre ou exploitation familiale"
+
+
+class ActivityNature(models.TextChoices):
+    TRADE = "TRADE", "Commerce"
+    CRAFT = "CRAFT", "Transformation ou artisanat"
+    SERVICE = "SERVICE", "Service"
+    AGRICULTURE = "AGRICULTURE", "Agriculture ou élevage"
+    OTHER = "OTHER", "Autre"
+
+
+class ActivityOperation(models.TextChoices):
+    SOLO = "SOLO", "Seul"
+    FAMILY = "FAMILY", "Avec une aide familiale"
+    EMPLOYEES = "EMPLOYEES", "Avec des salariés"
+
+
+class ActivityAuthorization(models.TextChoices):
+    NONE = "NONE", "Aucune"
+    PATENT = "PATENT", "Patente"
+    STALL_RIGHT = "STALL_RIGHT", "Droit de place"
+    OTHER = "OTHER", "Autre"
+
+
 class RiskClass(models.TextChoices):
     A = "A", "A — Excellent"
     B = "B", "B — Bon"
@@ -391,9 +421,37 @@ class CreditApplication(TenantScopedModel, AuthoredModel):
     activity_sector = models.CharField("secteur de l'activité", max_length=150, blank=True)
     activity_premises_status = models.CharField(
         "statut du local d'activité", max_length=15,
-        choices=HousingStatus.choices, blank=True,
+        choices=ActivityPremises.choices, blank=True,
     )
     activity_ifu = models.CharField("IFU de l'activité", max_length=50, blank=True)
+    activity_rccm = models.CharField("RCCM de l'activité", max_length=50, blank=True)
+    activity_ninea = models.CharField("NINEA de l'activité", max_length=50, blank=True)
+    activity_ifu_scan = models.FileField(
+        "fichier IFU", upload_to=credit_file_path, max_length=255, blank=True,
+    )
+    activity_rccm_scan = models.FileField(
+        "fichier RCCM", upload_to=credit_file_path, max_length=255, blank=True,
+    )
+    activity_ninea_scan = models.FileField(
+        "fichier NINEA", upload_to=credit_file_path, max_length=255, blank=True,
+    )
+    activity_nature = models.CharField(
+        "nature de l'activité", max_length=20,
+        choices=ActivityNature.choices, blank=True,
+    )
+    activity_offer = models.CharField("offre principale", max_length=255, blank=True)
+    activity_operation = models.CharField(
+        "mode d'exploitation", max_length=20,
+        choices=ActivityOperation.choices, blank=True,
+    )
+    activity_supply = models.CharField("approvisionnement", max_length=255, blank=True)
+    activity_authorization = models.CharField(
+        "autorisation d'exercer", max_length=20,
+        choices=ActivityAuthorization.choices, blank=True,
+    )
+    activity_authorization_ref = models.CharField(
+        "référence de l'autorisation", max_length=80, blank=True,
+    )
 
     # ------------------------------------------------------------------ #
     # Relation bancaire
@@ -590,6 +648,14 @@ class CreditApplication(TenantScopedModel, AuthoredModel):
             self.financed_quota = min(quota, Decimal("9999.99"))
         else:
             self.financed_quota = None
+        if self.tax_regime == "INFORMAL":
+            self.activity_ifu = ""
+            self.activity_rccm = ""
+            self.activity_ninea = ""
+            for name in ("activity_ifu_scan", "activity_rccm_scan", "activity_ninea_scan"):
+                current = getattr(self, name)
+                if current:
+                    current.delete(save=False)
         super().save(*args, **kwargs)
 
 
@@ -730,7 +796,7 @@ DEFAULT_THRESHOLDS = {
     "stress_pct": Decimal("20"),
     "transferable_quota_fraction": Decimal("33.33"),
     "informal_income_weight": Decimal("70"),
-    # Haircuts filiale (% retranché de la valeur brute retenue).
+    # Décotes filiale (% retranché de la valeur brute retenue).
     "haircut_mortgage": Decimal("0"),
     "haircut_vehicle": Decimal("30"),
     "haircut_jewelry": Decimal("20"),
@@ -792,27 +858,27 @@ class AnalysisThreshold(TenantScopedModel):
         default=DEFAULT_THRESHOLDS["informal_income_weight"],
     )
     haircut_mortgage = models.DecimalField(
-        "haircut hypothèque (%)", max_digits=6, decimal_places=2,
+        "décote hypothèque (%)", max_digits=6, decimal_places=2,
         default=DEFAULT_THRESHOLDS["haircut_mortgage"],
     )
     haircut_vehicle = models.DecimalField(
-        "haircut véhicule (%)", max_digits=6, decimal_places=2,
+        "décote véhicule (%)", max_digits=6, decimal_places=2,
         default=DEFAULT_THRESHOLDS["haircut_vehicle"],
     )
     haircut_jewelry = models.DecimalField(
-        "haircut bijoux / objets (%)", max_digits=6, decimal_places=2,
+        "décote bijoux / objets (%)", max_digits=6, decimal_places=2,
         default=DEFAULT_THRESHOLDS["haircut_jewelry"],
     )
     haircut_financial_deposit = models.DecimalField(
-        "haircut DAT / épargne (%)", max_digits=6, decimal_places=2,
+        "décote DAT / épargne (%)", max_digits=6, decimal_places=2,
         default=DEFAULT_THRESHOLDS["haircut_financial_deposit"],
     )
     haircut_financial_security = models.DecimalField(
-        "haircut titres (%)", max_digits=6, decimal_places=2,
+        "décote titres (%)", max_digits=6, decimal_places=2,
         default=DEFAULT_THRESHOLDS["haircut_financial_security"],
     )
     haircut_other = models.DecimalField(
-        "haircut autres garanties (%)", max_digits=6, decimal_places=2,
+        "décote autres garanties (%)", max_digits=6, decimal_places=2,
         default=DEFAULT_THRESHOLDS["haircut_other"],
     )
 
@@ -1483,7 +1549,7 @@ class FinancialAnalysis(TenantScopedModel, AuthoredModel):
         blank=True,
     )
     exclusion_list_ok = models.BooleanField(
-        "activité hors liste d'exclusion", default=True
+        "activité hors liste d'exclusion", default=False
     )
     env_permit_required = models.BooleanField(
         "autorisation environnementale requise", default=False
@@ -1501,7 +1567,7 @@ class FinancialAnalysis(TenantScopedModel, AuthoredModel):
         "étude d'impact environnemental réalisée", default=False
     )
     es_regulatory_compliance = models.BooleanField(
-        "conformité réglementaire E&S", default=True
+        "conformité réglementaire E&S", default=False
     )
     # Impacts environnementaux
     waste_management = models.CharField(
@@ -1705,8 +1771,9 @@ class FinancialAnalysis(TenantScopedModel, AuthoredModel):
             + _dec(self.other_income) + _dec(self.variable_income)
             + _dec(self.pension_income)
         )
-        from .analysis_details import extra_line_total
+        from .analysis_details import extra_activity_net, extra_line_total
         base += extra_line_total(self.analysis_details, "extra_income")
+        base += extra_activity_net(self.analysis_details)
         if self.has_side_activity:
             base += _dec(self.activity_turnover) - _dec(self.activity_expenses)
         return base

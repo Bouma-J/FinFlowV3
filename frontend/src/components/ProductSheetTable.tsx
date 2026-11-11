@@ -4,10 +4,11 @@ import { formatMoney } from "@/components/ui";
 
 type ProductRow = Record<string, string>;
 
-export function ProductSheetTable({ value, onChange, currency }: {
+export function ProductSheetTable({ value, onChange, currency, showIntro = true }: {
   value: AnalysisDetails;
   onChange: (next: AnalysisDetails) => void;
   currency: string;
+  showIntro?: boolean;
 }) {
   const rows: ProductRow[] = Array.isArray(value.products) ? value.products : [];
   const manufactures = rows.some((row) => productNature(row) === "MANUFACTURED")
@@ -21,10 +22,12 @@ export function ProductSheetTable({ value, onChange, currency }: {
   }
 
   return <div className="product-sheet">
-    <p className="muted small">
-      Chaque ligne est revendue, fabriquée ou un service. Une case vide reste vide.
-      Les salaires, le loyer, le transport et les autres charges de la période restent dans les charges : ils ne se ressaisissent pas ici.
-    </p>
+    {showIntro && (
+      <p className="muted small">
+        Chaque ligne est revendue, fabriquée ou un service. Une case vide reste vide.
+        Les salaires, le loyer, le transport et les autres charges de la période restent dans les charges : ils ne se ressaisissent pas ici.
+      </p>
+    )}
     <div className="product-line-list">
       {rows.length === 0 && <p className="muted">Aucune ligne. Ajoutez un article, un produit fabriqué ou un service.</p>}
       {rows.map((row, index) => {

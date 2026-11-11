@@ -71,10 +71,13 @@ def resolve_application_cbs(application, *, connector=None):
         elif live:
             error("financing_object", "Sélectionnez l'objet de financement CBS exact ; aucune correspondance unique n'est disponible.")
     financing = {"id": str(obj.pk), "code": obj.code, "label": obj.label, "cbs_code": obj.cbs_code.strip(), "purpose_type": obj.purpose_type} if obj else {}
+    fallback_cbs = ""
     if not financing and not live and not selected:
-        value = resolve_financing_object_cbs(tid, application.purpose_type, purpose_map=disb.get("purpose_map"), default=defaults.get("idObjetFinancement", ""))
-        if value:
-            financing = {"code": application.purpose_type, "label": application.purpose_type, "cbs_code": value}
+        fallback_cbs = resolve_financing_object_cbs(
+            tid, application.purpose_type,
+            purpose_map=disb.get("purpose_map"),
+            default=defaults.get("idObjetFinancement", ""),
+        )
 
     product = getattr(application, "product", None)
     if product and (str(product.tenant_id) != str(tid) or not product.is_active):
@@ -147,7 +150,7 @@ def resolve_application_cbs(application, *, connector=None):
         error("client.cbs_client_id", "Renseignez un identifiant adhérent ou compte CBS sur le client.")
     values = {
         "idPeriodicite": period.get("cbs_code", ""), "codeDevise": curr.get("cbs_code", ""),
-        "idObjetFinancement": financing.get("cbs_code", ""),
+        "idObjetFinancement": financing.get("cbs_code") or fallback_cbs,
         "idProduitCrd": products["cbs_credit_product"].get("cbs_code", ""),
         "idProduitRemb": products["cbs_repayment_product"].get("cbs_code", ""),
         "idPointService": point, "idGestionnaire": manager,

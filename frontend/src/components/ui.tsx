@@ -244,6 +244,11 @@ export function formatMoney(value: string | number | null, currency = "XOF") {
 
 export function formatDate(value: string | null) {
   if (!value) return "—";
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value);
+  if (match) {
+    const [, year, month, day] = match;
+    return new Date(Number(year), Number(month) - 1, Number(day)).toLocaleDateString("fr-FR");
+  }
   return new Date(value).toLocaleString("fr-FR", {
     dateStyle: "short",
     timeStyle: "short",

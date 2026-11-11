@@ -455,7 +455,7 @@ function scrollToSection(id: string) {
 
 function pct(value: string | number | null): string {
   if (value === null || value === undefined || value === "") return "—";
-  return `${Number(value).toFixed(1)} %`;
+  return `${Number(value).toFixed(2)} %`;
 }
 
 function mNum(
@@ -467,7 +467,7 @@ function mNum(
 }
 
 function fPct(v: number | null): string {
-  return v === null ? "—" : `${v.toFixed(1)} %`;
+  return v === null ? "—" : `${v.toFixed(2)} %`;
 }
 function fX(v: number | null): string {
   return v === null ? "—" : `${v.toFixed(2)}×`;
@@ -741,10 +741,12 @@ function AnalysisDetail({
   analysis,
   currency,
   appId,
+  paymentCycle,
 }: {
   analysis: FinancialAnalysis;
   currency: string;
   appId: string;
+  paymentCycle?: { client: number | null; supplier: number | null };
 }) {
   const cur = currency;
   const isCorp = analysis.client_type === "CORPORATE";
@@ -823,7 +825,7 @@ function AnalysisDetail({
         {` · enregistrée le ${formatDate(analysis.created_at)}`}
       </p>
 
-      <FinancialAnalysisReadout analysis={analysis} currency={cur} part="topics" />
+      <FinancialAnalysisReadout analysis={analysis} currency={cur} part="topics" paymentCycle={paymentCycle} />
 
       {hasSector && sectionAllowed("fa-sector", path) && (
         <SubSection icon={Factory} title="Analyse sectorielle">
@@ -1020,7 +1022,7 @@ function AnalysisDetail({
 
       <section className="analysis-chapter">
         <h3 className="analysis-chapter-title">Indicateurs et ratios</h3>
-        <FinancialAnalysisReadout analysis={analysis} currency={cur} part="indicators" />
+        <FinancialAnalysisReadout analysis={analysis} currency={cur} part="indicators" paymentCycle={paymentCycle} />
         {analysis.score_breakdown && analysis.score_breakdown.total !== null && analysis.score_breakdown.total !== undefined && (
           <ScorePanel breakdown={analysis.score_breakdown} />
         )}
@@ -1061,17 +1063,19 @@ function AnalysisDetail({
             ) : (
               <>
                 <Metric label="Taux d'endettement global" value={fPct(mNum(m, "debt_ratio"))} tone={boolTone(flags?.debt_ratio_ok)} />
-                <Metric label="Revenu pondéré" value={formatMoney(mNum(m, "weighted_income"), cur)} />
-                <Metric label="Taux d'effort (revenu pondéré)" value={fPct(mNum(m, "debt_ratio_weighted"))} />
-                <Metric label="Reste à vivre après crédit" value={formatMoney(mNum(m, "residual_after_loan"), cur)} />
                 <Metric label="Reste à vivre / personne" value={formatMoney(mNum(m, "disposable_per_capita"), cur)} tone={boolTone(flags?.living_wage_ok)} />
                 {Number(analysis.net_salary) > 0 && (
                   <Metric label="Quotité cessible disponible" value={formatMoney(mNum(m, "transferable_quota_available"), cur)} tone={boolTone(flags?.quota_ok)} />
                 )}
+                {mNum(m, "turnover_growth") != null && (
+                  <Metric label="Croissance du CA d'activité" value={fPct(mNum(m, "turnover_growth"))} />
+                )}
+                {mNum(m, "result_growth") != null && (
+                  <Metric label="Croissance du résultat d'activité" value={fPct(mNum(m, "result_growth"))} />
+                )}
               </>
             )}
             <Metric label="Couverture par garanties" value={fPct(mNum(m, "guarantee_coverage"))} tone={boolTone(flags?.guarantee_ok)} />
-            <Metric label="Marge de sécurité" value={formatMoney(mNum(m, "safety_margin"), cur)} />
           </div>
         </div>
         <SubSection icon={ShieldAlert} title="Stress test et sensibilité">
@@ -1083,7 +1087,7 @@ function AnalysisDetail({
             )}
           </div>
           <p className="muted small" style={{ marginTop: 8 }}>
-            Scénario : baisse de {analysis.thresholds?.stress_pct ?? 20} % des {isCorp ? "ventes" : isGroupement ? "recettes collectives" : "revenus / ventes d'activité"}, charges maintenues.
+            Scénario : baisse de {analysis.thresholds?.stress_pct ?? 20} % des {isCorp ? "ventes" : isGroupement ? "recettes collectives" : "revenus / ventes d'activité"}, charges maintenues{Number(analysis.analysis_details?.purchase_stress_pct) > 0 ? `, achats +${analysis.analysis_details?.purchase_stress_pct} %` : ""}.
           </p>
           {typeof analysis.analysis_details?.stress_assumptions === "string" && analysis.analysis_details.stress_assumptions && (
             <div className="analysis-note">
@@ -1105,6 +1109,7 @@ function FinancialAnalysesSection({
   loading,
   error,
   onRetry,
+  paymentCycle,
 }: {
   analyses: FinancialAnalysis[];
   currency: string;
@@ -1113,6 +1118,7 @@ function FinancialAnalysesSection({
   loading: boolean;
   error: boolean;
   onRetry: () => void;
+  paymentCycle?: { client: number | null; supplier: number | null };
 }) {
   return (
     <ViewSection
@@ -1146,6 +1152,7 @@ function FinancialAnalysesSection({
               analysis={a}
               currency={currency}
               appId={appId}
+              paymentCycle={paymentCycle}
             />
           ))}
         </div>
@@ -2233,7 +2240,7 @@ export function CreditApplicationDetailPage() {
 
   const schedule = computeSchedulePreview(app);
 
-  const showActivity = !!(
+  const showActivity = app.client_type !== "INDIVIDUAL" && !!(
     app.activity_start_date ||
     app.exact_address ||
     app.clientele ||
@@ -2920,7 +2927,7 @@ export function CreditApplicationDetailPage() {
               term="Épargne obligatoire"
               value={
                 app.mandatory_savings_rate
-                  ? `${app.mandatory_savings_rate} % (hors ratios institution)`
+                  ? `${app.mandatory_savings_rate} % du capital à chaque échéance, hors ratios`
                   : undefined
               }
             />
@@ -3136,6 +3143,7 @@ export function CreditApplicationDetailPage() {
             loading={financialLoading}
             error={financialError}
             onRetry={() => void refetchFinancials()}
+            paymentCycle={app.client_type === "INDIVIDUAL" ? { client: app.avg_client_payment_days, supplier: app.avg_supplier_payment_days } : undefined}
           />
 
           {hasPerm(user, "credits.view_creditexposureobservation") && <ViewSection
@@ -3525,13 +3533,43 @@ export function CreditApplicationDetailPage() {
               <Row term="Domiciliation du salaire" value={app.salary_domiciliation ? "Oui" : undefined} />
               <Row term="Activité" value={app.activity_name} />
               <Row term="Métier" value={app.activity_trade} />
+              <Row term="Nature de l'activité" value={app.activity_nature && lbl(CREDIT_LABELS.activity_nature, app.activity_nature)} />
+              <Row term="Offre principale" value={app.activity_offer} />
               <Row term="Secteur de l'activité" value={app.activity_sector} />
+              <Row term="Mode d'exploitation" value={app.activity_operation && lbl(CREDIT_LABELS.activity_operation, app.activity_operation)} />
+              <Row term="Approvisionnement" value={app.activity_supply} />
+              <Row term="Autorisation d'exercer" value={app.activity_authorization && lbl(CREDIT_LABELS.activity_authorization, app.activity_authorization)} />
+              <Row term="Référence de l'autorisation" value={app.activity_authorization_ref} />
               <Row term="Début de l'activité" value={app.activity_start_date && formatDate(app.activity_start_date)} />
               <Row term="Régime fiscal" value={app.tax_regime && lbl(CREDIT_LABELS.tax_regime, app.tax_regime)} />
               <Row term="Adresse de l'activité" value={app.exact_address} />
-              <Row term="Local de l'activité" value={app.activity_premises_status && lbl(CREDIT_LABELS.housing_status, app.activity_premises_status)} />
-              <Row term="IFU de l'activité" value={app.activity_ifu} />
+              <Row term="Local de l'activité" value={app.activity_premises_status && lbl(CREDIT_LABELS.activity_premises_status, app.activity_premises_status)} />
+              <Row term="IFU de l'activité" value={app.tax_regime === "INFORMAL" ? undefined : app.activity_ifu} />
+              <Row term="RCCM de l'activité" value={app.tax_regime === "INFORMAL" ? undefined : app.activity_rccm} />
+              <Row term="NINEA" value={app.tax_regime === "INFORMAL" ? undefined : app.activity_ninea} />
             </dl>
+            {app.tax_regime !== "INFORMAL" && (app.activity_ifu_scan || app.activity_rccm_scan || app.activity_ninea_scan) && (
+              <div className="doc-row">
+                {app.activity_ifu_scan && <DocLink label="Fichier IFU" url={app.activity_ifu_scan} />}
+                {app.activity_rccm_scan && <DocLink label="Fichier RCCM" url={app.activity_rccm_scan} />}
+                {app.activity_ninea_scan && <DocLink label="Fichier NINEA" url={app.activity_ninea_scan} />}
+              </div>
+            )}
+            <dl className="def-list two">
+              <Row term="Clientèle" value={app.clientele} />
+              <Row term="Zone de chalandise" value={app.catchment_area && lbl(CREDIT_LABELS.catchment_area, app.catchment_area)} />
+            </dl>
+            {app.client_type === "INDIVIDUAL" && (app.stock_photos?.length ?? 0) > 0 && (
+              <SubSection icon={Store} title="Photos du stock">
+                <div className="photo-gallery">
+                  {app.stock_photos!.map((p) => (
+                    <a key={p.id} href={p.image} target="_blank" rel="noreferrer">
+                      <img src={p.image} alt={p.caption || "Photo du stock"} />
+                    </a>
+                  ))}
+                </div>
+              </SubSection>
+            )}
           </ViewSection>
           )}
 
@@ -3713,7 +3751,7 @@ export function CreditApplicationDetailPage() {
           )}
 
           <SubSection icon={FileText} title="Dossier de prêt">
-            {app.request_letter_scan || (app.stock_photos?.length ?? 0) > 0 ? (
+            {app.request_letter_scan || (app.stock_photos?.length ?? 0) > 0 || (app.tax_regime !== "INFORMAL" && (app.activity_ifu_scan || app.activity_rccm_scan || app.activity_ninea_scan)) ? (
               <>
                 <div className="doc-row">
                   {app.request_letter_scan && (
@@ -3722,6 +3760,9 @@ export function CreditApplicationDetailPage() {
                       url={app.request_letter_scan}
                     />
                   )}
+                  {app.tax_regime !== "INFORMAL" && app.activity_ifu_scan && <DocLink label="Fichier IFU" url={app.activity_ifu_scan} />}
+                  {app.tax_regime !== "INFORMAL" && app.activity_rccm_scan && <DocLink label="Fichier RCCM" url={app.activity_rccm_scan} />}
+                  {app.tax_regime !== "INFORMAL" && app.activity_ninea_scan && <DocLink label="Fichier NINEA" url={app.activity_ninea_scan} />}
                 </div>
                 {app.stock_photos && app.stock_photos.length > 0 && (
                   <div className="photo-gallery" style={{ marginTop: 10 }}>

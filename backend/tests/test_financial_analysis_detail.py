@@ -7,7 +7,13 @@ from django.core.files.uploadedfile import SimpleUploadedFile
 from rest_framework.exceptions import ValidationError
 
 from apps.common.tenancy import tenant_context
-from apps.credits.analysis_details import apply_reference_statement, validate_details, detail_metrics
+from apps.credits.analysis_details import (
+    apply_reference_statement, validate_details, detail_metrics,
+    purchase_history_indicators, purchase_period_total, purchase_monthly_total, supplier_payment_indicators,
+    sales_monthly_total, collection_monthly_total, sales_period_indicators, collection_period_indicators,
+    operating_charges_excluding_purchases, activity_expenses_with_purchases,
+    activity_balance_reading, household_patrimony_total, net_patrimony,
+)
 from apps.credits.models import CreditApplication, FinancialAnalysis, AnalysisThreshold, FinancialDocument
 from apps.credits.analytics import compute_metrics
 from apps.credits.serializers import CreditApplicationSerializer, FinancialAnalysisSerializer
@@ -57,6 +63,55 @@ def test_monthly_capacity_and_weighted_income(tenant_a, client_a, product_a):
         analysis.save(update_fields=["food_expense"])
         analysis.refresh_from_db()
         assert analysis.repayment_capacity == Decimal("70000")
+
+
+@pytest.mark.django_db
+def test_formal_activity_is_retained_in_full_and_extra_income_is_weighted(tenant_a, client_a, product_a):
+    with tenant_context(tenant_a.id):
+        app = CreditApplication.objects.create(
+            tenant=tenant_a, client=client_a, product=product_a,
+            reference="FA-MIX-WEIGHT", amount_requested=100000, duration_months=12,
+        )
+        analysis = FinancialAnalysis.objects.create(
+            tenant=tenant_a, application=app, reference_period="MONTHLY",
+            individual_profile="MIXTE", has_side_activity=True,
+            salary_income=100000, activity_turnover=100000, activity_expenses=0,
+            informal_income_weight=70, turnover_prev=80000, net_result_prev=50000,
+            analysis_details={"extra_income": [{"label": "Bourse", "amount": "10000"}]},
+        )
+        metrics = compute_metrics(analysis, AnalysisThreshold.for_tenant(tenant_a.id))
+        assert metrics["weighted_income"] == Decimal("177000.00")
+        assert metrics["turnover_growth"] == Decimal("25.00")
+        assert metrics["result_growth"] == Decimal("100.00")
+        analysis.activity_is_formal = True
+        analysis.save(update_fields=["activity_is_formal"])
+        retained = compute_metrics(analysis, AnalysisThreshold.for_tenant(tenant_a.id))
+        assert retained["weighted_income"] == Decimal("207000.00")
+        assert retained["debt_ratio"] != metrics["debt_ratio"]
+
+
+@pytest.mark.django_db
+def test_campaign_replaces_the_ordinary_activity_and_keeps_another(tenant_a, client_a, product_a):
+    with tenant_context(tenant_a.id):
+        app = CreditApplication.objects.create(
+            tenant=tenant_a, client=client_a, product=product_a,
+            reference="FA-CAMP", amount_requested=100000, duration_months=12,
+        )
+        analysis = FinancialAnalysis.objects.create(
+            tenant=tenant_a, application=app, reference_period="MONTHLY",
+            individual_profile="INDEPENDANT", has_side_activity=True,
+            activity_turnover=0, informal_income_weight=100,
+            analysis_details={
+                "campaign_open": "yes",
+                "campaign_revenue": "120000",
+                "campaign_charges": "0",
+                "extra_activities": [{"label": "Boutique", "turnover": "50000", "expenses": "20000"}],
+            },
+        )
+        metrics = compute_metrics(analysis, AnalysisThreshold.for_tenant(tenant_a.id), recalculate_installment=True)
+        assert metrics["weighted_income"] == Decimal("40000.00")
+        assert metrics["campaign_monthly_surplus"] == Decimal("10000.00")
+        assert metrics["debt_ratio"] == (metrics["installment"] / Decimal("40000") * Decimal("100")).quantize(Decimal("0.01"))
 
 
 def test_long_term_debt_is_part_of_total():
@@ -116,6 +171,293 @@ def test_tpe_reconstitution_retains_observed_days_and_cash_gap():
     assert metrics["tpe_safety_provision"] == Decimal("30000.00")
     assert metrics["tpe_safety_available"] == Decimal("70000.00")
     assert metrics["tpe_safety_ok"] is True
+
+
+def test_several_purchase_methods_keep_one_amount_each():
+    details = validate_details({
+        "purchase_methods": [{"method": "INVOICES"}, {"method": "LEDGER"}, {"method": "OTHER"}],
+        "purchase_average": "10000",
+        "purchase_frequency": "2",
+        "purchase_comment": "Saison sèche, prix du marché de gros.",
+        "suppliers": [
+            {"name": "Grossiste Ada", "place": "Adjamé", "product": "Riz", "share": "60", "amount": "400000", "payment_mode": "CREDIT", "delay_days": "7"},
+            {"name": "", "place": "", "product": "", "share": "", "amount": "", "payment_mode": "", "delay_days": ""},
+        ],
+    })
+    assert details["purchase_comment"] == "Saison sèche, prix du marché de gros."
+    assert len(details["suppliers"]) == 1
+    analysis = FinancialAnalysis(
+        client_type="INDIVIDUAL", reference_period="MONTHLY",
+        activity_purchases=Decimal("500000"), analysis_details=details,
+    )
+    metrics = detail_metrics(analysis)
+    assert metrics["tpe_purchases_invoices"] == Decimal("20000.00")
+    assert metrics["tpe_purchases_ledger"] == Decimal("20000.00")
+    assert metrics["tpe_monthly_purchases"] is None
+    assert "tpe_purchases_cost_rate" not in metrics
+    assert analysis.activity_purchases == Decimal("500000")
+    single = validate_details({
+        "purchase_methods": [{"method": "INVOICES"}],
+        "purchase_average": "10000",
+        "purchase_frequency": "2",
+    })
+    single_metrics = detail_metrics(FinancialAnalysis(
+        client_type="INDIVIDUAL", reference_period="MONTHLY",
+        activity_purchases=Decimal("20000"), analysis_details=single,
+    ))
+    assert single_metrics["tpe_monthly_purchases"] == Decimal("20000.00")
+    assert "tpe_purchases_invoices" not in single_metrics
+    with pytest.raises(ValidationError):
+        validate_details({"purchase_methods": [{"method": "INVOICES"}, {"method": "INVOICES"}]})
+    with pytest.raises(ValidationError):
+        validate_details({"suppliers": [{"share": "101", "payment_mode": "CASH"}]})
+    with pytest.raises(ValidationError):
+        validate_details({"suppliers": [{"payment_mode": "WIRE", "delay_days": "1.5"}]})
+
+
+def test_analysis_period_drives_sales_collections_and_monthly_purchases():
+    details = validate_details({
+        "analysis_period_start": "2026-10-01",
+        "analysis_period_end": "2026-10-31",
+        "analysis_period_mode": "DAY",
+        "sales_period_mode": "WEEK",
+        "collection_period_mode": "MONTH",
+        "sales_periods": [
+            {"date": "2026-10-02", "amount": "10000"},
+            {"date": "2026-10-03", "amount": "0"},
+            {"date": "2026-11-01", "amount": "50000"},
+        ],
+        "purchase_history": [
+            {"date": "2026-10-05", "product": "Riz", "supplier": "Ada", "quantity": "10", "unit": "kg", "unit_price": "400"},
+            {"date": "2026-10-18", "product": "Tomate", "supplier": "Marché", "quantity": "4", "unit": "kg", "unit_price": "250"},
+            {"date": "2026-10-18", "product": "Oignon", "supplier": "Marché", "quantity": "2", "unit": "kg", "unit_price": "300"},
+            {"date": "2026-09-20", "product": "Huile", "supplier": "Ada", "quantity": "2", "unit": "bidon", "unit_price": "5000"},
+        ],
+    })
+    assert details["sales_period_mode"] == "DAY"
+    assert details["collection_period_mode"] == "DAY"
+    assert details["purchase_period_start"] == "2026-10-01"
+    assert details["purchase_period_end"] == "2026-10-31"
+    assert sales_period_indicators(details)["count"] == 2
+    assert sales_period_indicators(details)["monthly"] == Decimal("150000.00")
+    assert purchase_period_total(details) == Decimal("5600.00")
+    assert purchase_monthly_total(details) == Decimal("5419.35")
+    assert purchase_monthly_total({"purchase_period_start": "2026-10-01", "purchase_period_end": "2026-10-31"}) is None
+    with pytest.raises(ValidationError):
+        validate_details({"analysis_period_start": "2026-10-31", "analysis_period_end": "2026-10-01"})
+
+
+def test_purchase_history_sets_period_total_and_last_purchase():
+    details = validate_details({
+        "purchase_period_start": "2026-10-01",
+        "purchase_period_end": "2026-10-31",
+        "purchase_history": [
+            {"date": "2026-09-20", "product": "Huile", "supplier": "Ada", "quantity": "2", "unit": "bidon", "unit_price": "5000"},
+            {"date": "2026-10-05", "product": "Riz", "supplier": "Ada", "quantity": "10", "unit": "kg", "unit_price": "400"},
+            {"date": "2026-10-18", "product": "Tomate", "supplier": "Marché", "quantity": "4", "unit": "kg", "unit_price": "250"},
+            {"date": "2026-10-18", "product": "Oignon", "supplier": "Marché", "quantity": "2", "unit": "kg", "unit_price": "300"},
+            {"date": "", "product": "", "supplier": "", "quantity": "", "unit": "", "unit_price": ""},
+            {"date": "2026-10-12", "product": "Sel", "supplier": "Ada", "quantity": "", "unit": "kg", "unit_price": "100"},
+        ],
+        "last_purchase_date": "2026-01-01",
+        "last_purchase_amount": "1",
+    })
+    assert len(details["purchase_history"]) == 5
+    assert details["last_purchase_date"] == "2026-10-18"
+    assert Decimal(details["last_purchase_amount"]) == Decimal("1600.00")
+    assert purchase_period_total(details) == Decimal("5600.00")
+    indicators = purchase_history_indicators(details)
+    assert indicators["count"] == 3
+    assert indicators["average"] == Decimal("1866.67")
+    assert indicators["per_month"] == Decimal("2.90")
+    assert indicators["last_date"] == "2026-10-18"
+    assert indicators["last_amount"] == Decimal("1600.00")
+    assert indicators["supplier_count"] == 2
+    assert indicators["main_supplier"] == "Ada"
+    assert indicators["main_share"] == Decimal("71.43")
+    assert purchase_period_total({"purchase_method": "INVOICES"}) is None
+    with pytest.raises(ValidationError):
+        validate_details({"purchase_period_start": "2026-10-31", "purchase_period_end": "2026-10-01"})
+
+
+def test_supplier_payments_summarize_complete_lines_without_touching_debt():
+    details = validate_details({
+        "observed_supplier_payment_days": "7",
+        "supplier_payments": [
+            {"date": "2026-10-05", "supplier": "Ada", "amount": "4000", "payment_mode": "CASH"},
+            {"date": "2026-10-18", "supplier": "Marché", "amount": "1000", "payment_mode": "MOBILE"},
+            {"date": "2026-10-18", "supplier": "Ada", "amount": "600", "payment_mode": "CASH"},
+            {"date": "", "supplier": "", "amount": "", "payment_mode": ""},
+            {"date": "2026-10-12", "supplier": "Ada", "amount": "", "payment_mode": "CASH"},
+            {"date": "2026-10-02", "supplier": "Ada", "amount": "0", "payment_mode": "CASH"},
+        ],
+    })
+    assert len(details["supplier_payments"]) == 5
+    assert details["observed_supplier_payment_days"] == "7"
+    assert "activity_supplier_debt" not in details
+    paid = supplier_payment_indicators(details)
+    assert paid["count"] == 4
+    assert paid["total"] == Decimal("5600.00")
+    assert paid["average"] == Decimal("1400.00")
+    assert paid["last_date"] == "2026-10-18"
+    assert paid["last_amount"] == Decimal("1600.00")
+    assert supplier_payment_indicators({})["total"] is None
+    with pytest.raises(ValidationError):
+        validate_details({"supplier_payments": [{"payment_mode": "CREDIT", "amount": "10", "date": "2026-10-01"}]})
+
+
+def test_sales_rhythm_becomes_the_monthly_turnover():
+    day = validate_details({
+        "sales_rhythm": "DAY",
+        "sales_amount": "10000",
+        "activity_days_per_month": "20",
+        "collection_rhythm": "WEEK",
+        "collection_amount": "5000",
+    })
+    assert sales_monthly_total(day) == Decimal("200000.00")
+    assert collection_monthly_total(day) == Decimal("20000.00")
+    assert sales_monthly_total({"sales_rhythm": "WEEK", "sales_amount": "100"}) == Decimal("400.00")
+    assert sales_monthly_total({"sales_rhythm": "MONTH", "sales_amount": "1800000"}) == Decimal("1800000.00")
+    assert sales_monthly_total({"sales_rhythm": "MONTH", "sales_amount": "0"}) == Decimal("0.00")
+    assert sales_monthly_total({"sales_rhythm": "DAY", "sales_amount": "100"}) is None
+    assert sales_monthly_total({"sales_rhythm": "MONTH"}) is None
+    with pytest.raises(ValidationError):
+        validate_details({"sales_rhythm": "YEAR"})
+
+
+def test_sales_periods_set_the_monthly_turnover():
+    weeks = validate_details({
+        "sales_period_mode": "WEEK",
+        "sales_periods": [
+            {"start": "2026-10-01", "end": "2026-10-07", "amount": "70000", "appreciation": "BONNE"},
+            {"start": "2026-10-08", "end": "2026-10-14", "amount": "80000", "appreciation": "BONNE"},
+            {"start": "2026-10-15", "end": "2026-10-21", "amount": "90000", "appreciation": "MOYENNE"},
+            {"start": "2026-10-22", "end": "2026-10-28", "amount": "60000", "appreciation": "FAIBLE"},
+            {"amount": ""},
+        ],
+        "sales_rhythm": "MONTH",
+        "sales_amount": "1800000",
+    })
+    assert weeks["sales_periods"] == [
+        {"start": "2026-10-01", "end": "2026-10-07", "amount": "70000", "appreciation": "BONNE"},
+        {"start": "2026-10-08", "end": "2026-10-14", "amount": "80000", "appreciation": "BONNE"},
+        {"start": "2026-10-15", "end": "2026-10-21", "amount": "90000", "appreciation": "MOYENNE"},
+        {"start": "2026-10-22", "end": "2026-10-28", "amount": "60000", "appreciation": "FAIBLE"},
+    ]
+    reading = sales_period_indicators(weeks)
+    assert reading["count"] == 4
+    assert reading["total"] == Decimal("300000.00")
+    assert reading["average"] == Decimal("75000.00")
+    assert reading["days"] == 28
+    assert reading["monthly"] == Decimal("321428.57")
+    assert reading["high_label"] == "2026-10-15 – 2026-10-21"
+    assert reading["high_amount"] == Decimal("90000.00")
+    assert reading["low_amount"] == Decimal("60000.00")
+    assert reading["appreciation"] == "Bonne"
+    assert sales_monthly_total(weeks) == Decimal("321428.57")
+    daily = validate_details({
+        "sales_period_mode": "DAY",
+        "sales_periods": [
+            {"date": "2026-10-05", "amount": "10000"},
+            {"date": "2026-10-06", "amount": "0"},
+            {"start": "2026-10-01", "end": "2026-10-31", "amount": "1800000"},
+        ],
+    })
+    assert sales_monthly_total(daily) == Decimal("150000.00")
+    assert sales_monthly_total({"sales_periods": [], "sales_rhythm": "MONTH", "sales_amount": "1800000"}) is None
+    with pytest.raises(ValidationError):
+        validate_details({"sales_periods": [{"start": "2026-10-31", "end": "2026-10-01", "amount": "100"}]})
+    with pytest.raises(ValidationError):
+        validate_details({"sales_periods": [{"amount": "100", "appreciation": "EXCELLENT"}]})
+    with pytest.raises(ValidationError):
+        validate_details({"sales_period_mode": "YEAR"})
+
+
+def test_activity_balance_compares_only_known_years():
+    current = {"stock": "350000", "receivables": "", "cash": "80000", "fixed": "150000", "debt": "200000"}
+    empty = {"stock": "", "receivables": "", "cash": "", "fixed": "", "debt": ""}
+    bare = activity_balance_reading(current, empty)
+    assert bare["assets"] == Decimal("580000.00")
+    assert bare["bfr"] == Decimal("150000.00")
+    assert bare["net"] == Decimal("380000.00")
+    assert bare["assets_prev"] is None
+    assert bare["assets_variation"] is None
+    previous = {"stock": "300000", "receivables": "", "cash": "", "fixed": "", "debt": "100000"}
+    compared = activity_balance_reading(current, previous)
+    assert compared["assets_prev"] == Decimal("300000.00")
+    assert compared["assets_variation"] == Decimal("280000.00")
+    assert compared["assets_rate"] == Decimal("93.33")
+    assert compared["bfr_prev"] == Decimal("200000.00")
+    assert compared["bfr_variation"] == Decimal("-50000.00")
+    assert compared["net_prev"] == Decimal("200000.00")
+    household = validate_details({
+        "household_assets": [{"label": "Or", "amount": "40000"}, {"label": "", "amount": ""}],
+    })
+    assert household_patrimony_total(household, "10000", "", None, "0") == Decimal("50000.00")
+    assert household_patrimony_total({}, "", "", "", "") is None
+    assert net_patrimony(Decimal("380000.00"), None) == Decimal("380000.00")
+    assert net_patrimony(None, None) is None
+    with pytest.raises(ValidationError):
+        validate_details({"household_assets": [{"label": "Or"}]})
+
+
+def test_operating_charges_add_to_purchases_without_replacing_an_empty_detail():
+    detailed = validate_details({
+        "activity_charge_place": "50000",
+        "activity_charge_staff": "0",
+        "activity_charge_transport": "20000",
+        "activity_extra_charges": [
+            {"label": "Glace", "amount": "5000"},
+            {"label": "", "amount": ""},
+        ],
+    })
+    assert operating_charges_excluding_purchases(detailed) == Decimal("75000.00")
+    assert activity_expenses_with_purchases(detailed, "1050000") == Decimal("1125000.00")
+    assert activity_expenses_with_purchases(detailed, None) == Decimal("75000.00")
+    assert operating_charges_excluding_purchases({}) is None
+    assert activity_expenses_with_purchases({}, "1050000") is None
+    with pytest.raises(ValidationError):
+        validate_details({"activity_extra_charges": [{"label": "Glace"}]})
+
+
+def test_collection_periods_month_does_not_become_a_receivable():
+    weeks = validate_details({
+        "collection_period_mode": "WEEK",
+        "collection_periods": [
+            {"start": "2026-10-01", "end": "2026-10-07", "amount": "1000", "appreciation": "BONNE"},
+            {"start": "2026-10-08", "end": "2026-10-14", "amount": "2000", "appreciation": "BONNE"},
+            {"start": "2026-10-15", "end": "2026-10-21", "amount": "3000", "appreciation": "MOYENNE"},
+            {"start": "2026-10-22", "end": "2026-10-28", "amount": "0", "appreciation": "FAIBLE"},
+            {"amount": ""},
+        ],
+        "collection_rhythm": "MONTH",
+        "collection_amount": "50000",
+    })
+    reading = collection_period_indicators(weeks)
+    assert reading["count"] == 4
+    assert reading["total"] == Decimal("6000.00")
+    assert reading["days"] == 28
+    assert reading["monthly"] == Decimal("6428.57")
+    assert reading["appreciation"] == "Bonne"
+    assert collection_monthly_total(weeks) == Decimal("6428.57")
+    assert "activity_receivables" not in weeks
+    daily = validate_details({
+        "collection_period_mode": "DAY",
+        "collection_periods": [
+            {"date": "2026-10-05", "amount": "4000"},
+            {"date": "2026-10-06", "amount": "0"},
+            {"start": "2026-10-01", "end": "2026-10-07", "amount": "9000"},
+        ],
+    })
+    assert collection_monthly_total(daily) == Decimal("60000.00")
+    assert collection_monthly_total({"collection_periods": [], "collection_rhythm": "WEEK", "collection_amount": "5000"}) is None
+    assert collection_monthly_total({
+        "collection_periods": [{"start": "2026-10-01", "end": "2026-10-07", "amount": "7000"}],
+    }) == Decimal("30000.00")
+    with pytest.raises(ValidationError):
+        validate_details({"collection_periods": [{"start": "2026-10-31", "end": "2026-10-01", "amount": "100"}]})
+    with pytest.raises(ValidationError):
+        validate_details({"collection_period_mode": "YEAR"})
 
 
 def test_tpe_cash_prorata_does_not_treat_missing_charges_as_zero():
@@ -407,6 +749,48 @@ def test_minimal_cash_document_stays_out_of_the_ratios(tenant_a, client_a, produ
 
 
 @pytest.mark.django_db
+def test_conclusion_file_keeps_the_typed_label(tenant_a, client_a, product_a):
+    upload = SimpleUploadedFile("bulletin.pdf", b"%PDF-1.4\n", content_type="application/pdf")
+
+    class Files(dict):
+        def getlist(self, key):
+            return [upload] if key == "documents" else []
+
+    data = QueryDict(mutable=True)
+    data.appendlist("document_labels", "Bulletin de mars")
+
+    class Request:
+        FILES = Files()
+
+    request = Request()
+    request.data = data
+
+    with tenant_context(tenant_a.id):
+        app = CreditApplication.objects.create(
+            tenant=tenant_a, client=client_a, product=product_a,
+            reference="FA-PIECE", amount_requested=1000, duration_months=12,
+        )
+        serializer = FinancialAnalysisSerializer(
+            data={"application": str(app.id), "salary_income": "100000"},
+            context={"request": request},
+        )
+        assert serializer.is_valid(), serializer.errors
+        analysis = serializer.save(tenant=tenant_a)
+        document = analysis.documents.get()
+        assert document.label == "Bulletin de mars"
+
+        request.data = QueryDict(mutable=True)
+        refused = FinancialAnalysisSerializer(
+            data={"application": str(app.id), "salary_income": "100000"},
+            context={"request": request},
+        )
+        assert refused.is_valid(), refused.errors
+        with pytest.raises(ValidationError):
+            refused.save(tenant=tenant_a)
+        assert FinancialAnalysis.objects.filter(application=app).count() == 1
+
+
+@pytest.mark.django_db
 def test_dossier_profile_drives_the_analysis(tenant_a, client_a, product_a):
     with tenant_context(tenant_a.id):
         app = CreditApplication.objects.create(
@@ -488,3 +872,155 @@ def test_extra_household_lines_enter_the_totals():
     assert analysis.total_household_charges == Decimal("28000")
     with pytest.raises(ValidationError):
         validate_details({"extra_charges": [{"label": "Loyer école", "amount": ""}]})
+
+
+@pytest.mark.django_db
+def test_second_activity_takes_the_same_turnover_stress(tenant_a, client_a, product_a):
+    with tenant_context(tenant_a.id):
+        app = CreditApplication.objects.create(
+            tenant=tenant_a, client=client_a, product=product_a,
+            reference="FA-STRESS-2", amount_requested=Decimal("100000"), duration_months=12,
+        )
+        analysis = FinancialAnalysis.objects.create(
+            tenant=tenant_a, application=app, reference_period="MONTHLY",
+            individual_profile="INDEPENDANT", has_side_activity=True,
+            activity_turnover=Decimal("1800000"), activity_expenses=Decimal("1300000"),
+            informal_income_weight=Decimal("70"), new_installment=Decimal("1"),
+            analysis_details={
+                "extra_activities": [{"label": "Recharge", "turnover": "120000", "expenses": "80000"}],
+            },
+        )
+        metrics = compute_metrics(analysis, AnalysisThreshold.for_tenant(tenant_a.id))
+        assert metrics["weighted_income"] == Decimal("378000.00")
+        stressed_income = (
+            metrics["stress_residual"]
+            + metrics["household_charges_monthly"]
+            + metrics["total_cash_effort"]
+        )
+        assert stressed_income == Decimal("109200.00")
+
+
+@pytest.mark.django_db
+def test_uncovered_capacity_blocks_the_submission_checklist(tenant_a, client_a, product_a):
+    from apps.credits.analysis_validation import capacity_blocks_submission
+    from apps.credits.instruction_policy import build_readiness
+
+    with tenant_context(tenant_a.id):
+        app = CreditApplication.objects.create(
+            tenant=tenant_a, client=client_a, product=product_a,
+            reference="FA-CAP-BLOCK", amount_requested=Decimal("5000000"),
+            duration_months=12, interest_rate=Decimal("0"),
+        )
+        reference = FinancialAnalysis.objects.create(
+            tenant=tenant_a, application=app, is_reference=True,
+            recommendation=FinancialAnalysis.Recommendation.FAVORABLE,
+            individual_profile="INDEPENDANT", has_side_activity=True,
+            activity_turnover=Decimal("100000"), activity_expenses=Decimal("0"),
+            informal_income_weight=Decimal("100"),
+        )
+        assert capacity_blocks_submission(app, reference)
+        ready = build_readiness(app)
+        capacity = next(item for item in ready["checks"] if item["key"] == "repayment_capacity")
+        assert capacity["ok"] is False
+        assert capacity["blocking"] is True
+        assert ready["ready"] is False
+
+
+def test_observed_payment_delays_stay_whole_days_and_follow_the_analysis():
+    from types import SimpleNamespace
+    from apps.credits.dossier_pdf import _observed_payment_delays
+
+    assert validate_details({
+        "observed_client_payment_days": "0",
+        "observed_supplier_payment_days": "7",
+    })["observed_client_payment_days"] == "0"
+    assert validate_details({"observed_supplier_payment_days": ""})["observed_supplier_payment_days"] == ""
+    with pytest.raises(ValidationError):
+        validate_details({"observed_client_payment_days": "1.5"})
+
+    application = SimpleNamespace(
+        client=SimpleNamespace(client_type="INDIVIDUAL"),
+        avg_client_payment_days=0,
+        avg_supplier_payment_days=7,
+    )
+    assert _observed_payment_delays(application, SimpleNamespace(analysis_details={})) == [
+        ("Délai moyen paiement clients", "0 j"),
+        ("Délai moyen paiement fournisseurs", "7 j"),
+    ]
+    assert _observed_payment_delays(application, SimpleNamespace(analysis_details={
+        "observed_client_payment_days": "4",
+        "observed_supplier_payment_days": "",
+    })) == [("Délai moyen paiement clients", "4 j")]
+    company = SimpleNamespace(
+        client=SimpleNamespace(client_type="CORPORATE"),
+        avg_client_payment_days=3,
+        avg_supplier_payment_days=9,
+    )
+    assert _observed_payment_delays(company, SimpleNamespace(analysis_details={})) == []
+
+
+@pytest.mark.django_db
+def test_informal_activity_drops_registration_files(tenant_a, client_a, product_a):
+    from django.core.files.uploadedfile import SimpleUploadedFile
+
+    with tenant_context(tenant_a.id):
+        app = CreditApplication.objects.create(
+            tenant=tenant_a, client=client_a, product=product_a,
+            reference="FA-REG-SCAN", amount_requested=Decimal("100000"), duration_months=12,
+            tax_regime="SYNTHETIC", activity_ifu="IFU-1",
+        )
+        app.activity_ifu_scan = SimpleUploadedFile("ifu.pdf", b"%PDF-1.4")
+        app.save()
+        app.refresh_from_db()
+        assert app.activity_ifu == "IFU-1"
+        assert app.activity_ifu_scan.name
+        app.tax_regime = "INFORMAL"
+        app.save()
+        app.refresh_from_db()
+        assert app.activity_ifu == ""
+        assert not app.activity_ifu_scan.name
+
+
+def test_informal_activity_quality_score_follows_the_level():
+    from types import SimpleNamespace
+    from apps.credits.analytics import _information_quality_score
+
+    analysis = SimpleNamespace(
+        information_quality="DECLARED",
+        financial_documents_verified=True,
+        field_visit_confirmed=True,
+        stock_count_verified=True,
+        cash_position_verified=True,
+        is_corporate=False,
+        is_individual=True,
+        has_side_activity=True,
+        individual_profile="INDEPENDANT",
+        application=SimpleNamespace(tax_regime="INFORMAL"),
+    )
+    assert _information_quality_score(analysis) == Decimal("30")
+    analysis.information_quality = "VERIFIED"
+    assert _information_quality_score(analysis) == Decimal("80")
+
+
+def test_inventory_stock_value_counts_complete_lines():
+    from apps.credits.analysis_details import inventory_stock_value
+
+    assert inventory_stock_value({"products": [
+        {"quantity": "10", "unit_cost": "100"},
+        {"quantity": "2", "unit_cost": ""},
+    ]}) == Decimal("1000.00")
+    assert inventory_stock_value({"products": []}) is None
+    assert inventory_stock_value({}) is None
+
+
+def test_consulted_document_flags_stay_empty_or_yes():
+    saved = validate_details({
+        "consulted_sales_book": "yes",
+        "consulted_sales_invoices": "",
+        "consulted_bank_statements": "yes",
+    })
+    assert saved["consulted_sales_book"] == "yes"
+    assert saved["consulted_sales_invoices"] == ""
+    assert saved["consulted_bank_statements"] == "yes"
+    with pytest.raises(ValidationError):
+        validate_details({"consulted_sales_book": "no"})

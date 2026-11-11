@@ -81,7 +81,8 @@ def assert_analysis_ready_for_submission(application):
             _dec(reference.salary_income) > 0 or _dec(reference.net_salary) > 0
             or _dec(reference.pension_income) > 0
         )
-        has_activity_ca = _dec(reference.activity_turnover) > 0
+        has_activity_ca = _dec(reference.activity_turnover) > 0 or _extra_activity_turnover(reference) > 0
+        campaign_instead = _campaign_replaces_turnover(reference)
         if not profile:
             if has_salary and (reference.has_side_activity or has_activity_ca):
                 profile = FinancialAnalysis.IndividualProfile.MIXTE
@@ -102,18 +103,18 @@ def assert_analysis_ready_for_submission(application):
             FinancialAnalysis.IndividualProfile.INDEPENDANT,
             FinancialAnalysis.IndividualProfile.MIXTE,
         ):
-            if not has_activity_ca and not creation:
+            if not has_activity_ca and not creation and not campaign_instead:
                 raise WorkflowError(
                     "Analyse indépendant incomplète : indiquez le chiffre d'affaires "
-                    "/ recettes de l'activité génératrice de revenus."
+                    "/ recettes de l'activité génératrice de revenus, ou les recettes de la campagne."
                 )
-        elif reference.has_side_activity and not has_activity_ca and not creation:
+        elif reference.has_side_activity and not has_activity_ca and not creation and not campaign_instead:
             raise WorkflowError(
                 "Activité génératrice de revenus : indiquez le chiffre d'affaires "
                 "/ recettes."
             )
 
-        if reference.total_income <= 0 and not creation:
+        if reference.total_income <= 0 and not creation and not campaign_instead:
             raise WorkflowError(
                 "Analyse personne physique incomplète : les revenus du ménage "
                 "(ou de l'activité) doivent être renseignés."
@@ -167,7 +168,44 @@ def assert_analysis_ready_for_submission(application):
                 "rattachez-en au moins une avant soumission."
             )
 
+    capacity_message = capacity_blocks_submission(application, reference)
+    if capacity_message:
+        raise WorkflowError(capacity_message)
+
     return reference
+
+
+def capacity_blocks_submission(application, reference):
+    """La soumission s'arrête si l'effort du crédit n'est pas couvert."""
+    if reference is None:
+        return ""
+    from .analytics import compute_metrics
+    from .models import AnalysisThreshold
+
+    metrics = compute_metrics(
+        reference,
+        AnalysisThreshold.for_tenant(application.tenant_id),
+        recalculate_installment=True,
+    )
+    if metrics.get("flags", {}).get("capacity_ok") is False:
+        return (
+            "La capacité ne couvre pas l'échéance, l'épargne obligatoire "
+            "et les dettes déjà en cours."
+        )
+    return ""
+
+
+def _campaign_replaces_turnover(reference):
+    if not getattr(reference, "uses_campaign", False):
+        return False
+    details = reference.analysis_details or {}
+    return details.get("campaign_revenue") not in (None, "") or details.get("campaign_charges") not in (None, "")
+
+
+def _extra_activity_turnover(reference):
+    from .analysis_details import extra_activity_net
+
+    return extra_activity_net(reference.analysis_details)
 
 
 def _detail_text(reference, key):
@@ -204,10 +242,6 @@ def _purpose_test_failures(application, reference, detailed):
     details = reference.analysis_details or {}
     if purpose == "CONSUMPTION":
         failures = []
-        if not _detail_text(reference, "stress_assumptions"):
-            failures.append(
-                "Consommation : décrivez la baisse du revenu du foyer dans les scénarios défavorables."
-            )
         if reference.is_individual and reference.individual_profile in {"SALARIE", "MIXTE"}:
             if _dec(reference.salary_income) <= 0 and _dec(reference.net_salary) <= 0:
                 failures.append(
@@ -216,10 +250,6 @@ def _purpose_test_failures(application, reference, detailed):
         return failures
     if purpose in {"WORKING_CAPITAL", "TREASURY", "STOCK"}:
         failures = []
-        if not _detail_text(reference, "stress_assumptions"):
-            failures.append(
-                "Cet objet exige la baisse des ventes : décrivez-la dans les scénarios défavorables."
-            )
         if details.get("receivable_delay_days") in (None, ""):
             failures.append(
                 "Cet objet exige l'allongement des créances : indiquez le retard clients, y compris zéro s'il n'y en a pas."

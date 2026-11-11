@@ -7,7 +7,6 @@ import {
   Factory,
   FileText,
   Gauge,
-  Images,
   Landmark,
   Leaf,
   Plus,
@@ -35,15 +34,21 @@ import {
 import { Link } from "react-router-dom";
 
 import { api } from "@/api/client";
-import { DETAIL_TABLE_LABELS, type EffectiveConfiguration } from "@/api/configuration";
+import { type EffectiveConfiguration } from "@/api/configuration";
 import {
+  CREDIT_LABELS,
   FINANCE_LABELS,
   type CreditApplication,
   type FinancialAnalysis,
   type AnalysisDetails,
 } from "@/api/types";
 import { FinancialAnalysisDetails } from "@/components/FinancialAnalysisDetails";
-import { PRODUCTION_IDENTITY, retainedActivityMargin } from "@/components/productLine";
+import { PRODUCTION_IDENTITY, productAmount, retainedActivityMargin } from "@/components/productLine";
+import { purchaseHistoryReading, purchaseLineAmount } from "@/components/purchaseHistory";
+import { supplierPaymentReading } from "@/components/supplierPayments";
+import { ANALYSIS_GRAINS, readSalesPeriodRows, salesPeriodReading, SALES_APPRECIATIONS, SALES_PERIODS } from "@/components/salesPeriods";
+import { activityExpensesFromOperating, OPERATING_CHARGES, operatingChargesExcludingPurchases } from "@/components/operatingCharges";
+import { activityBalanceReading, householdPatrimonyTotal, netPatrimony, presentAmount } from "@/components/patrimony";
 import { ProductSheetTable } from "@/components/ProductSheetTable";
 import { ActivityStatementReading, FinancialStatementsEditor } from "@/components/FinancialStatementsSection";
 import {
@@ -69,7 +74,7 @@ import {
   type ExternalCredit,
   type DerivedExternalDebt,
 } from "@/components/externalCredits";
-import { TpeReconstitution } from "@/components/TpeReconstitution";
+import { selectedPurchaseMethodCodes, TpeReconstitution, withPurchaseMethods } from "@/components/TpeReconstitution";
 import { FinancialAnalysisSupplements } from "@/components/FinancialAnalysisSupplements";
 import { formatDate, formatMoney } from "@/components/ui";
 import { CollateralSummaryCard } from "@/components/CollateralSummaryCard";
@@ -200,8 +205,8 @@ const ES_BOOL_KEYS = [
 ] as const;
 
 const ES_BOOL_DEFAULTS: Record<string, boolean> = {
-  exclusion_list_ok: true,
-  es_regulatory_compliance: true,
+  exclusion_list_ok: false,
+  es_regulatory_compliance: false,
 };
 
 const ANALYSIS_STR_KEYS = [
@@ -261,6 +266,18 @@ const FIELD_LABELS: Record<string, string> = {
   extra_charges: "Charges ajoutées",
 };
 
+function initialAnalysisDetails(initial: FinancialAnalysis | undefined, application: CreditApplication): AnalysisDetails {
+  const details: AnalysisDetails = { ...(initial?.analysis_details || {}) };
+  if (application.client_type !== "INDIVIDUAL") return details;
+  const copy = (key: string, value: number | null | undefined) => {
+    if (details[key] !== undefined || value == null) return;
+    details[key] = String(value);
+  };
+  copy("observed_client_payment_days", application.avg_client_payment_days);
+  copy("observed_supplier_payment_days", application.avg_supplier_payment_days);
+  return details;
+}
+
 function num(v: string | null | undefined): string {
   if (v === null || v === undefined) return "";
   const n = Number(v);
@@ -299,11 +316,12 @@ export function FinancialAnalysisForm({
 }: FinancialAnalysisFormProps) {
   const qc = useQueryClient();
   const [error, setError] = useState<string | null>(null);
-  const [details, setDetails] = useState<AnalysisDetails>(initial?.analysis_details || {});
+  const [details, setDetails] = useState<AnalysisDetails>(() => initialAnalysisDetails(initial, application));
   const [statements, setStatements] = useState<FinancialStatement[]>(() => readStatements(initial?.analysis_details));
   const [statementFiles, setStatementFiles] = useState<Record<string, File>>({});
   const [minimalCashFile, setMinimalCashFile] = useState<File | null>(null);
   const [customFields, setCustomFields] = useState<Record<string, unknown>>((initial as FinancialAnalysis & { custom_fields?: Record<string, unknown> })?.custom_fields || {});
+  const detailNumber = (key: string) => (typeof details[key] === "string" ? details[key] : "");
   const detailText = (key: string, label: string) => (
     <label className="field"><span>{label}</span><textarea rows={2}
       value={typeof details[key] === "string" ? details[key] as string : ""}
@@ -342,6 +360,10 @@ export function FinancialAnalysisForm({
   const [cashflowComment, setCashflowComment] = useState(
     initial?.cashflow_comment || "",
   );
+  const [incomeCommentOpen, setIncomeCommentOpen] = useState(() => {
+    const value = initial?.analysis_details?.household_income_evidence;
+    return typeof value === "string" && value.trim() !== "";
+  });
   const [strengths, setStrengths] = useState(initial?.strengths || "");
   const [weaknesses, setWeaknesses] = useState(initial?.weaknesses || "");
   const [conditions, setConditions] = useState(
@@ -382,7 +404,7 @@ export function FinancialAnalysisForm({
     setAnalysisStr((p) => ({ ...p, [k]: v }));
   const toggleAnalysis = (k: string) => (v: boolean) =>
     setAnalysisBool((p) => ({ ...p, [k]: v }));
-  const [docs, setDocs] = useState<File[]>([]);
+  const [conclusionFiles, setConclusionFiles] = useState<ConclusionFile[]>([]);
   const dependents = application.dependents_count;
 
   const dossierProfile = isIndividual ? dossierEarningPath(application) : "";
@@ -412,7 +434,15 @@ export function FinancialAnalysisForm({
     (individualProfile === "INDEPENDANT" ||
       individualProfile === "MIXTE" ||
       (individualProfile === "SALARIE" && hasSideActivity));
+  const informalActivity = showActivityBlock && application.tax_regime === "INFORMAL";
   const showStabilityBlock = showSalaryBlock;
+
+  useEffect(() => {
+    if (application.client_marital_status === "MARRIED") return;
+    setNumbers((previous) => (
+      previous.spouse_income ? { ...previous, spouse_income: "" } : previous
+    ));
+  }, [application.client_marital_status]);
 
   function setProfile(next: IndividualProfile) {
     setIndividualProfile(next);
@@ -473,8 +503,6 @@ export function FinancialAnalysisForm({
   const campaignCharges = campaignAmount("campaign_charges");
   const campaignSurplus = campaignRevenue == null && campaignCharges == null ? null : (campaignRevenue ?? 0) - (campaignCharges ?? 0);
   const campaignMonthly = campaignSurplus == null || !application.duration_months ? null : campaignSurplus / application.duration_months;
-  const reconstitutedActivity = path === "RECONSTITUTED" || ((path === "ACTIVITY" || path === "MIXED" || (path === "GROUP" && groupHasActivity)) && statementBasis !== "STATEMENTS");
-  const purposeText = purposeTestText(application.purpose_type, reconstitutedActivity);
   const operatingPurpose = application.purpose_type === "WORKING_CAPITAL" || application.purpose_type === "TREASURY" || application.purpose_type === "STOCK";
   const investmentPurpose = application.purpose_type === "EQUIPMENT" || application.purpose_type === "REAL_ESTATE";
   const minimalCashVisible = statementBasis !== "STATEMENTS" && (isCorporate || showActivityBlock || groupHasActivity);
@@ -501,6 +529,16 @@ export function FinancialAnalysisForm({
         { id: "fa-quality", icon: Shield, label: "Fiabilité des données", show: true },
         { id: "fa-debt", icon: Landmark, label: "Endettement", show: true },
         { id: "fa-income", icon: Wallet, label: "Revenus du ménage", show: isIndividual },
+        { id: "fa-stock-margin", icon: Store, label: "Stock et marge", show: informalActivity },
+        { id: "fa-purchases", icon: ReceiptText, label: "Fournisseurs", show: informalActivity },
+        { id: "fa-sales-calc", icon: Wallet, label: "Ventes", show: informalActivity },
+        { id: "fa-operating", icon: ReceiptText, label: "Charges d'exploitation", show: informalActivity },
+        { id: "fa-family", icon: Users, label: "Charges familiales", show: informalActivity },
+        { id: "fa-simplified-result", icon: Calculator, label: "Résultat et capacité", show: informalActivity },
+        { id: "fa-cash-check", icon: Wallet, label: "Trésorerie depuis l'achat", show: informalActivity },
+        { id: "fa-prior-year", icon: Gauge, label: "Comparatif N / N-1", show: informalActivity },
+        { id: "fa-patrimony", icon: Landmark, label: "Bilan et patrimoine", show: informalActivity },
+        { id: "fa-committee", icon: Calculator, label: "Indicateurs du comité", show: informalActivity },
         { id: "fa-stability", icon: Landmark, label: "Stabilité salariale", show: showStabilityBlock },
         { id: "fa-group", icon: Users, label: "Groupement", show: isGroupement },
         { id: "fa-business", icon: Store, label: "Stock et ventes", show: isCorporate || (groupHasActivity && statementBasis !== "STATEMENTS") },
@@ -512,15 +550,15 @@ export function FinancialAnalysisForm({
             individualProfile === "INDEPENDANT"
               ? "Activité"
               : "Activité génératrice de revenus",
-          show: isIndividual && (showActivityBlock || individualProfile === "SALARIE"),
+          show: isIndividual && !informalActivity && (showActivityBlock || individualProfile === "SALARIE"),
         },
         { id: "fa-exploitation", icon: ReceiptText, label: "Charges et résultat", show: isCorporate },
-        { id: "fa-charges", icon: ReceiptText, label: "Charges du ménage", show: isIndividual },
+        { id: "fa-charges", icon: ReceiptText, label: "Charges du ménage", show: isIndividual && !informalActivity },
         { id: "fa-cycle", icon: Briefcase, label: "Campagne et création", show: isCorporate || isGroupement || showActivityBlock },
-        { id: "fa-treasury", icon: Wallet, label: "Capacité et retenue", show: true },
+        { id: "fa-treasury", icon: Wallet, label: "Capacité et retenue", show: !informalActivity },
         { id: "fa-balance", icon: Building2, label: "Bilan reconstitué", show: isCorporate },
         { id: "fa-minimal", icon: UploadCloud, label: "Trésorerie minimale", show: minimalCashVisible },
-        { id: "fa-trend", icon: Gauge, label: "Caisse et tendance N-1", show: isCorporate || showActivityBlock },
+        { id: "fa-trend", icon: Gauge, label: "Caisse et tendance N-1", show: (isCorporate || showActivityBlock) && !informalActivity },
         { id: "fa-collateral", icon: Shield, label: "Garanties et références", show: true },
         { id: "fa-sector", icon: Factory, label: "Analyse sectorielle", show: isCorporate || isGroupement || showActivityBlock },
         { id: "fa-es", icon: Leaf, label: "Analyse E&S", show: isCorporate || isGroupement || showActivityBlock },
@@ -534,6 +572,7 @@ export function FinancialAnalysisForm({
       isGroupement,
       individualProfile,
       showActivityBlock,
+      informalActivity,
       showStabilityBlock,
       groupHasActivity,
       statementBasis,
@@ -571,6 +610,70 @@ export function FinancialAnalysisForm({
 
   const set = (key: NumericKey) => (value: string) =>
     setNumbers((prev) => ({ ...prev, [key]: value }));
+  const analysisPeriodMode = detailNumber("analysis_period_mode");
+  const analysisStart = detailNumber("analysis_period_start");
+  const analysisEnd = detailNumber("analysis_period_end");
+  const analysisWindow = analysisStart && analysisEnd && analysisEnd >= analysisStart
+    ? { start: analysisStart, end: analysisEnd }
+    : undefined;
+  const periodNote = analysisWindow ? `Période d'analyse : ${formatDate(analysisStart)} – ${formatDate(analysisEnd)}` : undefined;
+  const purchaseRows = readPurchaseRows(details);
+  const purchaseStart = analysisWindow ? analysisStart : (typeof details.purchase_period_start === "string" ? details.purchase_period_start : "");
+  const purchaseEnd = analysisWindow ? analysisEnd : (typeof details.purchase_period_end === "string" ? details.purchase_period_end : "");
+  const purchaseReading = purchaseHistoryReading(purchaseRows, purchaseStart, purchaseEnd);
+  const purchaseStored = analysisWindow ? purchaseReading.monthly : purchaseReading.periodTotal;
+  function writePurchaseHistory(rows: Record<string, string>[], start: string, end: string) {
+    const reading = purchaseHistoryReading(rows, start, end);
+    setDetails((current) => ({
+      ...current,
+      purchase_history: rows,
+      purchase_period_start: start,
+      purchase_period_end: end,
+      last_purchase_date: reading.latestDate,
+      last_purchase_amount: reading.latestAmount,
+    }));
+    const stored = analysisWindow ? reading.monthly : reading.periodTotal;
+    if (stored != null) {
+      set("activity_purchases")(stored);
+      const detailed = activityExpensesFromOperating(operatingChargesExcludingPurchases(details), stored);
+      if (detailed != null) set("activity_expenses")(detailed);
+    }
+  }
+  const salesPeriodMode = analysisPeriodMode || detailNumber("sales_period_mode");
+  const salesPeriodRows = readSalesPeriodRows(details.sales_periods);
+  const salesPeriods = salesPeriodReading(salesPeriodRows, salesPeriodMode, analysisWindow);
+  const collectionPeriodMode = analysisPeriodMode || detailNumber("collection_period_mode");
+  function applyAnalysisWindow(start: string, end: string, mode: string) {
+    setPeriod("MONTHLY");
+    const window = start && end && end >= start ? { start, end } : undefined;
+    setDetails((current) => ({
+      ...current,
+      analysis_period_start: start,
+      analysis_period_end: end,
+      analysis_period_mode: mode,
+      sales_period_mode: mode,
+      collection_period_mode: mode,
+      ...(window ? { purchase_period_start: start, purchase_period_end: end } : {}),
+    }));
+    const sales = salesPeriodReading(readSalesPeriodRows(details.sales_periods), mode, window);
+    if (sales.monthly != null) set("activity_turnover")(sales.monthly);
+    const purchases = purchaseHistoryReading(purchaseRows, window ? start : purchaseStart, window ? end : purchaseEnd);
+    const stored = window ? purchases.monthly : purchases.periodTotal;
+    if (stored != null) {
+      set("activity_purchases")(stored);
+      const detailed = activityExpensesFromOperating(operatingChargesExcludingPurchases(details), stored);
+      if (detailed != null) set("activity_expenses")(detailed);
+    }
+  }
+  const collectionPeriodRows = readSalesPeriodRows(details.collection_periods);
+  function writeSalesPeriods(rows: Record<string, string>[], mode: string) {
+    const reading = salesPeriodReading(rows, mode, analysisWindow);
+    setDetails((current) => ({ ...current, sales_periods: rows, sales_period_mode: mode }));
+    if (reading.monthly != null) set("activity_turnover")(reading.monthly);
+  }
+  function writeCollectionPeriods(rows: Record<string, string>[], mode: string) {
+    setDetails((current) => ({ ...current, collection_periods: rows, collection_period_mode: mode }));
+  }
   const val = (key: NumericKey) => Number(numbers[key] || 0);
 
   // Récapitulatif calculé en direct (le backend recalcule à l'enregistrement).
@@ -600,10 +703,12 @@ export function FinancialAnalysisForm({
       val("other_current_debt") +
       val("shareholder_debt");
     // Particulier
-    let income =
+    const householdIncome =
       val("salary_income") + val("spouse_income") + val("rental_income") +
       val("other_activity_income") + val("other_income") +
-      val("variable_income") + val("pension_income");
+      val("variable_income") + val("pension_income") +
+      completeLineTotal(readMoneyLines(details, "extra_income"));
+    let income = householdIncome;
     if (
       individualProfile === "INDEPENDANT" ||
       individualProfile === "MIXTE" ||
@@ -618,10 +723,55 @@ export function FinancialAnalysisForm({
       val("tontine_expense") + val("social_contributions") +
       val("family_support_expense") + val("other_monthly_obligations") +
       completeLineTotal(readMoneyLines(details, "extra_charges"));
-    income += completeLineTotal(readMoneyLines(details, "extra_income"));
+    income += completeActivityNet(readActivityLines(details));
     const monthlyFactor = period === "ANNUAL" ? 1 / 12 : period === "QUARTERLY" ? 1 / 3 : 1;
-    const externalMonthly = externalCredits.reduce((total, row) => total + (Number(row.monthly_payment) || 0), 0);
-    const disposable = (income - charges) * monthlyFactor - externalMonthly;
+    const paymentAmounts = externalCredits.map((row) => {
+      const raw = row.monthly_payment == null ? "" : String(row.monthly_payment).trim();
+      if (raw === "") return null;
+      const amount = Number(raw);
+      return Number.isFinite(amount) ? amount : null;
+    });
+    const existingInstallments = paymentAmounts.every((item) => item == null)
+      ? null
+      : paymentAmounts.reduce<number>((total, item) => total + (item ?? 0), 0);
+    const externalMonthly = existingInstallments ?? 0;
+    const typedWeight = numbers.informal_income_weight.trim();
+    const thresholdWeight = Number(configuration.data?.thresholds?.informal_income_weight);
+    const weight = typedWeight !== "" && Number.isFinite(Number(typedWeight))
+      ? Number(typedWeight)
+      : Number.isFinite(thresholdWeight) ? thresholdWeight : 70;
+    const activityFormal = dossierProfile
+      ? Boolean(application.tax_regime && application.tax_regime !== "INFORMAL")
+      : analysisBool.activity_is_formal;
+    const stableMonthly = (val("salary_income") + val("spouse_income") + val("rental_income") + val("pension_income")) * monthlyFactor;
+    const informalMonthly = (
+      val("variable_income") + val("other_income") + val("other_activity_income")
+      + completeLineTotal(readMoneyLines(details, "extra_income"))
+    ) * monthlyFactor;
+    let retained = stableMonthly + informalMonthly * weight / 100;
+    const activityCounted = individualProfile === "INDEPENDANT" || individualProfile === "MIXTE" || hasSideActivity;
+    const activityNet = activityCounted ? (val("activity_turnover") - val("activity_expenses")) * monthlyFactor : 0;
+    const activityHaircut = activityCounted && !activityFormal && activityNet > 0;
+    const mainActivityRetained = activityCounted ? (activityHaircut ? activityNet * weight / 100 : activityNet) : 0;
+    if (activityCounted) retained += mainActivityRetained;
+    const otherActivityNet = completeActivityNet(readActivityLines(details)) * monthlyFactor;
+    const otherHaircut = otherActivityNet > 0;
+    const otherActivityRetained = otherHaircut ? otherActivityNet * weight / 100 : otherActivityNet;
+    const householdInformalRetained = informalMonthly * weight / 100;
+    const hasOtherActivity = readActivityLines(details).some((row) => row.label.trim() !== "" && (row.turnover.trim() !== "" || row.expenses.trim() !== ""));
+    retained += otherActivityRetained;
+    const activityMonthlyTurnover = val("activity_turnover") * monthlyFactor;
+    const activityMonthlyPurchases = val("activity_purchases") * monthlyFactor;
+    const activityMonthlyExpenses = val("activity_expenses") * monthlyFactor;
+    const activityMonthlyNet = activityMonthlyTurnover - activityMonthlyExpenses;
+    const activityMargin = activityMonthlyTurnover !== 0 ? (activityMonthlyNet / activityMonthlyTurnover) * 100 : null;
+    const campaignReplacesActivity = campaignOpen && campaignMonthly != null;
+    if (campaignReplacesActivity) {
+      retained = retained - mainActivityRetained + (campaignMonthly ?? 0);
+    }
+    const declaredMonthly = income * monthlyFactor;
+    const retainedDiffers = Math.abs(declaredMonthly - retained) > 0.5;
+    const disposable = (retainedDiffers ? retained : declaredMonthly) - charges * monthlyFactor - externalMonthly;
     return {
       gross, opex, ebe, net, cashFlow,
       equity: assets - debts,
@@ -629,17 +779,54 @@ export function FinancialAnalysisForm({
          val("stock_value") + val("receivables") + val("other_current_assets") -
          val("supplier_debt") - val("tax_social_debt") - val("other_current_debt"),
       income,
+      householdIncome,
+      householdMonthly: householdIncome * monthlyFactor,
+      activityMonthlyTurnover,
+      activityMonthlyPurchases,
+      activityMonthlyExpenses,
+      activityMonthlyNet,
+      activityMargin,
+      weight,
+      mainActivityRetained,
+      otherActivityRetained,
+      activityHaircut: activityHaircut && !campaignReplacesActivity,
+      otherHaircut,
+      householdInformalRetained,
+      householdHaircut: informalMonthly > 0 && weight !== 100,
+      hasOtherActivity,
+      existingInstallments,
+      otherActivityMonthly: otherActivityNet,
+      familyMonthly: charges * monthlyFactor,
+      retained: retainedDiffers ? retained : null,
       charges,
       disposable,
       perCapita:
         dependents !== null && dependents !== undefined
           ? disposable / (dependents + 1)
           : null,
-      surplus:
-        val("projected_monthly_inflows") - val("projected_monthly_outflows"),
+      surplus: (() => {
+        const inflow = enteredAmount(numbers.projected_monthly_inflows);
+        const outflow = enteredAmount(numbers.projected_monthly_outflows);
+        if (inflow == null && outflow == null) return null;
+        return (inflow ?? 0) - (outflow ?? 0);
+      })(),
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [numbers, isCorporate, dependents, individualProfile, hasSideActivity, period, details, externalCredits]);
+  }, [numbers, isCorporate, dependents, individualProfile, hasSideActivity, period, details, externalCredits, configuration.data, analysisBool.activity_is_formal, dossierProfile, application.tax_regime, campaignOpen, campaignMonthly]);
+  const inventoryStock = informalActivity ? stockInventoryTotal(readProductRows(details)) : null;
+  useEffect(() => {
+    if (inventoryStock == null) return;
+    const text = inventoryStock.toFixed(2);
+    setNumbers((prev) => prev.activity_stock_value === text ? prev : { ...prev, activity_stock_value: text });
+  }, [inventoryStock]);
+  const recordedInstallment = initial?.new_installment != null && String(initial.new_installment).trim() !== "" && Number.isFinite(Number(initial.new_installment))
+    ? Number(initial.new_installment)
+    : null;
+  const incomeBase = recap.retained != null
+    ? recap.retained
+    : recap.disposable + recap.familyMonthly + (recap.existingInstallments ?? 0);
+  const debtService = recordedInstallment == null ? null : recordedInstallment + (recap.existingInstallments ?? 0);
+  const liveDebtRatio = incomeBase > 0 && debtService != null ? Math.round(debtService / incomeBase * 10000) / 100 : null;
 
   const mutation = useMutation({
     mutationFn: async (derived: DerivedExternalDebt) => {
@@ -647,6 +834,7 @@ export function FinancialAnalysisForm({
       const applied = path === "STATEMENTS" ? referenceFieldOverrides(statements) : { numbers: {}, details: {} };
       const rest = { ...details } as AnalysisDetails & { financial_statements?: unknown; statement_basis?: string };
       delete rest.financial_statements;
+      if (path === "SALARY") delete rest.cashflow;
       if (isCorporate || showActivityBlock || isGroupement) rest.statement_basis = statementBasis;
       else delete rest.statement_basis;
       fd.append("analysis_details", JSON.stringify({
@@ -661,6 +849,11 @@ export function FinancialAnalysisForm({
         const v = (applied.numbers[key] ?? numbers[key]).trim();
         const nullable = ["employment_seniority_months", "informal_income_weight", "max_days_late", "prior_repayment_rate", "prior_max_delay_days", "jobs_created", "jobs_maintained", "jobs_women", "jobs_youth", "workforce_count", "members_count", "active_contributing_members", "bank_statement_months", "activity_business_age_months", "activity_sales_days", "group_age_months", "members_with_arrears"].includes(key);
         fd.append(key, v || (nullable ? "" : "0"));
+      }
+      if (path === "SALARY") {
+        const factor = period === "ANNUAL" ? 1 / 12 : period === "QUARTERLY" ? 1 / 3 : 1;
+        fd.set("projected_monthly_inflows", (recap.income * factor).toFixed(2));
+        fd.set("projected_monthly_outflows", (recap.charges * factor).toFixed(2));
       }
       fd.set("existing_debt_initial_amount", derived.initial_amount);
       fd.set("existing_debt_monthly", derived.monthly);
@@ -718,7 +911,12 @@ export function FinancialAnalysisForm({
       fd.append("recommendation", recommendation);
       fd.append("analysis_date", analysisDate);
       fd.append("comment", comment);
-      for (const d of docs) fd.append("documents", d);
+      for (const row of conclusionFiles) {
+        const label = row.label.trim();
+        if (!label || !row.file) continue;
+        fd.append("document_labels", label);
+        fd.append("documents", row.file);
+      }
       for (const [key, file] of Object.entries(statementFiles)) {
         const separator = key.indexOf(":");
         fd.append(`statement_file__${key.slice(0, separator)}__${key.slice(separator + 1)}`, file);
@@ -773,6 +971,12 @@ export function FinancialAnalysisForm({
       scrollToSection("fa-statements");
       return;
     }
+    const fileIssue = conclusionFileError(conclusionFiles);
+    if (fileIssue) {
+      setError(fileIssue);
+      scrollToSection("fa-conclusion");
+      return;
+    }
     setError(null);
     mutation.mutate(derived);
   }
@@ -803,19 +1007,6 @@ export function FinancialAnalysisForm({
       </aside>
 
       <AnalysisContent>
-        {configuration.data && <div className="card" style={{ order: -100 }}><div className="card-body">
-          <strong>Exigences applicables à cette analyse</strong>
-          <p className="muted">{configuration.data.sources.map((source) => `${source.name} v${source.version}`).join(" → ") || "Politique de la filiale"}
-            {configuration.data.frozen ? " — règles conservées à la soumission" : " — règles courantes"}</p>
-          {!!configuration.data.analysis.minimum_bank_statement_months && <p>Relevés examinés : au moins {configuration.data.analysis.minimum_bank_statement_months} mois.</p>}
-          {!!configuration.data.analysis.required_fields.length && <p>Champs et vérifications requis : {configuration.data.analysis.required_fields.map((key) => configuration.data?.required_labels?.[key] || key).join(", ")}.</p>}
-          {!!configuration.data.analysis.required_detail_tables.length && <p>Tableaux requis : {configuration.data.analysis.required_detail_tables.map((key) => DETAIL_TABLE_LABELS[key] || key).join(", ")}.</p>}
-          <p className="muted small">Ces exigences sont contrôlées à la soumission du dossier. Vous pouvez enregistrer une analyse en cours.</p>
-          <p className="muted small">Scoring : {configuration.data.scoring.grid.engine === "CUSTOM" ? "grille personnalisée" : "grille existante"}.
-            {configuration.data.scoring.grid.missing_data === "BLOCK_SUBMIT" && " Tous les indicateurs de la grille doivent être disponibles avant soumission."}
-            {configuration.data.eligibility.rules.length > 0 && ` ${configuration.data.eligibility.rules.length} condition(s) d'éligibilité sont également contrôlées selon l'étape prévue.`}</p>
-        </div></div>}
-        {configuration.isError && <p className="form-error" role="alert">Impossible de charger les exigences configurées. Rechargez la page ; la soumission restera contrôlée par le serveur.</p>}
         <FormSection
           id="fa-params"
           icon={Gauge}
@@ -878,32 +1069,41 @@ export function FinancialAnalysisForm({
               options={INDIVIDUAL_PROFILES}
             />
           )}
-          <div className="form-grid two-col">
-            <Select
-              label="Période de référence"
-              value={period}
-              onChange={setPeriod}
-              options={PERIODS}
-            />
-            <Money label="Date de l'analyse" type="date" value={analysisDate} onChange={setAnalysisDate} />
-          </div>
+          {informalActivity ? (
+            <div className="form-grid two-col">
+              <label className="field">
+                <span>Début de l&apos;analyse</span>
+                <input type="date" value={analysisStart} onChange={(event) => applyAnalysisWindow(event.target.value, analysisEnd, analysisPeriodMode)} />
+              </label>
+              <label className="field">
+                <span>Fin de l&apos;analyse</span>
+                <input type="date" value={analysisEnd} onChange={(event) => applyAnalysisWindow(analysisStart, event.target.value, analysisPeriodMode)} />
+              </label>
+              <Select label="Découpage" value={analysisPeriodMode} onChange={(value) => applyAnalysisWindow(analysisStart, analysisEnd, value)} options={ANALYSIS_GRAINS} />
+              <Money label="Date de l'analyse" type="date" value={analysisDate} onChange={setAnalysisDate} />
+            </div>
+          ) : (
+            <div className="form-grid two-col">
+              <Select
+                label="Période de référence"
+                value={period}
+                onChange={setPeriod}
+                options={PERIODS}
+              />
+              <Money label="Date de l'analyse" type="date" value={analysisDate} onChange={setAnalysisDate} />
+            </div>
+          )}
           <Checkbox
             label="Analyse de référence du dossier (score, risque, comité)"
             checked={isReference}
             onChange={setIsReference}
           />
-          <p className="muted small">Une seule analyse fait référence. Ce choix remplace la référence précédente ; la première analyse du dossier devient automatiquement référence.</p>
-          <p className="muted small" style={{ marginBottom: 0 }}>
-            Les revenus et charges d'exploitation sont saisis sur la période (
-            {FINANCE_LABELS.reference_period[period]}). Défaut :{" "}
-            {isCorporate
-              ? "annuelle (personne morale)"
-              : isGroupement
-                ? "mensuelle (groupement)"
-                : "mensuelle (personne physique)"}
-            . Les bilans et patrimoines sont des soldes à la date d'arrêté.
-            Les mensualités de dettes et prévisions de trésorerie restent mensuelles.
-          </p>
+          {!informalActivity && (
+            <p className="muted small" style={{ marginBottom: 0 }}>
+              Les revenus et charges d&apos;exploitation sont saisis sur la période ({FINANCE_LABELS.reference_period[period]}). Défaut : {isCorporate ? "annuelle (personne morale)" : isGroupement ? "mensuelle (groupement)" : "mensuelle (personne physique)"}. Les bilans et patrimoines sont des soldes à la date d&apos;arrêté. Les mensualités de dettes et prévisions de trésorerie restent mensuelles.
+            </p>
+          )}
+          {detailText("analysis_context_comment", "Autres détails")}
         </FormSection>
 
         <FormSection
@@ -917,46 +1117,52 @@ export function FinancialAnalysisForm({
               label="Niveau de fiabilité retenu"
               value={analysisStr.information_quality}
               onChange={setAnalysis("information_quality")}
-              options={INFORMATION_QUALITY}
+              options={informalActivity ? INFORMATION_QUALITY.filter((item) => item.value !== "AUDITED" || analysisStr.information_quality === "AUDITED") : INFORMATION_QUALITY}
             />
-            <label className="field">
-              <span>Date d'arrêté des données financières</span>
-              <input
-                type="date"
-                value={analysisStr.financial_statement_date}
-                onChange={(e) => setAnalysis("financial_statement_date")(e.target.value)}
-              />
-            </label>
+            {!informalActivity && (
+              <label className="field">
+                <span>Date d'arrêté des données financières</span>
+                <input
+                  type="date"
+                  value={analysisStr.financial_statement_date}
+                  onChange={(e) => setAnalysis("financial_statement_date")(e.target.value)}
+                />
+              </label>
+            )}
             <Money
               label="Mois de relevés bancaires / mobile money examinés"
               value={numbers.bank_statement_months}
               onChange={set("bank_statement_months")}
             />
-            <Text
-              label="Source principale de remboursement"
-              value={analysisStr.primary_repayment_source}
-              onChange={setAnalysis("primary_repayment_source")}
-            />
+            {!informalActivity && (
+              <Text
+                label="Source principale de remboursement"
+                value={analysisStr.primary_repayment_source}
+                onChange={setAnalysis("primary_repayment_source")}
+              />
+            )}
           </div>
           <div className="form-grid two-col">
-            <Checkbox
-              label="Pièces financières vérifiées"
-              checked={analysisBool.financial_documents_verified}
-              onChange={toggleAnalysis("financial_documents_verified")}
-            />
+            {!informalActivity && (
+              <Checkbox
+                label="Pièces financières vérifiées"
+                checked={analysisBool.financial_documents_verified}
+                onChange={toggleAnalysis("financial_documents_verified")}
+              />
+            )}
             <Checkbox
               label="Visite terrain prise en compte"
               checked={analysisBool.field_visit_confirmed}
               onChange={toggleAnalysis("field_visit_confirmed")}
             />
-            {(isCorporate || showActivityBlock) && (
+            {!informalActivity && (isCorporate || showActivityBlock) && (
               <Checkbox
                 label="Stock vérifié / inventorié"
                 checked={analysisBool.stock_count_verified}
                 onChange={toggleAnalysis("stock_count_verified")}
               />
             )}
-            {(isCorporate || showActivityBlock) && (
+            {!informalActivity && (isCorporate || showActivityBlock) && (
               <Checkbox
                 label="Caisse et banques vérifiées"
                 checked={analysisBool.cash_position_verified}
@@ -964,6 +1170,59 @@ export function FinancialAnalysisForm({
               />
             )}
           </div>
+          {informalActivity && (
+            <fieldset className="field">
+              <legend>Documents consultés</legend>
+              <div className="form-grid two-col">
+                <Checkbox
+                  label="Cahier de caisse"
+                  checked={analysisBool.activity_records_available}
+                  onChange={toggleAnalysis("activity_records_available")}
+                />
+                <Checkbox
+                  label="Cahier de ventes"
+                  checked={details.consulted_sales_book === "yes"}
+                  onChange={(checked) => setDetails((current) => ({ ...current, consulted_sales_book: checked ? "yes" : "" }))}
+                />
+                <Checkbox
+                  label="Factures de vente"
+                  checked={details.consulted_sales_invoices === "yes"}
+                  onChange={(checked) => setDetails((current) => ({ ...current, consulted_sales_invoices: checked ? "yes" : "" }))}
+                />
+                <Checkbox
+                  label="Relevés bancaires ou mobile money"
+                  checked={details.consulted_bank_statements === "yes"}
+                  onChange={(checked) => setDetails((current) => ({ ...current, consulted_bank_statements: checked ? "yes" : "" }))}
+                />
+                <Checkbox
+                  label="Inventaire de stock"
+                  checked={analysisBool.stock_count_verified}
+                  onChange={toggleAnalysis("stock_count_verified")}
+                />
+                <Checkbox
+                  label="Factures fournisseurs"
+                  checked={details.consulted_purchase_invoices === "yes" || (details.consulted_purchase_invoices !== "" && selectedPurchaseMethodCodes(details).includes("INVOICES"))}
+                  onChange={(checked) => setDetails((current) => withPurchaseMethods(
+                    { ...current, consulted_purchase_invoices: checked ? "yes" : "" },
+                    checked ? selectedPurchaseMethodCodes(current) : selectedPurchaseMethodCodes(current).filter((code) => code !== "INVOICES"),
+                  ))}
+                />
+                <Checkbox
+                  label="Cahier d'achats"
+                  checked={details.consulted_purchase_ledger === "yes" || (details.consulted_purchase_ledger !== "" && selectedPurchaseMethodCodes(details).includes("LEDGER"))}
+                  onChange={(checked) => setDetails((current) => withPurchaseMethods(
+                    { ...current, consulted_purchase_ledger: checked ? "yes" : "" },
+                    checked ? selectedPurchaseMethodCodes(current) : selectedPurchaseMethodCodes(current).filter((code) => code !== "LEDGER"),
+                  ))}
+                />
+                <Checkbox
+                  label="Caisse et banques"
+                  checked={analysisBool.cash_position_verified}
+                  onChange={toggleAnalysis("cash_position_verified")}
+                />
+              </div>
+            </fieldset>
+          )}
           <label className="field">
             <span>Écarts constatés, méthodes de reconstitution et réserves</span>
             <textarea
@@ -1264,41 +1523,290 @@ export function FinancialAnalysisForm({
             id="fa-income"
             icon={Wallet}
             title="Revenus du ménage"
-            description={
+            description={[
               individualProfile === "INDEPENDANT"
-                ? "Revenus du foyer hors activité principale (conjoint, locatif, autres)."
-                : "Ensemble des revenus perçus par le foyer."
-            }
+                ? "Revenus du foyer hors activité principale."
+                : showActivityBlock
+                  ? "Salaire et autres revenus du foyer, hors recettes de l'activité."
+                  : "Ensemble des revenus perçus par le foyer.",
+              informalActivity ? periodNote : "",
+            ].filter(Boolean).join(" · ")}
           >
-            <div className="form-grid two-col">
-              {showSalaryBlock && (
-                <Money
-                  label="Salaire net (demandeur)"
-                  value={numbers.salary_income}
-                  onChange={set("salary_income")}
-                  cur={cur}
-                />
-              )}
-              <Money label="Revenus du conjoint" value={numbers.spouse_income} onChange={set("spouse_income")} cur={cur} />
-              <Money label="Revenus locatifs / rente" value={numbers.rental_income} onChange={set("rental_income")} cur={cur} />
-              <Money label="Pension / retraite" value={numbers.pension_income} onChange={set("pension_income")} cur={cur} />
-              <Money label="Primes et revenus variables récurrents" value={numbers.variable_income} onChange={set("variable_income")} cur={cur} />
-              <Money label="Autres revenus" value={numbers.other_income} onChange={set("other_income")} cur={cur} />
-              {!showStabilityBlock && <Money label="Pondération des revenus informels (%) — vide : seuil établissement" value={numbers.informal_income_weight} onChange={set("informal_income_weight")} />}
-            </div>
+            {showSalaryBlock && (
+              <Money
+                label="Salaire net (demandeur)"
+                value={numbers.salary_income}
+                onChange={set("salary_income")}
+                cur={cur}
+              />
+            )}
             <MoneyLines
               rows={readMoneyLines(details, "extra_income")}
               onChange={(rows) => setDetails((current) => ({ ...current, extra_income: rows }))}
-              addLabel="Ajouter un revenu"
+              addLabel="Ajouter"
               currency={cur}
             />
             <div className="finance-recap">
-              <RecapItem label="Total revenus" value={formatMoney(recap.income, cur)} strong />
+              <RecapItem label="Total revenus" value={formatMoney(recap.householdIncome, cur)} strong />
             </div>
-            {detailText("household_income_evidence", "Justificatifs : régularité, part du conjoint disponible, loyers nets et revenus retenus")}
+            {incomeCommentOpen ? (
+              <label className="field">
+                <span>Commentaire</span>
+                <textarea
+                  rows={2}
+                  value={typeof details.household_income_evidence === "string" ? details.household_income_evidence : ""}
+                  onChange={(event) => setDetails((current) => ({ ...current, household_income_evidence: event.target.value }))}
+                />
+              </label>
+            ) : (
+              <button type="button" className="btn btn-ghost" onClick={() => setIncomeCommentOpen(true)}>
+                Ajouter un commentaire
+              </button>
+            )}
           </FormSection>
 
-          <FormSection
+          {informalActivity && <>
+            <FormSection id="fa-stock-margin" icon={Store} title="Inventaire du stock et calcul de la marge" description={periodNote}>
+              <StockMarginTable
+                rows={readProductRows(details)}
+                onChange={(rows) => {
+                  setDetails((current) => ({ ...current, products: rows }));
+                  const total = stockInventoryTotal(rows);
+                  if (total != null) set("activity_stock_value")(total.toFixed(2));
+                }}
+                currency={cur}
+              />
+            </FormSection>
+            <FormSection id="fa-purchases" icon={ReceiptText} title="Fournisseurs et achats" description={periodNote}>
+              <p className="subsection-label">Fournisseurs</p>
+              <div className="finance-recap">
+                <RecapItem label="Approvisionnement" value={application.activity_supply?.trim() || "—"} />
+              </div>
+              <SupplierTable
+                rows={readSupplierRows(details)}
+                onChange={(rows) => setDetails((current) => ({ ...current, suppliers: rows }))}
+              />
+              <div className="form-grid two-col">
+                <Select label="Dépendance aux fournisseurs" value={esStr.supplier_dependency} onChange={setStr("supplier_dependency")} options={toOptions(FINANCE_LABELS.risk_level)} />
+                <Select label="Sensibilité au prix des intrants" value={esStr.input_price_sensitivity} onChange={setStr("input_price_sensitivity")} options={toOptions(FINANCE_LABELS.risk_level)} />
+              </div>
+              <p className="subsection-label subsection-split">Historique des achats</p>
+              <PurchaseHistory
+                rows={purchaseRows}
+                start={purchaseStart}
+                end={purchaseEnd}
+                currency={cur}
+                onChange={writePurchaseHistory}
+                normalizeToMonth={Boolean(analysisWindow)}
+                windowLocked={Boolean(analysisWindow)}
+              />
+              {purchaseStored == null && (
+                <div className="form-grid two-col">
+                  <Money label="Achats / approvisionnements de la période" value={numbers.activity_purchases} onChange={(value) => { set("activity_purchases")(value); const detailed = activityExpensesFromOperating(operatingChargesExcludingPurchases(details), value); if (detailed != null) set("activity_expenses")(detailed); }} cur={cur} />
+                </div>
+              )}
+              <p className="subsection-label subsection-split">Paiement fournisseurs</p>
+              <SupplierPayments
+                rows={readSupplierPaymentRows(details)}
+                currency={cur}
+                onChange={(rows) => setDetails((current) => ({ ...current, supplier_payments: rows }))}
+              />
+              <div className="form-grid two-col">
+                <DayField label="Délai moyen paiement fournisseurs (jours)" value={detailNumber("observed_supplier_payment_days")} onChange={(value) => setDetails((current) => ({ ...current, observed_supplier_payment_days: value }))} />
+                <Money label="Dettes fournisseurs" value={numbers.activity_supplier_debt} onChange={set("activity_supplier_debt")} cur={cur} />
+              </div>
+              <TpeReconstitution
+                details={details}
+                onChange={setDetails}
+                currency={cur}
+                part="purchases"
+                omitLastPurchase
+                omitMethods={["INVOICES", "LEDGER"]}
+                declaredMonthly={purchaseStored != null ? Number(purchaseStored) : (numbers.activity_purchases.trim() === "" ? null : Number(numbers.activity_purchases))}
+              />
+              <label className="field">
+                <span>Commentaire sur les achats</span>
+                <textarea
+                  rows={2}
+                  value={typeof details.purchase_comment === "string" ? details.purchase_comment : ""}
+                  onChange={(event) => setDetails((current) => ({ ...current, purchase_comment: event.target.value }))}
+                />
+              </label>
+            </FormSection>
+            <FormSection id="fa-sales-calc" icon={Wallet} title="Ventes et chiffre d'affaires" description={periodNote}>
+              <p className="subsection-label">Clientèle</p>
+              <div className="finance-recap">
+                <RecapItem label="Clientèle" value={application.clientele?.trim() || "—"} />
+                <RecapItem label="Zone de chalandise" value={CREDIT_LABELS.catchment_area[application.catchment_area] || "—"} />
+              </div>
+              <p className="subsection-label subsection-split">Chiffre d&apos;affaires</p>
+              <SalesPeriods rows={salesPeriodRows} mode={salesPeriodMode} currency={cur} onChange={writeSalesPeriods} periodLocked bounds={analysisWindow} />
+              {salesPeriods.monthly == null && (
+                <div className="form-grid two-col">
+                  <Money label="CA / recettes de l'activité" value={numbers.activity_turnover} onChange={set("activity_turnover")} cur={cur} />
+                </div>
+              )}
+              <p className="subsection-label subsection-split">Encaissements</p>
+              <SalesPeriods
+                rows={collectionPeriodRows}
+                mode={collectionPeriodMode}
+                currency={cur}
+                onChange={writeCollectionPeriods}
+                periodLocked
+                bounds={analysisWindow}
+                amountLabel="Montant encaissé"
+                totalLabel="Total encaissé"
+                averageLabel="Encaissement moyen"
+                monthlyLabel="Encaissé sur le mois"
+              />
+              <div className="form-grid two-col">
+                <DayField label="Délai moyen paiement clients (jours)" value={detailNumber("observed_client_payment_days")} onChange={(value) => setDetails((current) => ({ ...current, observed_client_payment_days: value }))} />
+                <Money label="Créances clients" value={numbers.activity_receivables} onChange={set("activity_receivables")} cur={cur} />
+              </div>
+              <label className="field">
+                <span>Autres détails</span>
+                <textarea rows={3} value={typeof details.sales_verification === "string" ? details.sales_verification : ""} onChange={(event) => setDetails((current) => ({ ...current, sales_verification: event.target.value }))} />
+              </label>
+            </FormSection>
+            <FormSection id="fa-operating" icon={ReceiptText} title="Charges d'exploitation du mois" description={periodNote}>
+              <div className="form-grid two-col">
+                {OPERATING_CHARGES.map((item) => (
+                  <Money
+                    key={item.key}
+                    label={item.label}
+                    value={detailNumber(item.key)}
+                    onChange={(value) => {
+                      const next = { ...details, [item.key]: value };
+                      setDetails(next);
+                      const detailed = activityExpensesFromOperating(operatingChargesExcludingPurchases(next), numbers.activity_purchases);
+                      if (detailed != null) set("activity_expenses")(detailed);
+                    }}
+                    cur={cur}
+                  />
+                ))}
+              </div>
+              <MoneyLines
+                rows={readMoneyLines(details, "activity_extra_charges")}
+                onChange={(rows) => {
+                  const next = { ...details, activity_extra_charges: rows };
+                  setDetails(next);
+                  const detailed = activityExpensesFromOperating(operatingChargesExcludingPurchases(next), numbers.activity_purchases);
+                  if (detailed != null) set("activity_expenses")(detailed);
+                }}
+                addLabel="Ajouter une charge"
+                currency={cur}
+              />
+              {operatingChargesExcludingPurchases(details) == null ? (
+                <div className="form-grid two-col">
+                  <Money label="Charges totales d'activité (achats inclus)" value={numbers.activity_expenses} onChange={set("activity_expenses")} cur={cur} />
+                </div>
+              ) : (
+                <div className="finance-recap">
+                  <RecapItem label="Charges hors achats" value={formatMoney(operatingChargesExcludingPurchases(details), cur)} />
+                  <RecapItem label="Achats" value={numbers.activity_purchases.trim() === "" ? "—" : formatMoney(numbers.activity_purchases, cur)} />
+                  <RecapItem label="Charges totales, achats inclus" value={formatMoney(numbers.activity_expenses, cur)} strong />
+                </div>
+              )}
+              <label className="field">
+                <span>Commentaire activité : charges, prélèvements du ménage et absence de double comptage</span>
+                <textarea rows={2} value={activityComment} onChange={(e) => setActivityComment(e.target.value)} />
+              </label>
+            </FormSection>
+            <FormSection id="fa-family" icon={Users} title="Charges familiales du mois" description={periodNote}>
+              <div className="form-grid two-col">
+                <Money label="Loyer / logement" value={numbers.rent_expense} onChange={set("rent_expense")} cur={cur} />
+                <Money label="Alimentation" value={numbers.food_expense} onChange={set("food_expense")} cur={cur} />
+                <Money label="Eau / électricité / téléphone" value={numbers.utilities_expense} onChange={set("utilities_expense")} cur={cur} />
+                <Money label="Transport" value={numbers.transport_expense} onChange={set("transport_expense")} cur={cur} />
+                <Money label="Scolarité / éducation" value={numbers.education_expense} onChange={set("education_expense")} cur={cur} />
+                <Money label="Santé" value={numbers.health_expense} onChange={set("health_expense")} cur={cur} />
+                <Money label="Tontines / cotisations d'épargne" value={numbers.tontine_expense} onChange={set("tontine_expense")} cur={cur} />
+                <Money label="Cotisations sociales / assurances" value={numbers.social_contributions} onChange={set("social_contributions")} cur={cur} />
+                <Money label="Soutien familial / transferts" value={numbers.family_support_expense} onChange={set("family_support_expense")} cur={cur} />
+                <Money label="Autres obligations récurrentes" value={numbers.other_monthly_obligations} onChange={set("other_monthly_obligations")} cur={cur} />
+              </div>
+              <MoneyLines rows={readMoneyLines(details, "extra_charges")} onChange={(rows) => setDetails((current) => ({ ...current, extra_charges: rows }))} addLabel="Ajouter une charge" currency={cur} />
+              <div className="finance-recap">
+                <RecapItem label="Total charges familiales" value={formatMoney(recap.familyMonthly, cur)} strong />
+              </div>
+            </FormSection>
+            <FormSection id="fa-simplified-result" icon={Calculator} title="Compte de résultat du mois et capacité de remboursement" description={periodNote}>
+              <div className="finance-recap">
+                <RecapItem label="Chiffre d'affaires" value={formatMoney(recap.activityMonthlyTurnover, cur)} />
+                <RecapItem label="Achats" value={formatMoney(recap.activityMonthlyPurchases, cur)} />
+                <RecapItem label="Charges d'exploitation hors achats" value={formatMoney(recap.activityMonthlyExpenses - recap.activityMonthlyPurchases, cur)} />
+                <RecapItem label="Résultat de l'activité" value={formatMoney(recap.activityMonthlyNet, cur)} strong />
+                <RecapItem label="Marge de l'activité" value={recap.activityMargin == null ? "—" : `${new Intl.NumberFormat("fr-FR", { minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(recap.activityMargin)} %`} />
+                <RecapItem label="Autres activités" value={formatMoney(recap.otherActivityMonthly, cur)} />
+                <RecapItem label="Revenus du ménage" value={formatMoney(recap.householdMonthly, cur)} />
+                <RecapItem label="Charges familiales" value={formatMoney(recap.familyMonthly, cur)} />
+                {recap.retained != null && recap.householdHaircut && <RecapItem label={`Retenue ${new Intl.NumberFormat("fr-FR", { maximumFractionDigits: 2 }).format(recap.weight)} % · revenus du ménage`} value={formatMoney(recap.householdInformalRetained, cur)} />}
+                {recap.retained != null && recap.activityHaircut && <RecapItem label={`Retenue ${new Intl.NumberFormat("fr-FR", { maximumFractionDigits: 2 }).format(recap.weight)} % · activité`} value={formatMoney(recap.mainActivityRetained, cur)} />}
+                {recap.retained != null && recap.hasOtherActivity && <RecapItem label={recap.otherHaircut ? `Retenue ${new Intl.NumberFormat("fr-FR", { maximumFractionDigits: 2 }).format(recap.weight)} % · autres activités` : "Autres activités retenues"} value={formatMoney(recap.otherActivityRetained, cur)} />}
+                {recap.retained != null && <RecapItem label="Revenus retenus après pondération" value={formatMoney(recap.retained, cur)} strong />}
+                <RecapItem label="Mensualités déjà en cours" value={formatMoney(recap.existingInstallments, cur)} />
+                <RecapItem label="Reste à vivre avant la nouvelle échéance" value={formatMoney(recap.disposable, cur)} strong />
+                {recap.perCapita !== null && <RecapItem label={`Reste à vivre / personne (${(dependents ?? 0) + 1})`} value={formatMoney(recap.perCapita, cur)} />}
+                <RecapItem label="Solde de trésorerie prévisionnel" value={formatMoney(recap.surplus, cur)} />
+              </div>
+              <ActivityLines rows={readActivityLines(details)} onChange={(rows) => setDetails((current) => ({ ...current, extra_activities: rows }))} currency={cur} />
+              <TpeReconstitution details={details} onChange={setDetails} currency={cur} part="safety" />
+              <div className="form-grid two-col">
+                <Money label="Encaissements prévisionnels mensuels" value={numbers.projected_monthly_inflows} onChange={set("projected_monthly_inflows")} cur={cur} />
+                <Money label="Sorties de trésorerie prévisionnelles mensuelles" value={numbers.projected_monthly_outflows} onChange={set("projected_monthly_outflows")} cur={cur} />
+              </div>
+              <label className="field">
+                <span>Commentaire sur les hypothèses de trésorerie</span>
+                <textarea rows={2} value={cashflowComment} onChange={(e) => setCashflowComment(e.target.value)} />
+              </label>
+              {detailTable("cashflow")}
+              {supplements(["opening_cash_balance"])}
+              {operatingPurpose && supplements(["receivable_delay_days"], ["receivable_delay_days"])}
+              {investmentPurpose && supplements(["maintenance_investment"])}
+            </FormSection>
+            <FormSection id="fa-cash-check" icon={Wallet} title="Vérification de la trésorerie à partir de la date du dernier achat" description={periodNote}>
+              <TpeReconstitution details={details} onChange={setDetails} currency={cur} part="cash" omitLastPurchase />
+            </FormSection>
+            <FormSection id="fa-prior-year" icon={Gauge} title="Étude comparative N / N-1" description={periodNote}>
+              <div className="form-grid two-col">
+                <Money label="CA de l'activité N-1" value={numbers.turnover_prev} onChange={set("turnover_prev")} cur={cur} />
+                <Money label="Résultat de l'activité N-1" value={numbers.net_result_prev} onChange={set("net_result_prev")} cur={cur} signed />
+              </div>
+              <div className="finance-recap">
+                <RecapItem label="Variation du CA" value={formatMoney(yearGap(numbers.activity_turnover, numbers.turnover_prev), cur)} />
+                <RecapItem label="Variation du CA (%)" value={percentText(yearRate(numbers.activity_turnover, numbers.turnover_prev, false))} />
+                <RecapItem label="Variation du résultat" value={formatMoney(yearGap(String(recap.activityMonthlyNet), numbers.net_result_prev), cur)} />
+                <RecapItem label="Variation du résultat (%)" value={percentText(yearRate(String(recap.activityMonthlyNet), numbers.net_result_prev, true))} />
+              </div>
+              {detailTable("history")}
+            </FormSection>
+            <FormSection id="fa-patrimony" icon={Landmark} title="Comparatif du bilan (patrimoine)" description={periodNote}>
+              <PatrimonyComparison
+                numbers={numbers}
+                details={details}
+                currency={cur}
+                setNumber={set}
+                setDetails={setDetails}
+                stockLocked={stockInventoryTotal(readProductRows(details)) != null}
+              />
+            </FormSection>
+            <FormSection id="fa-committee" icon={Calculator} title="Indicateurs clés pour le comité de crédit" description={periodNote}>
+              <div className="finance-recap">
+                <RecapItem label="Résultat de l'activité / mois" value={formatMoney(recap.activityMonthlyNet, cur)} />
+                {recap.retained != null && <RecapItem label="Revenus retenus / mois" value={formatMoney(recap.retained, cur)} />}
+                <RecapItem label="Charges familiales / mois" value={formatMoney(recap.familyMonthly, cur)} />
+                <RecapItem label="Reste à vivre avant la nouvelle échéance" value={formatMoney(recap.disposable, cur)} strong />
+                {recap.perCapita !== null && <RecapItem label={`Reste à vivre / personne (${(dependents ?? 0) + 1})`} value={formatMoney(recap.perCapita, cur)} />}
+                <RecapItem label="Échéance institution maximale" value={recordedInstallment == null ? "—" : formatMoney(recordedInstallment, cur)} />
+                <RecapItem label="Capacité avant le nouveau crédit" value={formatMoney(recap.disposable, cur)} />
+                <RecapItem label="Taux d'endettement (%)" value={liveDebtRatio == null ? "—" : new Intl.NumberFormat("fr-FR", { minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(liveDebtRatio)} />
+                <RecapItem label="DSCR (×)" value={initial?.dscr ? initial.dscr : "—"} />
+                <RecapItem label="Score interne (/100)" value={initial?.internal_score ? initial.internal_score : "—"} />
+              </div>
+            </FormSection>
+          </>}
+
+          {!informalActivity && <FormSection
             id="fa-activity"
             icon={Store}
             title={
@@ -1318,7 +1826,7 @@ export function FinancialAnalysisForm({
           >
             {showActivityBlock && (
               <>
-                <ProductSheetTable value={details} onChange={setDetails} currency={cur} />
+                <ProductSheetTable value={details} onChange={setDetails} currency={cur} showIntro={false} />
                 <TpeReconstitution details={details} onChange={setDetails} currency={cur} part="sales" />
                 {detailText("business_model", "Modèle économique : clientèle, fournisseurs et approvisionnements")}
                 {detailText("sales_verification", "Reconstitution des ventes : recettes journalières, cahier de caisse et mobile money")}
@@ -1384,9 +1892,14 @@ export function FinancialAnalysisForm({
                     onChange={(e) => setActivityComment(e.target.value)}
                   />
                 </label>
+                <ActivityLines
+                  rows={readActivityLines(details)}
+                  onChange={(rows) => setDetails((current) => ({ ...current, extra_activities: rows }))}
+                  currency={cur}
+                />
               </>
             )}
-          </FormSection>
+          </FormSection>}
 
           {showActivityBlock && <FormSection
             id="fa-statements"
@@ -1421,7 +1934,7 @@ export function FinancialAnalysisForm({
             </>}
           </FormSection>}
 
-          <FormSection
+          {!informalActivity && <FormSection
             id="fa-charges"
             icon={ReceiptText}
             title="Charges, obligations et patrimoine du ménage"
@@ -1446,6 +1959,7 @@ export function FinancialAnalysisForm({
               currency={cur}
             />
             <div className="finance-recap">
+              {recap.retained != null && <RecapItem label="Revenus retenus après pondération / mois" value={formatMoney(recap.retained, cur)} strong />}
               <RecapItem label="Total charges" value={formatMoney(recap.charges, cur)} />
               <RecapItem label="Reste à vivre mensuel (avant nouvelle échéance)" value={formatMoney(recap.disposable, cur)} strong />
               {recap.perCapita !== null && (
@@ -1460,18 +1974,18 @@ export function FinancialAnalysisForm({
               <Money label="Épargne disponible" value={numbers.personal_savings} onChange={set("personal_savings")} cur={cur} />
               <Money label="Valeur immobilière nette" value={numbers.personal_real_estate_value} onChange={set("personal_real_estate_value")} cur={cur} />
               <Money label="Valeur des véhicules" value={numbers.personal_vehicle_value} onChange={set("personal_vehicle_value")} cur={cur} />
-              <Money label="Actifs productifs" value={numbers.personal_productive_assets} onChange={set("personal_productive_assets")} cur={cur} />
+              <Money label="Actifs productifs du ménage" value={numbers.personal_productive_assets} onChange={set("personal_productive_assets")} cur={cur} />
             </div>
-          </FormSection>
+          </FormSection>}
 
           {showStabilityBlock && (
           <FormSection
             id="fa-stability"
             icon={Landmark}
             title="Stabilité salariale et quotité cessible"
-            description={dossierProfile ? "Retenues à la source et vérification du salaire. L'employeur et l'ancienneté sont sur le dossier." : "Employeur, traçabilité du salaire, ancienneté et retenues à la source."}
+            description={dossierProfile ? "Retenues à la source et vérification du salaire. Le contrat et l'employeur se lisent sur le dossier." : "Employeur, traçabilité du salaire, ancienneté et retenues à la source."}
           >
-            {detailText("employment_outlook", "Contrat, échéance du CDD, retraite, régularité de paiement et stabilité de l'employeur")}
+            {dossierProfile && <DossierEmployment application={application} />}
             <div className="form-grid two-col">
               {!dossierProfile && <Select label="Type d'emploi" value={analysisStr.employment_type} onChange={setAnalysis("employment_type")} options={EMPLOYMENT_TYPES} />}
               {!dossierProfile && <Text label="Employeur" value={analysisStr.employer_name} onChange={setAnalysis("employer_name")} />}
@@ -1484,12 +1998,12 @@ export function FinancialAnalysisForm({
               {!dossierProfile && <Checkbox label="Salaire domicilié ou traçable en banque" checked={analysisBool.salary_paid_through_bank} onChange={toggleAnalysis("salary_paid_through_bank")} />}
               <Checkbox label="Salaire vérifié sur bulletin ou relevé" checked={analysisBool.salary_verified} onChange={toggleAnalysis("salary_verified")} />
             </div>
-            <p className="muted small">
-              La base quotité cessible reprend le salaire net du demandeur
-              (revenus du ménage). Pour un salarié/fonctionnaire, la quotité
-              disponible est comparée à l&apos;échéance institution (hors
-              épargne). Laisser la pondération vide pour le seuil filiale.
-            </p>
+            {detailText(
+              "employment_outlook",
+              dossierProfile
+                ? "Régularité de paiement, perspective de retraite et stabilité de l'employeur"
+                : "Contrat, échéance du CDD, retraite, régularité de paiement et stabilité de l'employeur",
+            )}
           </FormSection>
           )}
         </>
@@ -1568,7 +2082,7 @@ export function FinancialAnalysisForm({
             onChange={(checked) => setDetails((current) => ({ ...current, campaign_open: checked ? "yes" : "no" }))}
           />
           {campaignOpen && <>
-            <p className="muted small">Le surplus est les recettes de la campagne moins ses charges. Il est réparti sur la durée du crédit et devient la capacité retenue à la place d&apos;un mois de vente ordinaire. Les stocks ne sont pas des recettes. Une case vide reste vide ; si une seule des deux sommes est saisie, l&apos;autre compte pour zéro.</p>
+            <p className="muted small">Le surplus est les recettes de la campagne moins ses charges. Il est réparti sur la durée du crédit et remplace le mois de vente ordinaire de cette activité. Les stocks ne sont pas des recettes. Une case vide reste vide ; si une seule des deux sommes est saisie, l&apos;autre compte pour zéro.</p>
             <div className="form-grid two-col">
               <Text label="Nom de la campagne" value={typeof details.campaign_name === "string" ? details.campaign_name : ""} onChange={(value) => setDetails((current) => ({ ...current, campaign_name: value }))} />
               <Text label="Culture, élevage ou transformation" value={typeof details.campaign_production === "string" ? details.campaign_production : ""} onChange={(value) => setDetails((current) => ({ ...current, campaign_production: value }))} />
@@ -1591,7 +2105,7 @@ export function FinancialAnalysisForm({
               <RecapItem label="Stock d'intrants, hors revenu" value={formatMoney(campaignAmount("campaign_input_stock"), cur)} />
               <RecapItem label="Stock de récolte, hors revenu" value={formatMoney(campaignAmount("campaign_harvest_stock"), cur)} />
             </div>
-            <p className="muted small">Le taux d&apos;endettement continue de lire le revenu déjà observé. Seule la capacité de remboursement retient ce surplus mensuel. Pour un groupement, il s&apos;ajoute aux cotisations nettes et remplace la marge d&apos;activité. L&apos;épargne collective n&apos;est pas ajoutée.</p>
+            <p className="muted small">Pour une personne physique, ce surplus mensuel remplace le chiffre d&apos;affaires ordinaire de l&apos;activité, dans la capacité et dans le taux d&apos;endettement. Une autre activité saisie à part reste ajoutée. Pour un groupement, il s&apos;ajoute aux cotisations nettes. L&apos;épargne collective n&apos;est pas ajoutée.</p>
           </>}
           <Checkbox
             label="Activité en création : pas d'historique d'exploitation à exiger"
@@ -1613,41 +2127,35 @@ export function FinancialAnalysisForm({
           </>}
         </FormSection>
 
-        <FormSection
+        {!informalActivity && <FormSection
           id="fa-treasury"
           icon={Wallet}
           title="Capacité et retenue de prudence"
-          description="La capacité est comparée au service de la dette. La retenue vient ensuite, sans remplacer le taux d'endettement."
         >
         {(isCorporate || showActivityBlock) && <TpeReconstitution details={details} onChange={setDetails} currency={cur} part="safety" />}
-        {creationOpen && <p className="muted small">Activité en création : ce solde prévisionnel porte le DSCR. Le chiffre d&apos;affaires passé ne le remplace pas. Sans encaissement ni sortie, l&apos;enregistrement du dossier est refusé.</p>}
-        <div className="form-grid two-col">
-          <Money label="Encaissements prévisionnels mensuels" value={numbers.projected_monthly_inflows} onChange={set("projected_monthly_inflows")} cur={cur} />
-          <Money label="Sorties de trésorerie prévisionnelles mensuelles" value={numbers.projected_monthly_outflows} onChange={set("projected_monthly_outflows")} cur={cur} />
-        </div>
-        <div className="finance-recap">
-          <RecapItem label="Solde de trésorerie prévisionnel mensuel" value={formatMoney(recap.surplus, cur)} strong />
-        </div>
-        <label className="field">
-          <span>Commentaire sur les hypothèses de trésorerie (flux hors service de la dette)</span>
-          <textarea
-            rows={2}
-            value={cashflowComment}
-            onChange={(e) => setCashflowComment(e.target.value)}
-          />
-        </label>
-        {detailTable("cashflow")}
-        {supplements(["opening_cash_balance"])}
-        <p className="muted small">Le solde d'ouverture est celui précédant le premier mois saisi. Renseignez tous les mois successifs pour obtenir une trésorerie cumulée. Les sorties et services de dette détaillés doivent correspondre aux échéances réelles, épargne obligatoire comprise.</p>
-        {purposeText && <p className="muted small">{purposeText}</p>}
+        {path !== "SALARY" && <>
+          <div className="form-grid two-col">
+            <Money label="Encaissements prévisionnels mensuels" value={numbers.projected_monthly_inflows} onChange={set("projected_monthly_inflows")} cur={cur} />
+            <Money label="Sorties de trésorerie prévisionnelles mensuelles" value={numbers.projected_monthly_outflows} onChange={set("projected_monthly_outflows")} cur={cur} />
+          </div>
+          <div className="finance-recap">
+            <RecapItem label="Solde de trésorerie prévisionnel mensuel" value={formatMoney(recap.surplus, cur)} strong />
+          </div>
+          <label className="field">
+            <span>Commentaire sur les hypothèses de trésorerie</span>
+            <textarea
+              rows={2}
+              value={cashflowComment}
+              onChange={(e) => setCashflowComment(e.target.value)}
+            />
+          </label>
+          {detailTable("cashflow")}
+          {supplements(["opening_cash_balance"])}
+        </>}
         {supplements(["purchase_stress_pct", ...((isCorporate || operatingPurpose) ? ["receivable_delay_days"] : [])], operatingPurpose ? ["receivable_delay_days"] : [])}
         {investmentPurpose && path !== "RECONSTITUTED" && supplements(["maintenance_investment"])}
-        {detailText("seasonality", "Saisonnalité : mois creux, récoltes, campagnes et remboursement adapté")}
-        {detailText("stress_assumptions", "Scénarios défavorables : baisse des revenus, hausse des achats, retards clients et mesures d'atténuation")}
-        {detailText("project_cost", "Coût du projet : besoins, investissements et justificatifs / devis")}
-        {detailText("own_contribution", "Apport propre : montant, origine et disponibilité vérifiée")}
-        {detailText("financing_plan", "Plan de financement : besoins, ressources et adéquation durée / objet")}
-        </FormSection>
+        {!(isCorporate || isGroupement || showActivityBlock || configuration.data?.protected_analysis_sections?.includes("fa-sector")) && detailText("seasonality", "Saisonnalité")}
+        </FormSection>}
 
         {minimalCashVisible && <FormSection
           id="fa-minimal"
@@ -1694,7 +2202,7 @@ export function FinancialAnalysisForm({
           </>}
         </FormSection>}
 
-        {(isCorporate || showActivityBlock) && (
+        {!informalActivity && (isCorporate || showActivityBlock) && (
         <FormSection
           id="fa-trend"
           icon={Gauge}
@@ -1707,16 +2215,18 @@ export function FinancialAnalysisForm({
               <div className="form-grid two-col">
                 <Money label="Stock" value={numbers.activity_stock_value} onChange={set("activity_stock_value")} cur={cur} />
                 <Money label="Créances clients" value={numbers.activity_receivables} onChange={set("activity_receivables")} cur={cur} />
-                <Money label="Trésorerie disponible" value={numbers.activity_cash_available} onChange={set("activity_cash_available")} cur={cur} />
-                <Money label="Actifs productifs" value={numbers.activity_fixed_assets} onChange={set("activity_fixed_assets")} cur={cur} />
+                <Money label="Trésorerie de l'activité" value={numbers.activity_cash_available} onChange={set("activity_cash_available")} cur={cur} />
+                <Money label="Actifs productifs de l'activité" value={numbers.activity_fixed_assets} onChange={set("activity_fixed_assets")} cur={cur} />
                 <Money label="Dettes fournisseurs" value={numbers.activity_supplier_debt} onChange={set("activity_supplier_debt")} cur={cur} />
+                <DayField label="Délai moyen paiement clients (jours)" value={detailNumber("observed_client_payment_days")} onChange={(value) => setDetails((current) => ({ ...current, observed_client_payment_days: value }))} />
+                <DayField label="Délai moyen paiement fournisseurs (jours)" value={detailNumber("observed_supplier_payment_days")} onChange={(value) => setDetails((current) => ({ ...current, observed_supplier_payment_days: value }))} />
               </div>
             </>
           )}
           <TpeReconstitution details={details} onChange={setDetails} currency={cur} part="cash" />
           <div className="form-grid two-col">
-            <Money label="Chiffre d'affaires N-1" value={numbers.turnover_prev} onChange={set("turnover_prev")} cur={cur} />
-            <Money label="Résultat net N-1" value={numbers.net_result_prev} onChange={set("net_result_prev")} cur={cur} signed />
+            <Money label={isCorporate ? "Chiffre d'affaires N-1" : "CA de l'activité N-1"} value={numbers.turnover_prev} onChange={set("turnover_prev")} cur={cur} />
+            <Money label={isCorporate ? "Résultat net N-1" : "Résultat de l'activité N-1"} value={numbers.net_result_prev} onChange={set("net_result_prev")} cur={cur} signed />
           </div>
           {detailTable("history")}
           <p className="muted small">Les variations sont calculées sur des périodes de même durée. Pour une activité, le bilan ci-dessus est celui de l'exploitation ; le bilan d'entreprise reste dans sa section dédiée.</p>
@@ -1750,9 +2260,9 @@ export function FinancialAnalysisForm({
           <Select label="Dynamique du marché" value={esStr.market_dynamic} onChange={setStr("market_dynamic")} options={toOptions(FINANCE_LABELS.market_dynamic)} />
           <Select label="Intensité de la saisonnalité" value={esStr.seasonality_level} onChange={setStr("seasonality_level")} options={toOptions(FINANCE_LABELS.risk_level)} />
           <Select label="Intensité concurrentielle" value={esStr.competition_intensity} onChange={setStr("competition_intensity")} options={toOptions(FINANCE_LABELS.risk_level)} />
-          <Select label="Dépendance aux fournisseurs" value={esStr.supplier_dependency} onChange={setStr("supplier_dependency")} options={toOptions(FINANCE_LABELS.risk_level)} />
+          {!informalActivity && <Select label="Dépendance aux fournisseurs" value={esStr.supplier_dependency} onChange={setStr("supplier_dependency")} options={toOptions(FINANCE_LABELS.risk_level)} />}
           <Select label="Concentration de la clientèle" value={esStr.client_concentration} onChange={setStr("client_concentration")} options={toOptions(FINANCE_LABELS.risk_level)} />
-          <Select label="Sensibilité au prix des intrants" value={esStr.input_price_sensitivity} onChange={setStr("input_price_sensitivity")} options={toOptions(FINANCE_LABELS.risk_level)} />
+          {!informalActivity && <Select label="Sensibilité au prix des intrants" value={esStr.input_price_sensitivity} onChange={setStr("input_price_sensitivity")} options={toOptions(FINANCE_LABELS.risk_level)} />}
           <Select label="Exposition aux devises / imports" value={esStr.fx_exposure} onChange={setStr("fx_exposure")} options={toOptions(FINANCE_LABELS.risk_level)} />
           <Select label="Sensibilité réglementaire / fiscale" value={esStr.regulatory_sensitivity} onChange={setStr("regulatory_sensitivity")} options={toOptions(FINANCE_LABELS.risk_level)} />
           <Select label="Sensibilité climatique" value={esStr.climate_sensitivity} onChange={setStr("climate_sensitivity")} options={toOptions(FINANCE_LABELS.risk_level)} />
@@ -1835,34 +2345,30 @@ export function FinancialAnalysisForm({
           title="Conclusion de l'analyste"
           description="Recommandation, synthèse structurée et pièces justificatives."
         >
-        <div className="form-grid two-col">
-          <Select
-            label="Recommandation (obligatoire pour soumettre)"
-            value={recommendation}
-            onChange={setRecommendation}
-            options={RECOMMENDATIONS}
+        <Select
+          label="Recommandation (obligatoire pour soumettre)"
+          value={recommendation}
+          onChange={setRecommendation}
+          options={RECOMMENDATIONS}
+        />
+        <label className="field">
+          <span>Points forts</span>
+          <textarea
+            rows={3}
+            value={strengths}
+            onChange={(e) => setStrengths(e.target.value)}
+            placeholder="Atouts du dossier (capacité, garanties, historique…)"
           />
-        </div>
-        <div className="form-grid two-col">
-          <label className="field">
-            <span>Points forts</span>
-            <textarea
-              rows={3}
-              value={strengths}
-              onChange={(e) => setStrengths(e.target.value)}
-              placeholder="Atouts du dossier (capacité, garanties, historique…)"
-            />
-          </label>
-          <label className="field">
-            <span>Points de vigilance</span>
-            <textarea
-              rows={3}
-              value={weaknesses}
-              onChange={(e) => setWeaknesses(e.target.value)}
-              placeholder="Risques identifiés, faiblesses…"
-            />
-          </label>
-        </div>
+        </label>
+        <label className="field">
+          <span>Points de vigilance</span>
+          <textarea
+            rows={3}
+            value={weaknesses}
+            onChange={(e) => setWeaknesses(e.target.value)}
+            placeholder="Risques identifiés, faiblesses…"
+          />
+        </label>
         <label className="field">
           <span>Conditions / recommandations proposées</span>
           <textarea
@@ -1888,11 +2394,10 @@ export function FinancialAnalysisForm({
           garanties, historique).
         </p>
         {detailText("monitoring_plan", "Suivi proposé : pièces à actualiser, fréquence des visites, indicateurs et engagements à surveiller")}
-        <MultiFileField
-          label="Pièces justificatives (bulletins, états financiers, relevés…)"
-          files={docs}
-          onChange={setDocs}
+        <ConclusionFiles
           existing={initial?.documents}
+          rows={conclusionFiles}
+          onChange={setConclusionFiles}
         />
         </FormSection>
 
@@ -1961,7 +2466,10 @@ function FormSection({
   const index = sections.findIndex((section) => section.id === id);
   if (index >= 0 && !sections[index].visible) return null;
   const fallbackOrder: Record<string, number> = {
-    "fa-params": 10, "fa-quality": 20, "fa-debt": 30, "fa-income": 40, "fa-stability": 50,
+    "fa-params": 10, "fa-quality": 20, "fa-debt": 30, "fa-income": 40,
+    "fa-stock-margin": 41, "fa-purchases": 42, "fa-sales-calc": 43, "fa-operating": 44, "fa-family": 45,
+    "fa-simplified-result": 46, "fa-cash-check": 47, "fa-prior-year": 48, "fa-patrimony": 49, "fa-committee": 50,
+    "fa-stability": 51,
     "fa-group": 60, "fa-business": 70, "fa-statements": 85, "fa-activity": 80, "fa-exploitation": 90,
     "fa-charges": 100, "fa-cycle": 105, "fa-treasury": 110, "fa-balance": 120, "fa-minimal": 125, "fa-trend": 130,
     "fa-collateral": 140, "fa-sector": 150, "fa-es": 160, "fa-conclusion": 170,
@@ -1984,6 +2492,34 @@ function FormSection({
   );
 }
 
+function DossierEmployment({ application }: { application: CreditApplication }) {
+  const contract = application.contract_type
+    ? CREDIT_LABELS.contract_type[application.contract_type] || application.contract_type
+    : "";
+  const rows: [string, string][] = [
+    ["Profession", application.employment_profession || ""],
+    ["Poste occupé", application.job_title || ""],
+    ["Employeur", application.employer_name || ""],
+    ["Secteur de l'employeur", application.employer_sector || ""],
+    ["Type de contrat", contract],
+    ["Fin du contrat", application.contract_type === "CDD" && application.contract_end_date ? application.contract_end_date.slice(0, 10).split("-").reverse().join("/") : ""],
+    ["Ancienneté dans l'emploi", application.job_seniority_months != null ? `${application.job_seniority_months} mois` : ""],
+    ["Ancienneté professionnelle", application.career_seniority_months != null ? `${application.career_seniority_months} mois` : ""],
+    ["Domiciliation du salaire", application.employer_name || application.contract_type || application.salary_domiciliation ? (application.salary_domiciliation ? "Oui" : "Non") : ""],
+  ].filter((row): row is [string, string] => Boolean(row[1]));
+  if (rows.length === 0) return null;
+  return (
+    <>
+      <p className="subsection-label">Déjà indiqué sur le dossier</p>
+      <dl className="def-list two">
+        {rows.map(([label, value]) => (
+          <div key={label}><dt>{label}</dt><dd>{value}</dd></div>
+        ))}
+      </dl>
+    </>
+  );
+}
+
 function RecapItem({
   label,
   value,
@@ -2003,6 +2539,626 @@ function RecapItem({
 
 type MoneyLine = { label: string; amount: string };
 
+function readProductRows(details: AnalysisDetails): Record<string, string>[] {
+  const value = details.products;
+  if (!Array.isArray(value)) return [];
+  return value.map((row) => {
+    const source = (row ?? {}) as Record<string, unknown>;
+    return Object.fromEntries(Object.entries(source).map(([key, content]) => [key, content == null ? "" : String(content)]));
+  });
+}
+
+function stockInventoryTotal(rows: Record<string, string>[]): number | null {
+  const values = rows.map(stockLine).map((line) => line.value).filter((value): value is number => value != null);
+  if (!values.length) return null;
+  return Math.round(values.reduce((total, value) => total + value, 0) * 100) / 100;
+}
+
+function stockLine(row: Record<string, string>) {
+  const quantity = productAmount(row.quantity);
+  const purchase = productAmount(row.unit_cost);
+  const sale = productAmount(row.sale_price);
+  return {
+    value: quantity != null && purchase != null ? quantity * purchase : null,
+    margin: quantity != null && purchase != null && sale != null ? (sale - purchase) * quantity : null,
+    sales: quantity != null && sale != null ? quantity * sale : null,
+  };
+}
+
+function StockMarginTable({
+  rows,
+  onChange,
+  currency,
+}: {
+  rows: Record<string, string>[];
+  onChange: (rows: Record<string, string>[]) => void;
+  currency: string;
+}) {
+  function update(index: number, key: string, content: string) {
+    const next = rows.slice();
+    next[index] = { ...next[index], nature: next[index].nature || "RESOLD", [key]: content };
+    onChange(next);
+  }
+  const lines = rows.map(stockLine);
+  const values = lines.map((line) => line.value).filter((value): value is number => value != null);
+  const margins = lines.flatMap((line) => line.margin != null && line.sales != null ? [[line.margin, line.sales] as const] : []);
+  const totalValue = values.length ? values.reduce((total, value) => total + value, 0) : null;
+  const totalMargin = margins.length ? margins.reduce((total, pair) => total + pair[0], 0) : null;
+  const totalSales = margins.reduce((total, pair) => total + pair[1], 0);
+  const marginRate = totalMargin != null && totalSales !== 0 ? (totalMargin / totalSales) * 100 : null;
+  return (
+    <div className="product-sheet">
+      <div className="table-scroll">
+        <table className="table">
+          <thead>
+            <tr>
+              <th scope="col">Article / produit</th>
+              <th scope="col">Unité de mesure</th>
+              <th scope="col">Quantité</th>
+              <th scope="col">Prix d&apos;achat</th>
+              <th scope="col">Prix de vente</th>
+              <th scope="col">Valeur</th>
+              <th scope="col">Marge prévisionnelle brute</th>
+              <th scope="col" aria-label="Retirer" />
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((row, index) => {
+              const line = lines[index];
+              return (
+                <tr key={index}>
+                  <td><input aria-label={`Article, ligne ${index + 1}`} type="text" value={row.name ?? ""} onChange={(event) => update(index, "name", event.target.value)} /></td>
+                  <td><input aria-label={`Unité de mesure, ligne ${index + 1}`} type="text" value={row.unit ?? ""} onChange={(event) => update(index, "unit", event.target.value)} /></td>
+                  <td><input aria-label={`Quantité, ligne ${index + 1}`} type="number" min={0} step="any" value={row.quantity ?? ""} onChange={(event) => update(index, "quantity", event.target.value)} /></td>
+                  <td><input aria-label={`Prix d'achat, ligne ${index + 1}`} type="number" min={0} step="any" value={row.unit_cost ?? ""} onChange={(event) => update(index, "unit_cost", event.target.value)} /></td>
+                  <td><input aria-label={`Prix de vente, ligne ${index + 1}`} type="number" min={0} step="any" value={row.sale_price ?? ""} onChange={(event) => update(index, "sale_price", event.target.value)} /></td>
+                  <td className="num">{formatMoney(line.value, currency)}</td>
+                  <td className="num">{formatMoney(line.margin, currency)}</td>
+                  <td>
+                    <button type="button" className="btn btn-ghost btn-icon" aria-label={`Retirer la ligne ${index + 1}`} onClick={() => onChange(rows.filter((_, rowIndex) => rowIndex !== index))}>
+                      <Trash2 size={16} />
+                    </button>
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+          <tfoot>
+            <tr>
+              <th scope="row" colSpan={5}>Valeur totale du stock</th>
+              <td className="num">{formatMoney(totalValue, currency)}</td>
+              <td />
+              <td />
+            </tr>
+            <tr>
+              <th scope="row" colSpan={5}>Marge prévisionnelle brute totale</th>
+              <td />
+              <td className="num">{formatMoney(totalMargin, currency)}</td>
+              <td />
+            </tr>
+            <tr>
+              <th scope="row" colSpan={5}>Taux de marge prévisionnelle</th>
+              <td />
+              <td className="num">{marginRate == null ? "—" : `${marginRate.toFixed(2)} %`}</td>
+              <td />
+            </tr>
+          </tfoot>
+        </table>
+      </div>
+      <button type="button" className="btn btn-ghost" onClick={() => onChange([...rows, { nature: "RESOLD", name: "", unit: "", quantity: "", unit_cost: "", sale_price: "" }])}>
+        Ajouter
+      </button>
+    </div>
+  );
+}
+
+const PURCHASE_KEYS = ["date", "product", "supplier", "quantity", "unit", "unit_price"] as const;
+
+function readPurchaseRows(details: AnalysisDetails): Record<string, string>[] {
+  const value = details.purchase_history;
+  if (!Array.isArray(value)) return [];
+  return value.map((row) => {
+    const source = (row ?? {}) as Record<string, unknown>;
+    return Object.fromEntries(PURCHASE_KEYS.map((key) => [key, source[key] == null ? "" : String(source[key])]));
+  });
+}
+
+const BALANCE_ROWS = [
+  { label: "Stock", currentKey: "activity_stock_value", previousKey: "activity_stock_prev", readOnly: false },
+  { label: "Créances clients", currentKey: "activity_receivables", previousKey: "activity_receivables_prev", readOnly: true },
+  { label: "Trésorerie de l'activité", currentKey: "activity_cash_available", previousKey: "activity_cash_prev", readOnly: false },
+  { label: "Actifs productifs", currentKey: "activity_fixed_assets", previousKey: "activity_fixed_assets_prev", readOnly: false },
+  { label: "Dettes fournisseurs", currentKey: "activity_supplier_debt", previousKey: "activity_supplier_debt_prev", readOnly: true },
+] as const;
+
+function detailValue(details: AnalysisDetails, key: string): string {
+  const value = details[key];
+  return typeof value === "string" ? value : "";
+}
+
+function lineVariation(current: unknown, previous: unknown): number | null {
+  const now = presentAmount(current);
+  const before = presentAmount(previous);
+  if (now == null || before == null) return null;
+  return Math.round((now - before) * 100) / 100;
+}
+
+function yearGap(current: string, previous: string): number | null {
+  const now = presentAmount(current);
+  const before = presentAmount(previous);
+  if (now == null || before == null) return null;
+  return Math.round((now - before) * 100) / 100;
+}
+
+function yearRate(current: string, previous: string, absoluteBase: boolean): number | null {
+  const now = presentAmount(current);
+  const before = presentAmount(previous);
+  if (now == null || before == null || before === 0) return null;
+  const base = absoluteBase ? Math.abs(before) : before;
+  if (base === 0) return null;
+  return Math.round(((now - before) / base) * 10000) / 100;
+}
+
+function percentText(value: number | null): string {
+  if (value == null) return "—";
+  return `${new Intl.NumberFormat("fr-FR", { minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(value)} %`;
+}
+
+function PatrimonyComparison({
+  numbers, details, currency, setNumber, setDetails, stockLocked = false,
+}: {
+  numbers: NumericState;
+  details: AnalysisDetails;
+  currency: string;
+  setNumber: (key: NumericKey) => (value: string) => void;
+  setDetails: (value: AnalysisDetails | ((current: AnalysisDetails) => AnalysisDetails)) => void;
+  stockLocked?: boolean;
+}) {
+  const current = {
+    stock: numbers.activity_stock_value,
+    receivables: numbers.activity_receivables,
+    cash: numbers.activity_cash_available,
+    fixed: numbers.activity_fixed_assets,
+    debt: numbers.activity_supplier_debt,
+  };
+  const previous = {
+    stock: detailValue(details, "activity_stock_prev"),
+    receivables: detailValue(details, "activity_receivables_prev"),
+    cash: detailValue(details, "activity_cash_prev"),
+    fixed: detailValue(details, "activity_fixed_assets_prev"),
+    debt: detailValue(details, "activity_supplier_debt_prev"),
+  };
+  const reading = activityBalanceReading(current, previous);
+  const household = householdPatrimonyTotal(details as Record<string, unknown>, [
+    numbers.personal_savings, numbers.personal_real_estate_value,
+    numbers.personal_vehicle_value, numbers.personal_productive_assets,
+  ]);
+  const combined = netPatrimony(reading.net, household);
+  return (
+    <>
+      <p className="subsection-label">Bilan de l&apos;activité</p>
+      <div className="table-scroll">
+        <table className="table">
+          <thead>
+            <tr>
+              <th scope="col">Poste</th>
+              <th scope="col">N</th>
+              <th scope="col">N-1</th>
+              <th scope="col">Variation</th>
+            </tr>
+          </thead>
+          <tbody>
+            {BALANCE_ROWS.map((row) => (
+              <tr key={row.currentKey}>
+                <th scope="row">{row.label}</th>
+                <td>
+                  {row.readOnly || (stockLocked && row.currentKey === "activity_stock_value") ? formatMoney(presentAmount(numbers[row.currentKey]), currency) : (
+                    <input aria-label={`${row.label}, N`} type="number" min={0} step="any" value={numbers[row.currentKey]} onChange={(event) => setNumber(row.currentKey)(event.target.value)} />
+                  )}
+                </td>
+                <td>
+                  <input aria-label={`${row.label}, N-1`} type="number" min={0} step="any" value={detailValue(details, row.previousKey)} onChange={(event) => setDetails((next) => ({ ...next, [row.previousKey]: event.target.value }))} />
+                </td>
+                <td className="num">{formatMoney(lineVariation(numbers[row.currentKey], detailValue(details, row.previousKey)), currency)}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      <div className="finance-recap">
+        <RecapItem label="Actif N" value={formatMoney(reading.assets, currency)} />
+        <RecapItem label="Actif N-1" value={formatMoney(reading.assetsPrev, currency)} />
+        <RecapItem label="Variation de l'actif" value={formatMoney(reading.assetsVariation, currency)} />
+        <RecapItem label="Variation de l'actif (%)" value={percentText(reading.assetsRate)} />
+        <RecapItem label="Délai clients" value={detailValue(details, "observed_client_payment_days").trim() === "" ? "—" : `${detailValue(details, "observed_client_payment_days")} jours`} />
+        <RecapItem label="Délai fournisseurs" value={detailValue(details, "observed_supplier_payment_days").trim() === "" ? "—" : `${detailValue(details, "observed_supplier_payment_days")} jours`} />
+        <RecapItem label="BFR N" value={formatMoney(reading.bfr, currency)} />
+        <RecapItem label="BFR N-1" value={formatMoney(reading.bfrPrev, currency)} />
+        <RecapItem label="Variation du BFR" value={formatMoney(reading.bfrVariation, currency)} />
+        <RecapItem label="Situation nette N" value={formatMoney(reading.net, currency)} strong />
+        <RecapItem label="Situation nette N-1" value={formatMoney(reading.netPrev, currency)} />
+      </div>
+      <p className="subsection-label subsection-split">Patrimoine du ménage</p>
+      <div className="form-grid two-col">
+        <Money label="Épargne disponible" value={numbers.personal_savings} onChange={setNumber("personal_savings")} cur={currency} />
+        <Money label="Valeur immobilière nette" value={numbers.personal_real_estate_value} onChange={setNumber("personal_real_estate_value")} cur={currency} />
+        <Money label="Valeur des véhicules" value={numbers.personal_vehicle_value} onChange={setNumber("personal_vehicle_value")} cur={currency} />
+        <Money label="Actifs productifs du ménage" value={numbers.personal_productive_assets} onChange={setNumber("personal_productive_assets")} cur={currency} />
+      </div>
+      <MoneyLines
+        rows={readMoneyLines(details, "household_assets")}
+        onChange={(rows) => setDetails((next) => ({ ...next, household_assets: rows }))}
+        addLabel="Ajouter un bien"
+        currency={currency}
+      />
+      <div className="finance-recap">
+        <RecapItem label="Total du ménage" value={formatMoney(household, currency)} />
+        <RecapItem label="Patrimoine net" value={formatMoney(combined, currency)} strong />
+      </div>
+      <label className="field">
+        <span>Autres détails</span>
+        <textarea rows={3} value={detailValue(details, "patrimony_comment")} onChange={(event) => setDetails((next) => ({ ...next, patrimony_comment: event.target.value }))} />
+      </label>
+    </>
+  );
+}
+
+function SalesPeriods({
+  rows,
+  mode,
+  currency,
+  onChange,
+  amountLabel = "Chiffre d'affaires",
+  totalLabel = "Chiffre d'affaires total",
+  averageLabel = "CA moyen",
+  monthlyLabel = "CA du mois",
+  periodLocked = false,
+  bounds,
+}: {
+  rows: Record<string, string>[];
+  mode: string;
+  currency: string;
+  onChange: (rows: Record<string, string>[], mode: string) => void;
+  amountLabel?: string;
+  totalLabel?: string;
+  averageLabel?: string;
+  monthlyLabel?: string;
+  periodLocked?: boolean;
+  bounds?: { start: string; end: string };
+}) {
+  function update(index: number, key: string, content: string) {
+    const next = rows.slice();
+    next[index] = { ...next[index], [key]: content };
+    onChange(next, mode);
+  }
+  const blank = { date: "", start: "", end: "", amount: "", appreciation: "" };
+  const daily = mode === "DAY";
+  const reading = salesPeriodReading(rows, mode, bounds);
+  const span = (line: { start: string; end: string; amount: string } | null) => (
+    line ? `${daily ? formatDate(line.start) : `${formatDate(line.start)} – ${formatDate(line.end)}`} · ${formatMoney(line.amount, currency)}` : "—"
+  );
+  const indicators = [
+    { label: "Nombre de périodes", value: reading.count == null ? "—" : String(reading.count) },
+    { label: totalLabel, value: reading.total == null ? "—" : formatMoney(reading.total, currency) },
+    { label: averageLabel, value: reading.average == null ? "—" : formatMoney(reading.average, currency) },
+    { label: "Jours couverts", value: reading.days == null ? "—" : String(reading.days) },
+    { label: monthlyLabel, value: reading.monthly == null ? "—" : formatMoney(reading.monthly, currency) },
+    { label: "Période la plus élevée", value: span(reading.high) },
+    { label: "Période la plus faible", value: span(reading.low) },
+    { label: "Appréciation dominante", value: reading.appreciation || "—" },
+  ];
+  const labelSpan = daily ? 1 : 2;
+  return (
+    <div className="product-sheet">
+      {!periodLocked && (
+        <div className="form-grid two-col">
+          <Select label="Période" value={mode} onChange={(value) => onChange(rows, value)} options={SALES_PERIODS} />
+        </div>
+      )}
+      <div className="table-scroll">
+            <table className="table">
+              <thead>
+                <tr>
+                  {daily ? <th scope="col">Date</th> : <><th scope="col">Date de début</th><th scope="col">Date de fin</th></>}
+                  <th scope="col">{amountLabel}</th>
+                  <th scope="col">Appréciation</th>
+                  <th scope="col" aria-label="Retirer" />
+                </tr>
+              </thead>
+              <tbody>
+                {rows.map((row, index) => (
+                  <tr key={index}>
+                    {daily ? (
+                      <td><input aria-label={`Date, ligne ${index + 1}`} type="date" value={row.date ?? ""} onChange={(event) => update(index, "date", event.target.value)} /></td>
+                    ) : (
+                      <>
+                        <td><input aria-label={`Date de début, ligne ${index + 1}`} type="date" value={row.start ?? ""} onChange={(event) => update(index, "start", event.target.value)} /></td>
+                        <td><input aria-label={`Date de fin, ligne ${index + 1}`} type="date" value={row.end ?? ""} onChange={(event) => update(index, "end", event.target.value)} /></td>
+                      </>
+                    )}
+                    <td><input aria-label={`${amountLabel}, ligne ${index + 1}`} type="number" min={0} step="any" value={row.amount ?? ""} onChange={(event) => update(index, "amount", event.target.value)} /></td>
+                    <td>
+                      <select aria-label={`Appréciation, ligne ${index + 1}`} value={row.appreciation ?? ""} onChange={(event) => update(index, "appreciation", event.target.value)}>
+                        <option value="">—</option>
+                        {SALES_APPRECIATIONS.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}
+                      </select>
+                    </td>
+                    <td>
+                      <button type="button" className="btn btn-ghost btn-icon" aria-label={`Retirer la ligne ${index + 1}`} onClick={() => onChange(rows.filter((_, rowIndex) => rowIndex !== index), mode)}>
+                        <Trash2 size={16} />
+                      </button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+              <tfoot>
+                {indicators.map((indicator) => (
+                  <tr key={indicator.label}>
+                    <th scope="row" colSpan={labelSpan}>{indicator.label}</th>
+                    <td className="num" colSpan={2}>{indicator.value}</td>
+                    <td />
+                  </tr>
+                ))}
+              </tfoot>
+            </table>
+          </div>
+      <button type="button" className="btn btn-ghost" onClick={() => onChange([...rows, blank], mode)}>Ajouter</button>
+    </div>
+  );
+}
+
+function PurchaseHistory({
+  rows,
+  start,
+  end,
+  currency,
+  onChange,
+  normalizeToMonth = false,
+  windowLocked = false,
+}: {
+  rows: Record<string, string>[];
+  start: string;
+  end: string;
+  currency: string;
+  onChange: (rows: Record<string, string>[], start: string, end: string) => void;
+  normalizeToMonth?: boolean;
+  windowLocked?: boolean;
+}) {
+  function update(index: number, key: string, content: string) {
+    const next = rows.slice();
+    next[index] = { ...next[index], [key]: content };
+    onChange(next, start, end);
+  }
+  const blank = { date: "", product: "", supplier: "", quantity: "", unit: "", unit_price: "" };
+  const reading = purchaseHistoryReading(rows, start, end);
+  const indicators: { label: string; value: string }[] = [
+    { label: "Achats de la période", value: reading.periodTotal == null ? "—" : formatMoney(reading.periodTotal, currency) },
+    ...(normalizeToMonth ? [{ label: "Achats du mois", value: reading.monthly == null ? "—" : formatMoney(reading.monthly, currency) }] : []),
+    { label: "Nombre d'achats", value: reading.count == null ? "—" : String(reading.count) },
+    { label: "Achat moyen", value: reading.average == null ? "—" : formatMoney(reading.average, currency) },
+    { label: "Approvisionnements par mois", value: reading.perMonth ?? "—" },
+    { label: "Dernier achat de la période", value: reading.periodLastDate ? `${formatDate(reading.periodLastDate)} · ${formatMoney(reading.periodLastAmount, currency)}` : "—" },
+    { label: "Nombre de fournisseurs", value: reading.supplierCount == null ? "—" : String(reading.supplierCount) },
+    { label: "Principal fournisseur", value: reading.mainSupplier ? `${reading.mainSupplier}${reading.mainShare == null ? "" : ` · ${reading.mainShare} %`}` : "—" },
+  ];
+  return (
+    <div className="product-sheet">
+      {!windowLocked && (
+        <div className="form-grid two-col">
+          <label className="field">
+            <span>Début de la période</span>
+            <input type="date" value={start} onChange={(event) => onChange(rows, event.target.value, end)} />
+          </label>
+          <label className="field">
+            <span>Fin de la période</span>
+            <input type="date" value={end} onChange={(event) => onChange(rows, start, event.target.value)} />
+          </label>
+        </div>
+      )}
+      <div className="table-scroll">
+        <table className="table">
+          <thead>
+            <tr>
+              <th scope="col">Date</th>
+              <th scope="col">Produit</th>
+              <th scope="col">Fournisseur</th>
+              <th scope="col">Quantité</th>
+              <th scope="col">Unité</th>
+              <th scope="col">Prix unitaire</th>
+              <th scope="col">Montant</th>
+              <th scope="col" aria-label="Retirer" />
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((row, index) => (
+              <tr key={index}>
+                <td><input aria-label={`Date d'achat, ligne ${index + 1}`} type="date" value={row.date ?? ""} onChange={(event) => update(index, "date", event.target.value)} /></td>
+                <td><input aria-label={`Produit acheté, ligne ${index + 1}`} type="text" value={row.product ?? ""} onChange={(event) => update(index, "product", event.target.value)} /></td>
+                <td><input aria-label={`Fournisseur de l'achat, ligne ${index + 1}`} type="text" value={row.supplier ?? ""} onChange={(event) => update(index, "supplier", event.target.value)} /></td>
+                <td><input aria-label={`Quantité achetée, ligne ${index + 1}`} type="number" min={0} step="any" value={row.quantity ?? ""} onChange={(event) => update(index, "quantity", event.target.value)} /></td>
+                <td><input aria-label={`Unité, ligne ${index + 1}`} type="text" value={row.unit ?? ""} onChange={(event) => update(index, "unit", event.target.value)} /></td>
+                <td><input aria-label={`Prix unitaire, ligne ${index + 1}`} type="number" min={0} step="any" value={row.unit_price ?? ""} onChange={(event) => update(index, "unit_price", event.target.value)} /></td>
+                <td className="num">{formatMoney(purchaseLineAmount(row), currency)}</td>
+                <td>
+                  <button type="button" className="btn btn-ghost btn-icon" aria-label={`Retirer la ligne ${index + 1}`} onClick={() => onChange(rows.filter((_, rowIndex) => rowIndex !== index), start, end)}>
+                    <Trash2 size={16} />
+                  </button>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+          <tfoot>
+            {indicators.map((indicator) => (
+              <tr key={indicator.label}>
+                <th scope="row" colSpan={6}>{indicator.label}</th>
+                <td className="num">{indicator.value}</td>
+                <td />
+              </tr>
+            ))}
+          </tfoot>
+        </table>
+      </div>
+      <button type="button" className="btn btn-ghost" onClick={() => onChange([...rows, blank], start, end)}>Ajouter</button>
+    </div>
+  );
+}
+
+const SUPPLIER_PAYMENT_KEYS = ["date", "supplier", "amount", "payment_mode"] as const;
+
+function readSupplierPaymentRows(details: AnalysisDetails): Record<string, string>[] {
+  const value = details.supplier_payments;
+  if (!Array.isArray(value)) return [];
+  return value.map((row) => {
+    const source = (row ?? {}) as Record<string, unknown>;
+    return Object.fromEntries(SUPPLIER_PAYMENT_KEYS.map((key) => [key, source[key] == null ? "" : String(source[key])]));
+  });
+}
+
+function SupplierPayments({
+  rows,
+  currency,
+  onChange,
+}: {
+  rows: Record<string, string>[];
+  currency: string;
+  onChange: (rows: Record<string, string>[]) => void;
+}) {
+  function update(index: number, key: string, content: string) {
+    const next = rows.slice();
+    next[index] = { ...next[index], [key]: content };
+    onChange(next);
+  }
+  const blank = { date: "", supplier: "", amount: "", payment_mode: "" };
+  const reading = supplierPaymentReading(rows);
+  const indicators = [
+    { label: "Total payé", value: reading.total == null ? "—" : formatMoney(reading.total, currency) },
+    { label: "Nombre de paiements", value: reading.count == null ? "—" : String(reading.count) },
+    { label: "Paiement moyen", value: reading.average == null ? "—" : formatMoney(reading.average, currency) },
+    { label: "Dernier paiement", value: reading.lastDate ? `${formatDate(reading.lastDate)} · ${formatMoney(reading.lastAmount, currency)}` : "—" },
+  ];
+  return (
+    <div className="product-sheet">
+      <div className="table-scroll">
+        <table className="table">
+          <thead>
+            <tr>
+              <th scope="col">Date</th>
+              <th scope="col">Fournisseur</th>
+              <th scope="col">Montant</th>
+              <th scope="col">Mode de paiement</th>
+              <th scope="col" aria-label="Retirer" />
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((row, index) => (
+              <tr key={index}>
+                <td><input aria-label={`Date du paiement, ligne ${index + 1}`} type="date" value={row.date ?? ""} onChange={(event) => update(index, "date", event.target.value)} /></td>
+                <td><input aria-label={`Fournisseur payé, ligne ${index + 1}`} type="text" value={row.supplier ?? ""} onChange={(event) => update(index, "supplier", event.target.value)} /></td>
+                <td><input aria-label={`Montant payé, ligne ${index + 1}`} type="number" min={0} step="any" value={row.amount ?? ""} onChange={(event) => update(index, "amount", event.target.value)} /></td>
+                <td>
+                  <select aria-label={`Mode de paiement, ligne ${index + 1}`} value={row.payment_mode ?? ""} onChange={(event) => update(index, "payment_mode", event.target.value)}>
+                    <option value="">—</option>
+                    <option value="CASH">Espèces</option>
+                    <option value="MOBILE">Mobile Money</option>
+                    <option value="TRANSFER">Virement</option>
+                    <option value="CHEQUE">Chèque</option>
+                  </select>
+                </td>
+                <td>
+                  <button type="button" className="btn btn-ghost btn-icon" aria-label={`Retirer le paiement ${index + 1}`} onClick={() => onChange(rows.filter((_, rowIndex) => rowIndex !== index))}>
+                    <Trash2 size={16} />
+                  </button>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+          <tfoot>
+            {indicators.map((indicator) => (
+              <tr key={indicator.label}>
+                <th scope="row" colSpan={2}>{indicator.label}</th>
+                <td className="num" colSpan={2}>{indicator.value}</td>
+                <td />
+              </tr>
+            ))}
+          </tfoot>
+        </table>
+      </div>
+      <button type="button" className="btn btn-ghost" onClick={() => onChange([...rows, blank])}>Ajouter</button>
+    </div>
+  );
+}
+
+const SUPPLIER_KEYS = ["name", "place", "product", "share", "amount", "payment_mode", "delay_days"] as const;
+
+function readSupplierRows(details: AnalysisDetails): Record<string, string>[] {
+  const value = details.suppliers;
+  if (!Array.isArray(value)) return [];
+  return value.map((row) => {
+    const source = (row ?? {}) as Record<string, unknown>;
+    return Object.fromEntries(SUPPLIER_KEYS.map((key) => [key, source[key] == null ? "" : String(source[key])]));
+  });
+}
+
+function SupplierTable({
+  rows,
+  onChange,
+}: {
+  rows: Record<string, string>[];
+  onChange: (rows: Record<string, string>[]) => void;
+}) {
+  function update(index: number, key: string, content: string) {
+    const next = rows.slice();
+    next[index] = { ...next[index], [key]: content };
+    onChange(next);
+  }
+  const blank = { name: "", place: "", product: "", share: "", amount: "", payment_mode: "", delay_days: "" };
+  return (
+    <div className="product-sheet">
+      <div className="table-scroll">
+        <table className="table">
+          <thead>
+            <tr>
+              <th scope="col">Fournisseur</th>
+              <th scope="col">Lieu</th>
+              <th scope="col">Produit principal</th>
+              <th scope="col">Part (%)</th>
+              <th scope="col">Montant</th>
+              <th scope="col">Paiement</th>
+              <th scope="col">Délai (jours)</th>
+              <th scope="col" aria-label="Retirer" />
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((row, index) => (
+              <tr key={index}>
+                <td><input aria-label={`Fournisseur, ligne ${index + 1}`} type="text" value={row.name ?? ""} onChange={(event) => update(index, "name", event.target.value)} /></td>
+                <td><input aria-label={`Lieu, ligne ${index + 1}`} type="text" value={row.place ?? ""} onChange={(event) => update(index, "place", event.target.value)} /></td>
+                <td><input aria-label={`Produit principal, ligne ${index + 1}`} type="text" value={row.product ?? ""} onChange={(event) => update(index, "product", event.target.value)} /></td>
+                <td><input aria-label={`Part, ligne ${index + 1}`} type="number" min={0} max={100} step="any" value={row.share ?? ""} onChange={(event) => update(index, "share", event.target.value)} /></td>
+                <td><input aria-label={`Montant, ligne ${index + 1}`} type="number" min={0} step="any" value={row.amount ?? ""} onChange={(event) => update(index, "amount", event.target.value)} /></td>
+                <td>
+                  <select aria-label={`Paiement, ligne ${index + 1}`} value={row.payment_mode ?? ""} onChange={(event) => update(index, "payment_mode", event.target.value)}>
+                    <option value="">—</option>
+                    <option value="CASH">Comptant</option>
+                    <option value="CREDIT">À crédit</option>
+                  </select>
+                </td>
+                <td><input aria-label={`Délai, ligne ${index + 1}`} type="number" min={0} step={1} value={row.delay_days ?? ""} onChange={(event) => update(index, "delay_days", event.target.value)} /></td>
+                <td>
+                  <button type="button" className="btn btn-ghost btn-icon" aria-label={`Retirer la ligne ${index + 1}`} onClick={() => onChange(rows.filter((_, rowIndex) => rowIndex !== index))}>
+                    <Trash2 size={16} />
+                  </button>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      <button type="button" className="btn btn-ghost" onClick={() => onChange([...rows, blank])}>Ajouter</button>
+    </div>
+  );
+}
+
 function readMoneyLines(details: AnalysisDetails, key: string): MoneyLine[] {
   const value = details[key];
   if (!Array.isArray(value)) return [];
@@ -2010,6 +3166,98 @@ function readMoneyLines(details: AnalysisDetails, key: string): MoneyLine[] {
     label: String(row.label ?? ""),
     amount: row.amount == null ? "" : String(row.amount),
   }));
+}
+
+type ActivityLine = { label: string; turnover: string; expenses: string };
+
+function readActivityLines(details: AnalysisDetails): ActivityLine[] {
+  const value = details.extra_activities;
+  if (!Array.isArray(value)) return [];
+  return value.map((row) => ({
+    label: String(row.label ?? ""),
+    turnover: row.turnover == null ? "" : String(row.turnover),
+    expenses: row.expenses == null ? "" : String(row.expenses),
+  }));
+}
+
+function completeActivityNet(rows: ActivityLine[]) {
+  return rows.reduce((sum, row) => {
+    if (!row.label.trim() || (row.turnover.trim() === "" && row.expenses.trim() === "")) return sum;
+    const turnover = row.turnover.trim() === "" ? 0 : Number(row.turnover);
+    const expenses = row.expenses.trim() === "" ? 0 : Number(row.expenses);
+    if (!Number.isFinite(turnover) || !Number.isFinite(expenses)) return sum;
+    return sum + turnover - expenses;
+  }, 0);
+}
+
+function ActivityLines({
+  rows,
+  onChange,
+  currency,
+}: {
+  rows: ActivityLine[];
+  onChange: (rows: ActivityLine[]) => void;
+  currency: string;
+}) {
+  return (
+    <div className="stack" style={{ marginTop: "0.75rem" }}>
+      <p className="subsection-label">Autre activité</p>
+      {rows.map((row, index) => (
+        <div
+          key={index}
+          className="form-grid"
+          style={{ gridTemplateColumns: "minmax(0, 1fr) 180px 180px auto", alignItems: "end" }}
+        >
+          <label className="field">
+            <span>Libellé</span>
+            <input
+              value={row.label}
+              onChange={(event) => {
+                const next = rows.slice();
+                next[index] = { ...row, label: event.target.value };
+                onChange(next);
+              }}
+            />
+          </label>
+          <Money
+            label="Recettes"
+            value={row.turnover}
+            onChange={(turnover) => {
+              const next = rows.slice();
+              next[index] = { ...row, turnover };
+              onChange(next);
+            }}
+            cur={currency}
+          />
+          <Money
+            label="Charges"
+            value={row.expenses}
+            onChange={(expenses) => {
+              const next = rows.slice();
+              next[index] = { ...row, expenses };
+              onChange(next);
+            }}
+            cur={currency}
+          />
+          <button
+            type="button"
+            className="btn btn-ghost btn-icon"
+            aria-label="Retirer l'activité"
+            onClick={() => onChange(rows.filter((_, item) => item !== index))}
+          >
+            <Trash2 size={16} />
+          </button>
+        </div>
+      ))}
+      <button
+        type="button"
+        className="btn btn-ghost"
+        onClick={() => onChange([...rows, { label: "", turnover: "", expenses: "" }])}
+      >
+        Ajouter une activité
+      </button>
+    </div>
+  );
 }
 
 function completeLineTotal(rows: MoneyLine[]) {
@@ -2122,6 +3370,23 @@ function Money({
   );
 }
 
+function DayField({
+  label,
+  value,
+  onChange,
+}: {
+  label: string;
+  value: string;
+  onChange: (value: string) => void;
+}) {
+  return (
+    <label className="field">
+      <span>{label}</span>
+      <input type="number" min={0} step={1} value={value} onChange={(event) => onChange(event.target.value)} />
+    </label>
+  );
+}
+
 function Text({
   label,
   value,
@@ -2192,47 +3457,86 @@ function Select({
   );
 }
 
-function MultiFileField({
-  label,
-  files,
-  onChange,
+type ConclusionFile = { label: string; file: File | null };
+
+function conclusionFileError(rows: ConclusionFile[]): string | null {
+  for (let index = 0; index < rows.length; index += 1) {
+    const label = rows[index].label.trim();
+    const hasFile = Boolean(rows[index].file);
+    if (!label && !hasFile) continue;
+    if (!label || !hasFile) return `Ligne ${index + 1} : indiquez le libellé et le fichier.`;
+  }
+  return null;
+}
+
+function ConclusionFiles({
   existing,
+  rows,
+  onChange,
 }: {
-  label: string;
-  files: File[];
-  onChange: (f: File[]) => void;
   existing?: FinancialAnalysis["documents"];
+  rows: ConclusionFile[];
+  onChange: (next: ConclusionFile[]) => void;
 }) {
   return (
-    <label className="field file-field">
-      <span>
-        <Images size={14} style={{ verticalAlign: "-2px", marginRight: 4 }} />
-        {label}
-      </span>
-      {existing && existing.length > 0 && (
-        <div className="doc-row" style={{ marginBottom: 8 }}>
-          {existing.map((d) => (
-            <a key={d.id} className="doc-chip" href={d.file} target="_blank" rel="noreferrer">
+    <div className="stack" style={{ marginTop: "0.75rem" }}>
+      {!!existing?.length && (
+        <div className="doc-row">
+          {existing.map((document) => (
+            <a key={document.id} className="doc-chip" href={document.file} target="_blank" rel="noreferrer">
               <ExternalLink size={13} />
-              {d.label || "Document"}
+              {document.label || "Document"}
             </a>
           ))}
         </div>
       )}
-      <div className={`file-drop${files.length ? " has-file" : ""}`}>
-        <UploadCloud size={18} />
-        <span className="file-name">
-          {files.length
-            ? `${files.length} fichier(s) sélectionné(s)`
-            : "Ajouter des documents…"}
-        </span>
-        <input
-          type="file"
-          accept="image/*,application/pdf"
-          multiple
-          onChange={(e) => onChange(Array.from(e.target.files ?? []))}
-        />
-      </div>
-    </label>
+      {rows.map((row, index) => (
+        <div
+          key={index}
+          className="form-grid"
+          style={{ gridTemplateColumns: "minmax(0, 1fr) minmax(0, 1fr) auto", alignItems: "end" }}
+        >
+          <label className="field">
+            <span>Libellé</span>
+            <input
+              value={row.label}
+              onChange={(event) => {
+                const next = rows.slice();
+                next[index] = { ...row, label: event.target.value };
+                onChange(next);
+              }}
+            />
+          </label>
+          <label className="field">
+            <span>Scan</span>
+            <input
+              type="file"
+              accept="image/*,application/pdf"
+              onChange={(event) => {
+                const next = rows.slice();
+                next[index] = { ...row, file: event.target.files?.[0] ?? null };
+                onChange(next);
+              }}
+            />
+            {row.file && <em className="muted small">{row.file.name}</em>}
+          </label>
+          <button
+            type="button"
+            className="btn btn-ghost btn-icon"
+            aria-label="Retirer la ligne"
+            onClick={() => onChange(rows.filter((_, item) => item !== index))}
+          >
+            <Trash2 size={16} />
+          </button>
+        </div>
+      ))}
+      <button
+        type="button"
+        className="btn btn-ghost btn-sm"
+        onClick={() => onChange([...rows, { label: "", file: null }])}
+      >
+        <Plus size={16} /> Ajouter un fichier
+      </button>
+    </div>
   );
 }

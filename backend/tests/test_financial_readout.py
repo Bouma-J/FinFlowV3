@@ -304,7 +304,7 @@ def test_minimal_cash_reading_does_not_change_capacity():
     assert opened.client_type == "INDIVIDUAL"
 
 
-def test_campaign_surplus_replaces_the_ordinary_month_and_leaves_the_debt_ratio():
+def test_campaign_surplus_replaces_the_ordinary_activity_in_capacity_and_debt_ratio():
     closed, ordinary = calculate(
         has_side_activity=True, salary_income=D("100000"), activity_turnover=D("500000"),
         activity_expenses=D("100000"), new_installment=D("10000"),
@@ -322,8 +322,9 @@ def test_campaign_surplus_replaces_the_ordinary_month_and_leaves_the_debt_ratio(
     assert retained["campaign_surplus"] == D("960000.00")
     assert retained["campaign_monthly_surplus"] == D("80000.00")
     assert retained["repayment_capacity"] == D("180000.00")
-    assert retained["debt_ratio"] == ordinary["debt_ratio"]
-    assert retained["weighted_income"] == ordinary["weighted_income"]
+    assert retained["weighted_income"] == D("180000.00")
+    assert retained["debt_ratio"] == (D("10000") / D("180000") * D("100")).quantize(D("0.01"))
+    assert retained["debt_ratio"] != ordinary["debt_ratio"]
     empty, untouched = calculate(
         has_side_activity=True, salary_income=D("100000"), activity_turnover=D("500000"),
         activity_expenses=D("100000"), new_installment=D("10000"),

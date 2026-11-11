@@ -253,8 +253,9 @@ def test_activity_campaign_replaces_only_the_capacity(tenant_a, zero_product):
         campaign = compute_metrics(analysis, AnalysisThreshold.for_application(analysis.application))
         assert campaign["campaign_monthly_surplus"] == D("20000.00")
         assert campaign["repayment_capacity"] == D("20000.00")
-        assert campaign["weighted_income"] == D("300000.00")
-        assert campaign["debt_ratio"] == ordinary["debt_ratio"]
+        assert campaign["weighted_income"] == D("20000.00")
+        assert campaign["debt_ratio"] == (analysis.new_installment / D("20000") * D("100")).quantize(D("0.01"))
+        assert campaign["debt_ratio"] != ordinary["debt_ratio"]
         assert campaign["minimal_cash_gap"] == D("10.00")
         assert analysis.activity_turnover == D("400000.00")
 
@@ -414,8 +415,9 @@ def test_purpose_gates_do_not_move_the_ratios(tenant_a, zero_product):
         assert after["repayment_capacity"] == before["repayment_capacity"]
         assert after["debt_ratio"] == before["debt_ratio"]
         failures = _purpose_test_failures(application, analysis, after)
-        assert any("scénarios défavorables" in item for item in failures)
+        assert failures == []
         application.purpose_type = "TREASURY"
         failures = _purpose_test_failures(application, analysis, after)
-        assert any("baisse des ventes" in item for item in failures)
+        assert any("créances" in item for item in failures)
+        assert not any("baisse des ventes" in item for item in failures)
         assert after["repayment_capacity"] == D("200000.00")

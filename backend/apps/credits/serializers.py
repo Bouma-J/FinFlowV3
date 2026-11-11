@@ -344,10 +344,34 @@ class FinancialAnalysisSerializer(serializers.ModelSerializer):
                 {"application": "Impossible de réaffecter l'analyse à un autre dossier."}
             )
         if "analysis_details" in attrs:
-            from .analysis_details import apply_reference_statement
+            from .analysis_details import (
+                activity_expenses_with_purchases, apply_reference_statement,
+                inventory_stock_value, purchase_monthly_total, purchase_period_total,
+                sales_monthly_total,
+            )
             application = attrs.get("application", getattr(self.instance, "application", None))
             client = getattr(application, "client", None) if application is not None else None
             apply_reference_statement(attrs, client_type=getattr(client, "client_type", None))
+            monthly_purchases = purchase_monthly_total(attrs["analysis_details"])
+            if monthly_purchases is not None:
+                attrs["activity_purchases"] = monthly_purchases
+            else:
+                total = purchase_period_total(attrs["analysis_details"])
+                if total is not None:
+                    attrs["activity_purchases"] = total
+            monthly_sales = sales_monthly_total(attrs["analysis_details"])
+            if monthly_sales is not None:
+                attrs["activity_turnover"] = monthly_sales
+            purchases = attrs.get("activity_purchases")
+            if purchases is None and self.instance is not None:
+                purchases = self.instance.activity_purchases
+            detailed_expenses = activity_expenses_with_purchases(attrs["analysis_details"], purchases)
+            if detailed_expenses is not None:
+                attrs["activity_expenses"] = detailed_expenses
+            if getattr(application, "tax_regime", "") == "INFORMAL" and getattr(client, "client_type", "") == "INDIVIDUAL":
+                stock_value = inventory_stock_value(attrs["analysis_details"])
+                if stock_value is not None:
+                    attrs["activity_stock_value"] = stock_value
         errors = {}
         for name, value in attrs.items():
             if isinstance(value, Decimal) and name not in ("net_result_prev",) and value < 0:
@@ -442,13 +466,27 @@ class FinancialAnalysisSerializer(serializers.ModelSerializer):
             return
         from apps.common.upload_validation import validate_uploaded_file
 
-        for f in request.FILES.getlist("documents"):
-            validate_uploaded_file(f, tenant=analysis.tenant, check_quota=True)
-            FinancialDocument.objects.create(
-                analysis=analysis,
-                tenant_id=analysis.tenant_id,
-                file=f,
-            )
+        files = request.FILES.getlist("documents")
+        if files:
+            data = getattr(request, "data", None)
+            labels = data.getlist("document_labels") if hasattr(data, "getlist") else []
+            if len(labels) != len(files):
+                raise serializers.ValidationError(
+                    {"documents": "Chaque fichier doit avoir un libellé."}
+                )
+            for uploaded, label in zip(files, labels):
+                cleaned = str(label or "").strip()
+                if not cleaned:
+                    raise serializers.ValidationError(
+                        {"documents": "Chaque fichier doit avoir un libellé."}
+                    )
+                validate_uploaded_file(uploaded, tenant=analysis.tenant, check_quota=True)
+                FinancialDocument.objects.create(
+                    analysis=analysis,
+                    tenant_id=analysis.tenant_id,
+                    file=uploaded,
+                    label=cleaned[:150],
+                )
         self._save_statement_documents(analysis, request)
         self._save_minimal_cash_document(analysis, request)
 
@@ -536,13 +574,15 @@ class FinancialAnalysisSerializer(serializers.ModelSerializer):
             and "reference_period" not in self.initial_data
         ):
             validated_data["reference_period"] = FinancialAnalysis.ReferencePeriod.MONTHLY
-        analysis = super().create(validated_data)
-        self._save_documents(analysis)
+        with transaction.atomic():
+            analysis = super().create(validated_data)
+            self._save_documents(analysis)
         return analysis
 
     def update(self, instance, validated_data):
-        analysis = super().update(instance, validated_data)
-        self._save_documents(analysis)
+        with transaction.atomic():
+            analysis = super().update(instance, validated_data)
+            self._save_documents(analysis)
         return analysis
 
 
@@ -858,6 +898,7 @@ class CreditApplicationSerializer(serializers.ModelSerializer):
     client_display = serializers.CharField(source="client.display_name", read_only=True)
     client_reference = serializers.CharField(source="client.reference", read_only=True)
     client_type = serializers.CharField(source="client.client_type", read_only=True)
+    client_marital_status = serializers.CharField(source="client.marital_status", read_only=True)
     product_label = serializers.CharField(source="product.label", read_only=True)
     agency_display = serializers.SerializerMethodField()
     can_add_financial_analysis = serializers.SerializerMethodField()
@@ -967,14 +1008,15 @@ class CreditApplicationSerializer(serializers.ModelSerializer):
 
     def to_representation(self, instance):
         return presign_file_fields(
-            super().to_representation(instance), instance, "request_letter_scan"
+            super().to_representation(instance), instance,
+            "request_letter_scan", "activity_ifu_scan", "activity_rccm_scan", "activity_ninea_scan",
         )
 
     class Meta:
         model = CreditApplication
         fields = [
             "id", "reference", "client", "client_display", "client_reference",
-            "client_type", "product", "product_label", "agency", "agency_display",
+            "client_type", "client_marital_status", "product", "product_label", "agency", "agency_display",
             "can_add_financial_analysis", "can_add_field_visit",
             # Conditions
             "amount_requested", "amount_proposed", "interest_rate", "fees_rate",
@@ -1006,7 +1048,10 @@ class CreditApplicationSerializer(serializers.ModelSerializer):
             "employment_profession", "job_title",
             "job_seniority_months", "career_seniority_months",
             "activity_name", "activity_trade", "activity_sector",
-            "activity_premises_status", "activity_ifu",
+            "activity_premises_status", "activity_ifu", "activity_rccm", "activity_ninea",
+            "activity_ifu_scan", "activity_rccm_scan", "activity_ninea_scan",
+            "activity_nature", "activity_offer", "activity_operation",
+            "activity_supply", "activity_authorization", "activity_authorization_ref",
             "spouse_first_name", "spouse_phone", "spouse_profession",
             # Relation bancaire
             "client_account_number", "relationship_start_date",
@@ -1063,6 +1108,17 @@ class CreditApplicationSerializer(serializers.ModelSerializer):
         from .models import CreditInstructionPolicy
 
         instance = getattr(self, "instance", None)
+        authorization = attrs.get(
+            "activity_authorization",
+            getattr(instance, "activity_authorization", ""),
+        )
+        if authorization in ("", "NONE"):
+            attrs["activity_authorization_ref"] = ""
+        regime = attrs.get("tax_regime", getattr(instance, "tax_regime", ""))
+        if regime == "INFORMAL":
+            attrs["activity_ifu"] = ""
+            attrs["activity_rccm"] = ""
+            attrs["activity_ninea"] = ""
         merged = instance
         if instance is None:
             # Objet transitoire pour les contrôles create
