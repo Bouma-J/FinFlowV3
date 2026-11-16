@@ -538,6 +538,7 @@ export function FinancialAnalysisForm({
         { id: "fa-operating", icon: ReceiptText, label: "Charges d'exploitation", show: informalActivity },
         { id: "fa-family", icon: Users, label: "Charges familiales", show: informalActivity },
         { id: "fa-simplified-result", icon: Calculator, label: "Résultat et capacité", show: informalActivity },
+        { id: "fa-forecast", icon: Wallet, label: "Trésorerie prévisionnelle", show: informalActivity },
         { id: "fa-cash-check", icon: Wallet, label: "Trésorerie depuis l'achat", show: informalActivity && serviceGoodsOpen },
         { id: "fa-prior-year", icon: Gauge, label: "Comparatif N / N-1", show: informalActivity },
         { id: "fa-patrimony", icon: Landmark, label: "Bilan et patrimoine", show: informalActivity },
@@ -1651,6 +1652,12 @@ export function FinancialAnalysisForm({
                   currency={cur}
                 />
               )}
+              {operatingPurpose && !(serviceActivity && !serviceGoodsOpen) && salesPeriods.monthly == null && (
+                <label className="field">
+                  <span>Commentaire sur l&apos;écart de stock ou de ventes</span>
+                  <textarea rows={2} value={typeof details.stock_risks === "string" ? details.stock_risks : ""} onChange={(event) => setDetails((current) => ({ ...current, stock_risks: event.target.value }))} />
+                </label>
+              )}
             </FormSection>
             {serviceGoodsOpen && <FormSection id="fa-purchases" icon={ReceiptText} title="Fournisseurs et achats" description={periodNote}>
               <p className="subsection-label">Fournisseurs</p>
@@ -1742,6 +1749,7 @@ export function FinancialAnalysisForm({
                 <DayField label="Délai moyen paiement clients (jours)" value={detailNumber("observed_client_payment_days")} onChange={(value) => setDetails((current) => ({ ...current, observed_client_payment_days: value }))} />
                 <Money label="Créances clients" value={numbers.activity_receivables} onChange={set("activity_receivables")} cur={cur} />
               </div>
+              {operatingPurpose && (!serviceActivity || (numbers.activity_receivables.trim() !== "" && Number(numbers.activity_receivables) > 0)) && supplements(["receivable_delay_days"], ["receivable_delay_days"])}
               <label className="field">
                 <span>Autres détails</span>
                 <textarea rows={3} value={typeof details.sales_verification === "string" ? details.sales_verification : ""} onChange={(event) => setDetails((current) => ({ ...current, sales_verification: event.target.value }))} />
@@ -1810,6 +1818,7 @@ export function FinancialAnalysisForm({
               </div>
             </FormSection>
             <FormSection id="fa-simplified-result" icon={Calculator} title="Compte de résultat du mois et capacité de remboursement" description={periodNote}>
+              <ActivityLines rows={readActivityLines(details)} onChange={(rows) => setDetails((current) => ({ ...current, extra_activities: rows }))} currency={cur} />
               <ResultPeriodTable
                 mode={analysisPeriodMode}
                 bounds={analysisWindow}
@@ -1838,11 +1847,14 @@ export function FinancialAnalysisForm({
                   { label: "Solde de trésorerie prévisionnel", value: formatMoney(recap.surplus, cur) },
                 ]}
               />
-              <ActivityLines rows={readActivityLines(details)} onChange={(rows) => setDetails((current) => ({ ...current, extra_activities: rows }))} currency={cur} />
-              <TpeReconstitution details={details} onChange={setDetails} currency={cur} part="safety" />
+            </FormSection>
+            <FormSection id="fa-forecast" icon={Wallet} title="Trésorerie prévisionnelle">
               <div className="form-grid two-col">
                 <Money label="Encaissements prévisionnels mensuels" value={numbers.projected_monthly_inflows} onChange={set("projected_monthly_inflows")} cur={cur} />
                 <Money label="Sorties de trésorerie prévisionnelles mensuelles" value={numbers.projected_monthly_outflows} onChange={set("projected_monthly_outflows")} cur={cur} />
+              </div>
+              <div className="finance-recap">
+                <RecapItem label="Solde de trésorerie prévisionnel" value={formatMoney(recap.surplus, cur)} strong />
               </div>
               <label className="field">
                 <span>Commentaire sur les hypothèses de trésorerie</span>
@@ -1850,13 +1862,6 @@ export function FinancialAnalysisForm({
               </label>
               {detailTable("cashflow")}
               {supplements(["opening_cash_balance"])}
-              {operatingPurpose && (!serviceActivity || (numbers.activity_receivables.trim() !== "" && Number(numbers.activity_receivables) > 0)) && supplements(["receivable_delay_days"], ["receivable_delay_days"])}
-              {operatingPurpose && !(serviceActivity && !serviceGoodsOpen) && salesPeriods.monthly == null && (
-                <label className="field">
-                  <span>Commentaire sur l&apos;écart de stock ou de ventes</span>
-                  <textarea rows={2} value={typeof details.stock_risks === "string" ? details.stock_risks : ""} onChange={(event) => setDetails((current) => ({ ...current, stock_risks: event.target.value }))} />
-                </label>
-              )}
               {investmentPurpose && supplements(["maintenance_investment"])}
             </FormSection>
             {serviceGoodsOpen && <FormSection id="fa-cash-check" icon={Wallet} title="Vérification de la trésorerie à partir de la date du dernier achat" description={periodNote}>
@@ -1886,6 +1891,7 @@ export function FinancialAnalysisForm({
               />
             </FormSection>
             <FormSection id="fa-committee" icon={Calculator} title="Indicateurs clés pour le comité de crédit" description={periodNote}>
+              <TpeReconstitution details={details} onChange={setDetails} currency={cur} part="safety" />
               <div className="finance-recap">
                 <RecapItem label="Résultat de l'activité / mois" value={formatMoney(recap.activityMonthlyNet, cur)} />
                 {recap.retained != null && <RecapItem label="Revenus retenus / mois" value={formatMoney(recap.retained, cur)} />}
@@ -2587,7 +2593,7 @@ function FormSection({
   const fallbackOrder: Record<string, number> = {
     "fa-params": 10, "fa-quality": 20, "fa-debt": 30, "fa-income": 40,
     "fa-stock-margin": 41, "fa-purchases": 42, "fa-sales-calc": 43, "fa-operating": 44, "fa-family": 45,
-    "fa-simplified-result": 46, "fa-cash-check": 47, "fa-prior-year": 48, "fa-patrimony": 49, "fa-committee": 50,
+    "fa-simplified-result": 46, "fa-forecast": 46.5, "fa-cash-check": 47, "fa-prior-year": 48, "fa-patrimony": 49, "fa-committee": 50,
     "fa-stability": 51,
     "fa-group": 60, "fa-business": 70, "fa-statements": 85, "fa-activity": 80, "fa-exploitation": 90,
     "fa-charges": 100, "fa-cycle": 105, "fa-treasury": 110, "fa-balance": 120, "fa-minimal": 125, "fa-trend": 130,

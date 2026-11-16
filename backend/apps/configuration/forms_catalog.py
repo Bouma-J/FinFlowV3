@@ -18,6 +18,7 @@ ANALYSIS_SECTIONS = {
     "fa-operating": "Charges d'exploitation",
     "fa-family": "Charges familiales",
     "fa-simplified-result": "Résultat et capacité",
+    "fa-forecast": "Trésorerie prévisionnelle",
     "fa-cash-check": "Trésorerie depuis le dernier achat",
     "fa-prior-year": "Comparatif N / N-1",
     "fa-patrimony": "Bilan et patrimoine",

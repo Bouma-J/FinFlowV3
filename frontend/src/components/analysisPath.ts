@@ -18,6 +18,7 @@ const SECTION_PATHS: Record<string, readonly AnalysisPath[] | typeof ALL> = {
   "fa-operating": ["ACTIVITY", "MIXED"],
   "fa-family": ["ACTIVITY", "MIXED"],
   "fa-simplified-result": ["ACTIVITY", "MIXED"],
+  "fa-forecast": ["ACTIVITY", "MIXED"],
   "fa-cash-check": ["ACTIVITY", "MIXED"],
   "fa-prior-year": ["ACTIVITY", "MIXED"],
   "fa-patrimony": ["ACTIVITY", "MIXED"],
