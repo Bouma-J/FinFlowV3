@@ -877,6 +877,8 @@ export interface Surety {
   marital_status?: string;
   matrimonial_regime?: string;
   estimated_income: string | null;
+  monthly_charges?: string | null;
+  existing_monthly_payments?: string | null;
   id_document_type: string;
   national_id: string;
   id_document_issue_date: string | null;
@@ -1936,6 +1938,10 @@ export interface Guarantee {
   current_value: string;
   is_insured: boolean;
   insurance_reference: string;
+  insured_amount?: string | null;
+  insurance_end_date?: string | null;
+  mortgage_rank?: string;
+  prior_lien_amount?: string | null;
   // Propriétaire
   owner_last_name: string;
   owner_first_name: string;
@@ -2029,6 +2035,11 @@ export const GUARANTEE_LABELS = {
   pledge_category: {
     VEHICLE: "Moyen roulant",
     VALUABLE: "Objet de valeur",
+  } as Record<string, string>,
+  mortgage_rank: {
+    "1": "1er rang",
+    "2": "2e rang",
+    OTHER: "Autre",
   } as Record<string, string>,
   document_type: {
     LAND_TITLE: "Titre foncier",

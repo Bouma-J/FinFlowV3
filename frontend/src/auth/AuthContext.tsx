@@ -4,6 +4,7 @@ import {
   useContext,
   useEffect,
   useMemo,
+  useRef,
   useState,
   type ReactNode,
 } from "react";
@@ -11,6 +12,12 @@ import axios from "axios";
 
 import { api, tokenStore } from "@/api/client";
 import type { CurrentUser } from "@/api/types";
+import {
+  clearSessionActivity,
+  markIdleLogout,
+  sessionIsIdle,
+  touchSessionActivity,
+} from "@/auth/idleSession";
 import { rememberLoginTenantCode } from "@/hooks/brandingTheme";
 
 export class MfaRequiredError extends Error {
@@ -38,6 +45,7 @@ interface AuthContextValue {
     otp?: string,
   ) => Promise<{ mustChangePassword: boolean; user: CurrentUser | null }>;
   logout: () => Promise<void>;
+  sessionExpired: boolean;
   refreshUser: () => Promise<void>;
   markPasswordChanged: () => void;
   activeTenant: string | null;
@@ -96,6 +104,7 @@ function raiseAuthError(err: unknown): never {
 
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<CurrentUser | null>(null);
+  const [sessionExpired, setSessionExpired] = useState(false);
   const [loading, setLoading] = useState(true);
   const [activeTenant, setActiveTenantState] = useState<string | null>(
     tokenStore.getTenant(),
@@ -143,13 +152,46 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     );
   }, []);
 
-  useEffect(() => {
-    if (tokenStore.getAccess()) {
-      loadProfile();
-    } else {
-      setLoading(false);
+  const logout = useCallback(async () => {
+    const refresh = tokenStore.getRefresh();
+    try {
+      if (refresh && tokenStore.getAccess()) {
+        await api.post("/auth/logout/", { refresh });
+      }
+    } catch {
+      // ignore — on nettoie localement dans tous les cas
     }
-  }, [loadProfile]);
+    tokenStore.clear();
+    clearSessionActivity();
+    setUser(null);
+    setActiveTenantState(null);
+  }, []);
+
+  const expiring = useRef(false);
+  const expireForInactivity = useCallback(async () => {
+    if (expiring.current) return;
+    expiring.current = true;
+    setSessionExpired(true);
+    markIdleLogout();
+    try {
+      await logout();
+    } finally {
+      expiring.current = false;
+    }
+  }, [logout]);
+
+  useEffect(() => {
+    if (!tokenStore.getAccess()) {
+      setLoading(false);
+      return;
+    }
+    if (sessionIsIdle()) {
+      void expireForInactivity().finally(() => setLoading(false));
+      return;
+    }
+    touchSessionActivity(true);
+    void loadProfile();
+  }, [expireForInactivity, loadProfile]);
 
   const login = useCallback(
     async (username: string, password: string, otp?: string) => {
@@ -162,6 +204,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           must_change_password?: boolean;
         }>("/auth/token/", body);
         tokenStore.set(data.access, data.refresh);
+        setSessionExpired(false);
+        touchSessionActivity(true);
         const profile = await loadProfile();
         return {
           mustChangePassword: Boolean(
@@ -176,18 +220,39 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     [loadProfile],
   );
 
-  const logout = useCallback(async () => {
-    const refresh = tokenStore.getRefresh();
-    try {
-      if (refresh && tokenStore.getAccess()) {
-        await api.post("/auth/logout/", { refresh });
-      }
-    } catch {
-      // ignore — on nettoie localement dans tous les cas
+  useEffect(() => {
+    if (!user) return;
+    const onActivity = () => touchSessionActivity();
+    const events = ["pointerdown", "keydown", "scroll", "touchstart", "wheel", "mousemove"] as const;
+    for (const event of events) {
+      window.addEventListener(event, onActivity, { passive: true });
     }
-    tokenStore.clear();
-    setUser(null);
-    setActiveTenantState(null);
+    let closed = false;
+    const closeIfIdle = () => {
+      if (closed || !sessionIsIdle()) return;
+      closed = true;
+      void expireForInactivity();
+    };
+    const watch = window.setInterval(closeIfIdle, 5_000);
+    const onVisible = () => {
+      if (document.visibilityState === "visible") closeIfIdle();
+    };
+    document.addEventListener("visibilitychange", onVisible);
+    return () => {
+      for (const event of events) window.removeEventListener(event, onActivity);
+      window.clearInterval(watch);
+      document.removeEventListener("visibilitychange", onVisible);
+    };
+  }, [user, expireForInactivity]);
+
+  useEffect(() => {
+    const onStorage = () => {
+      if (tokenStore.getAccess()) return;
+      setUser(null);
+      setActiveTenantState(null);
+    };
+    window.addEventListener("storage", onStorage);
+    return () => window.removeEventListener("storage", onStorage);
   }, []);
 
   const setActiveTenant = useCallback((tenantId: string | null) => {
@@ -201,6 +266,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       loading,
       login,
       logout,
+      sessionExpired,
       refreshUser,
       markPasswordChanged,
       activeTenant,
@@ -211,6 +277,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       loading,
       login,
       logout,
+      sessionExpired,
       refreshUser,
       markPasswordChanged,
       activeTenant,

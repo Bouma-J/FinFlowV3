@@ -413,6 +413,14 @@ export function SuretyDetailPage({
                     term="Estimation de revenu"
                     value={s.estimated_income && formatMoney(s.estimated_income)}
                   />
+                  <Row
+                    term="Charges mensuelles"
+                    value={s.monthly_charges && formatMoney(s.monthly_charges)}
+                  />
+                  <Row
+                    term="Mensualités déjà supportées"
+                    value={s.existing_monthly_payments && formatMoney(s.existing_monthly_payments)}
+                  />
                 </dl>
               </SubSection>
 

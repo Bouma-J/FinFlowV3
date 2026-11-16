@@ -35,6 +35,9 @@ DETAIL_SCHEMAS = {
         "bureau_checked": "text", "bureau_date": "date",
         "incidents": "text", "incidents_detail": "text",
     },
+    "institution_credit_flows": {
+        "month": "month", "amount": "amount",
+    },
     "sales_observations": {
         "kind": "text", "label": "text", "amount": "amount",
     },
@@ -69,9 +72,11 @@ DETAIL_SCHEMAS = {
     "purchase_history": {
         "date": "date", "product": "text", "supplier": "text",
         "quantity": "amount", "unit": "text", "unit_price": "amount",
+        "start": "date", "end": "date", "amount": "amount",
     },
     "supplier_payments": {
         "date": "date", "supplier": "text", "amount": "amount", "payment_mode": "text",
+        "start": "date", "end": "date", "period_amount": "amount",
     },
     "sales_periods": {
         "date": "date", "start": "date", "end": "date",
@@ -98,6 +103,7 @@ DETAIL_TEXTS = {
     "creation_activity", "creation_ramp", "creation_assumptions",
     "minimal_cash_label", "minimal_cash_comment",
     "purchase_comment", "patrimony_comment", "analysis_context_comment",
+    "group_bureau", "group_meeting_rhythm",
 }
 
 DETAIL_CHOICES = {
@@ -119,7 +125,27 @@ DETAIL_CHOICES = {
     "consulted_bank_statements": {"", "yes"},
     "consulted_purchase_invoices": {"", "yes"},
     "consulted_purchase_ledger": {"", "yes"},
+    "service_has_goods": {"", "yes"},
+    "group_rules_verified": {"", "yes"},
 }
+
+
+def informal_service_without_goods(application, details):
+    """Prestation informelle dont les achats et le stock ne sont pas ouverts.
+
+    Le commerce, l'artisanat et l'agriculture ne passent pas ici. Une case vide
+    reste vide : les achats comptent pour zéro et le stock du bilan n'est pas
+    recalculé depuis l'inventaire.
+    """
+    if application is None:
+        return False
+    client = getattr(application, "client", None)
+    return (
+        getattr(application, "activity_nature", "") == "SERVICE"
+        and getattr(application, "tax_regime", "") == "INFORMAL"
+        and getattr(client, "client_type", "") == "INDIVIDUAL"
+        and (details or {}).get("service_has_goods") != "yes"
+    )
 
 DETAIL_DATES = {
     "last_purchase_date", "cash_control_date", "minimal_cash_start", "minimal_cash_end",
@@ -380,6 +406,10 @@ def validate_details(value):
                 mode = str(row.get("payment_mode") or "")
                 if mode not in EXECUTED_PAYMENT_MODES:
                     raise ValidationError({key: f"Ligne {index + 1} : indiquez Espèces, Mobile Money, Virement ou Chèque."})
+                start = str(row.get("start") or "")
+                end = str(row.get("end") or "")
+                if start and end and end < start:
+                    raise ValidationError({key: f"Ligne {index + 1} : la fin du paiement est antérieure au début."})
             if key in {"sales_periods", "collection_periods"}:
                 appreciation = str(row.get("appreciation") or "")
                 if appreciation not in SALES_APPRECIATIONS:
@@ -407,6 +437,11 @@ def validate_details(value):
                             raise InvalidOperation
                     except (InvalidOperation, ValueError):
                         raise ValidationError({key: f"Ligne {index + 1} : le retard se saisit en jours entiers."}) from None
+            if key == "purchase_history":
+                start = str(row.get("start") or "")
+                end = str(row.get("end") or "")
+                if start and end and end < start:
+                    raise ValidationError({key: f"Ligne {index + 1} : la fin de l'achat est antérieure au début."})
         if key == "suppliers":
             kept = []
             for row in rows:
@@ -489,6 +524,32 @@ def _purchase_line_amount(row):
     return quantity * price
 
 
+def _purchase_period_mode(details):
+    """Semaine ou mois : une ligne est une période chiffrée. Jour : un achat daté."""
+    return str((details or {}).get("analysis_period_mode") or "") in {"WEEK", "MONTH"}
+
+
+def _purchase_entries(details, period_mode):
+    entries = []
+    for row in (details or {}).get("purchase_history") or []:
+        if not isinstance(row, dict):
+            continue
+        if period_mode:
+            start = str(row.get("start") or "")
+            end = str(row.get("end") or "")
+            amount = _present_decimal(row, "amount")
+            if not start or not end or end < start or amount is None:
+                continue
+            entries.append((end, amount, ""))
+            continue
+        day = str(row.get("date") or "")
+        amount = _purchase_line_amount(row)
+        if not day or amount is None:
+            continue
+        entries.append((day, amount, str(row.get("supplier") or "").strip()))
+    return entries
+
+
 def _apply_purchase_history(details):
     """Le dernier achat se lit sur l'historique dès que celui-ci est présent."""
     if not isinstance(details, dict) or "purchase_history" not in details:
@@ -496,13 +557,7 @@ def _apply_purchase_history(details):
     latest_date = ""
     latest = Decimal("0")
     found = False
-    for row in details.get("purchase_history") or []:
-        if not isinstance(row, dict):
-            continue
-        day = str(row.get("date") or "")
-        amount = _purchase_line_amount(row)
-        if not day or amount is None:
-            continue
+    for day, amount, _supplier in _purchase_entries(details, _purchase_period_mode(details)):
         if not found or day > latest_date:
             latest_date, latest, found = day, amount, True
         elif day == latest_date:
@@ -516,7 +571,7 @@ def _apply_purchase_history(details):
 
 
 def purchase_history_indicators(details):
-    """Indicateurs de la période. Une ligne sans date, quantité ou prix ne compte pas."""
+    """Indicateurs de la période. Jour : date, quantité et prix. Semaine ou mois : début, fin et montant."""
     empty = {
         "count": None, "total": None, "average": None, "per_month": None,
         "last_date": "", "last_amount": None, "supplier_count": None,
@@ -528,9 +583,20 @@ def purchase_history_indicators(details):
     end = str(details.get("purchase_period_end") or "")
     if not start or not end or end < start:
         return empty
+    period_mode = _purchase_period_mode(details)
     lines = []
     for row in details.get("purchase_history") or []:
         if not isinstance(row, dict):
+            continue
+        if period_mode:
+            row_start = str(row.get("start") or "")
+            row_end = str(row.get("end") or "")
+            amount = _present_decimal(row, "amount")
+            if not row_start or not row_end or row_end < row_start or amount is None:
+                continue
+            if row_start < start or row_end > end:
+                continue
+            lines.append((row_end, amount, ""))
             continue
         day = str(row.get("date") or "")
         amount = _purchase_line_amount(row)
@@ -546,14 +612,15 @@ def purchase_history_indicators(details):
     last_amount = sum((amount for day, amount, _ in lines if day == last_date), Decimal("0"))
     suppliers = {}
     order = []
-    for _, amount, supplier in lines:
-        if not supplier:
-            continue
-        key = supplier.casefold()
-        if key not in suppliers:
-            suppliers[key] = {"label": supplier, "amount": Decimal("0")}
-            order.append(key)
-        suppliers[key]["amount"] += amount
+    if not period_mode:
+        for _, amount, supplier in lines:
+            if not supplier:
+                continue
+            key = supplier.casefold()
+            if key not in suppliers:
+                suppliers[key] = {"label": supplier, "amount": Decimal("0")}
+                order.append(key)
+            suppliers[key]["amount"] += amount
     main_supplier = ""
     main_share = None
     if order:
@@ -565,7 +632,7 @@ def purchase_history_indicators(details):
         "count": count,
         "total": _money(total),
         "average": _money(total / Decimal(count)),
-        "per_month": _money(Decimal(count) / Decimal(days) * Decimal("30")) if days > 0 else None,
+        "per_month": None if period_mode or days <= 0 else _money(Decimal(count) / Decimal(days) * Decimal("30")),
         "last_date": last_date,
         "last_amount": _money(last_amount),
         "supplier_count": len(order) or None,
@@ -610,13 +677,30 @@ def purchase_monthly_total(details):
 
 
 def supplier_payment_indicators(details):
-    """Paiements datés et chiffrés. La dette et le délai restent saisis à part."""
+    """Paiements chiffrés. Jour : date et montant. Semaine ou mois : début, fin et montant de la période.
+
+    La dette et le délai restent saisis à part.
+    """
     empty = {"count": None, "total": None, "average": None, "last_date": "", "last_amount": None}
     if not isinstance(details, dict) or "supplier_payments" not in details:
         return empty
+    period_mode = _purchase_period_mode(details)
+    window_start = str(details.get("analysis_period_start") or "")
+    window_end = str(details.get("analysis_period_end") or "")
+    window = bool(window_start and window_end and window_end >= window_start)
     lines = []
     for row in details.get("supplier_payments") or []:
         if not isinstance(row, dict):
+            continue
+        if period_mode:
+            start = str(row.get("start") or "")
+            end = str(row.get("end") or "")
+            amount = _present_decimal(row, "period_amount")
+            if not start or not end or end < start or amount is None:
+                continue
+            if window and (start < window_start or end > window_end):
+                continue
+            lines.append((end, amount))
             continue
         day = str(row.get("date") or "")
         amount = _present_decimal(row, "amount")

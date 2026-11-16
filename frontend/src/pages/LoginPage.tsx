@@ -12,6 +12,7 @@ import {
   MfaRequiredError,
   useAuth,
 } from "@/auth/AuthContext";
+import { clearIdleNotice, peekIdleNotice } from "@/auth/idleSession";
 import { homePath } from "@/auth/routePerms";
 import {
   applyTenantTheme,
@@ -33,7 +34,7 @@ function initialTenantCode(
 }
 
 export function LoginPage() {
-  const { user, login } = useAuth();
+  const { user, login, sessionExpired } = useAuth();
   const navigate = useNavigate();
   const { tenantCode: routeCode } = useParams<{ tenantCode?: string }>();
   const [searchParams] = useSearchParams();
@@ -45,6 +46,7 @@ export function LoginPage() {
   const [otp, setOtp] = useState("");
   const [mfaStep, setMfaStep] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [idleNotice] = useState(peekIdleNotice);
   const [submitting, setSubmitting] = useState(false);
 
   const {
@@ -79,6 +81,7 @@ export function LoginPage() {
   async function handleSubmit(e: FormEvent) {
     e.preventDefault();
     setError(null);
+    clearIdleNotice();
     setSubmitting(true);
     try {
       if (resolvedCode) {
@@ -134,6 +137,9 @@ export function LoginPage() {
             <span className="login-tenant-chip">{resolvedCode}</span>
           )}
         </div>
+        {(idleNotice || sessionExpired) && (
+          <div className="notice-warning">Session fermée après 2 minutes sans activité.</div>
+        )}
         <form onSubmit={handleSubmit} className="login-form">
           {!mfaStep ? (
             <>

@@ -70,6 +70,11 @@ const VEHICLE_DOCUMENT_TYPES = [
   { value: "TECH_INSPECTION", label: "Visite technique" },
   { value: "OTHER_VEHICLE", label: "Autre document véhicule" },
 ];
+const MORTGAGE_RANKS = [
+  { value: "1", label: "1er rang" },
+  { value: "2", label: "2e rang" },
+  { value: "OTHER", label: "Autre" },
+];
 const OCCUPANCY = [
   { value: "FREE", label: "Libre" },
   { value: "FAMILY_HOME", label: "Domicile familial" },
@@ -92,7 +97,8 @@ const TEXT_KEYS = [
   "document_validity_date", "address",
   "expertise_date", "expertise_firm", "expert_name", "expertise_reference",
   "value_to_consider",
-  "occupancy_status",
+  "occupancy_status", "mortgage_rank", "prior_lien_amount",
+  "insurance_reference", "insured_amount", "insurance_end_date",
   // Gage — moyen roulant
   "chassis_number", "engine_number", "brand", "model_name", "registration",
   "power", "first_registration_year", "acquisition_date", "acquisition_value",
@@ -128,6 +134,11 @@ const FIELD_LABELS: Record<string, string> = {
   expert_name: "Nom de l'expert",
   expertise_reference: "Référence du rapport",
   occupancy_status: "Statut d'occupation",
+  mortgage_rank: "Rang de l'hypothèque",
+  prior_lien_amount: "Montant des inscriptions antérieures",
+  insurance_reference: "Référence d'assurance",
+  insured_amount: "Montant assuré",
+  insurance_end_date: "Fin de l'assurance",
   chassis_number: "Numéro de châssis",
   engine_number: "Numéro du moteur",
   brand: "Marque",
@@ -357,6 +368,9 @@ export function GuaranteeForm({
         if (clientId) fd.append("client", clientId);
         if (applicationId) fd.append("application", applicationId);
       }
+      const alwaysSent = new Set<TextKey>([
+        "mortgage_rank", "prior_lien_amount", "insurance_reference", "insured_amount", "insurance_end_date",
+      ]);
       for (const key of TEXT_KEYS) {
         if (
           key === "owner_last_name" ||
@@ -367,7 +381,7 @@ export function GuaranteeForm({
           continue;
         }
         const value = text[key].trim();
-        if (value) fd.append(key, value);
+        if (alwaysSent.has(key) || value) fd.append(key, value);
       }
       fd.append("owner_last_name", "");
       fd.append("owner_first_name", "");
@@ -398,6 +412,7 @@ export function GuaranteeForm({
       const key = draftKey(applicationId);
       if (key) sessionStorage.removeItem(key);
       qc.invalidateQueries({ queryKey: ["guarantees"] });
+      qc.invalidateQueries({ queryKey: ["collateral-summary"] });
       if (guaranteeId)
         qc.invalidateQueries({ queryKey: ["guarantee", guaranteeId] });
       onSaved();
@@ -764,7 +779,7 @@ export function GuaranteeForm({
             </div>
           </Card>
           {pledgeCat === "VEHICLE" ? (
-            <VehicleSection text={text} set={set} files={files} setFile={setFile} existing={existing} />
+            <VehicleSection text={text} set={set} files={files} setFile={setFile} existing={existing} isInsured={isInsured} setIsInsured={setIsInsured} />
           ) : (
             <ValuableSection
               text={text}
@@ -981,17 +996,9 @@ function MortgageSection({
             />
           </label>
           <Select label="Statut d'occupation" value={text.occupancy_status} onChange={set("occupancy_status")} options={OCCUPANCY} />
-          <label className="field">
-            <span>Le bien est-il assuré ?</span>
-            <div className="type-toggle compact">
-              <button type="button" className={`type-choice${!isInsured ? " active" : ""}`} onClick={() => setIsInsured(false)}>
-                Non
-              </button>
-              <button type="button" className={`type-choice${isInsured ? " active" : ""}`} onClick={() => setIsInsured(true)}>
-                Oui
-              </button>
-            </div>
-          </label>
+          <Select label="Rang de l'hypothèque" value={text.mortgage_rank} onChange={set("mortgage_rank")} options={MORTGAGE_RANKS} />
+          <Text label="Montant des inscriptions antérieures" type="number" value={text.prior_lien_amount} onChange={set("prior_lien_amount")} />
+          <InsuranceFields text={text} set={set} isInsured={isInsured} setIsInsured={setIsInsured} />
         </div>
       </Card>
 
@@ -1020,12 +1027,16 @@ function VehicleSection({
   files,
   setFile,
   existing,
+  isInsured,
+  setIsInsured,
 }: {
   text: TextState;
   set: SetText;
   files: FileState;
   setFile: SetFile;
   existing: Existing;
+  isInsured: boolean;
+  setIsInsured: (value: boolean) => void;
 }) {
   return (
     <>
@@ -1052,6 +1063,7 @@ function VehicleSection({
           <Text label="Valeur d'acquisition (XOF)" type="number" value={text.acquisition_value} onChange={set("acquisition_value")} />
           <Text label="Valeur estimée à la revente (XOF)" type="number" value={text.resale_value} onChange={set("resale_value")} />
           <Text label="Date d'estimation" type="date" value={text.estimation_date} onChange={set("estimation_date")} />
+          <InsuranceFields text={text} set={set} isInsured={isInsured} setIsInsured={setIsInsured} />
         </div>
       </Card>
 
@@ -1347,6 +1359,37 @@ function Text({
       <span>{label}</span>
       <input type={type} value={value} onChange={(e) => onChange(e.target.value)} />
     </label>
+  );
+}
+
+function InsuranceFields({
+  text,
+  set,
+  isInsured,
+  setIsInsured,
+}: {
+  text: TextState;
+  set: SetText;
+  isInsured: boolean;
+  setIsInsured: (value: boolean) => void;
+}) {
+  return (
+    <>
+      <label className="field">
+        <span>Le bien est-il assuré ?</span>
+        <div className="type-toggle compact">
+          <button type="button" className={`type-choice${!isInsured ? " active" : ""}`} onClick={() => setIsInsured(false)}>
+            Non
+          </button>
+          <button type="button" className={`type-choice${isInsured ? " active" : ""}`} onClick={() => setIsInsured(true)}>
+            Oui
+          </button>
+        </div>
+      </label>
+      <Text label="Référence d'assurance" value={text.insurance_reference} onChange={set("insurance_reference")} />
+      <Text label="Montant assuré" type="number" value={text.insured_amount} onChange={set("insured_amount")} />
+      <Text label="Fin de l'assurance" type="date" value={text.insurance_end_date} onChange={set("insurance_end_date")} />
+    </>
   );
 }
 

@@ -280,6 +280,52 @@ def test_purchase_history_sets_period_total_and_last_purchase():
         validate_details({"purchase_period_start": "2026-10-31", "purchase_period_end": "2026-10-01"})
 
 
+def test_month_purchase_history_keeps_the_period_total():
+    details = validate_details({
+        "analysis_period_mode": "MONTH",
+        "analysis_period_start": "2026-10-01",
+        "analysis_period_end": "2026-10-31",
+        "purchase_period_start": "2026-10-01",
+        "purchase_period_end": "2026-10-31",
+        "purchase_history": [
+            {"date": "2026-10-05", "product": "Riz", "supplier": "Ada", "quantity": "10", "unit": "kg", "unit_price": "400"},
+            {"start": "2026-09-01", "end": "2026-09-30", "amount": "50000"},
+            {"start": "2026-10-01", "end": "2026-10-31", "amount": "90000"},
+            {"start": "2026-10-01", "end": "2026-10-31", "amount": "0"},
+            {"start": "2026-10-15", "end": "2026-11-02", "amount": "1000"},
+        ],
+        "last_purchase_date": "2026-01-01",
+        "last_purchase_amount": "1",
+    })
+    assert details["last_purchase_date"] == "2026-11-02"
+    assert Decimal(details["last_purchase_amount"]) == Decimal("1000.00")
+    indicators = purchase_history_indicators(details)
+    assert indicators["count"] == 2
+    assert indicators["total"] == Decimal("90000.00")
+    assert indicators["average"] == Decimal("45000.00")
+    assert indicators["per_month"] is None
+    assert indicators["last_date"] == "2026-10-31"
+    assert indicators["last_amount"] == Decimal("90000.00")
+    assert indicators["supplier_count"] is None
+    assert indicators["main_supplier"] == ""
+    assert indicators["main_share"] is None
+    assert purchase_monthly_total(details) == Decimal("87096.77")
+    day = validate_details({
+        "analysis_period_mode": "DAY",
+        "purchase_period_start": "2026-10-01",
+        "purchase_period_end": "2026-10-31",
+        "purchase_history": [
+            {"start": "2026-10-01", "end": "2026-10-31", "amount": "90000"},
+            {"date": "2026-10-05", "quantity": "1", "unit_price": "100"},
+        ],
+    })
+    assert day["last_purchase_date"] == "2026-10-05"
+    assert purchase_period_total(day) == Decimal("100.00")
+    assert purchase_history_indicators(day)["supplier_count"] is None
+    with pytest.raises(ValidationError):
+        validate_details({"purchase_history": [{"start": "2026-10-31", "end": "2026-10-01", "amount": "100"}]})
+
+
 def test_supplier_payments_summarize_complete_lines_without_touching_debt():
     details = validate_details({
         "observed_supplier_payment_days": "7",
@@ -304,6 +350,43 @@ def test_supplier_payments_summarize_complete_lines_without_touching_debt():
     assert supplier_payment_indicators({})["total"] is None
     with pytest.raises(ValidationError):
         validate_details({"supplier_payments": [{"payment_mode": "CREDIT", "amount": "10", "date": "2026-10-01"}]})
+
+
+def test_month_supplier_payments_keep_the_period_total():
+    details = validate_details({
+        "analysis_period_mode": "MONTH",
+        "analysis_period_start": "2026-10-01",
+        "analysis_period_end": "2026-10-31",
+        "observed_supplier_payment_days": "7",
+        "supplier_payments": [
+            {"date": "2026-10-05", "supplier": "Ada", "amount": "4000", "payment_mode": "CASH"},
+            {"start": "2026-09-01", "end": "2026-09-30", "period_amount": "5000"},
+            {"start": "2026-10-01", "end": "2026-10-31", "period_amount": "9000"},
+            {"start": "2026-10-01", "end": "2026-10-31", "period_amount": "0"},
+            {"start": "2026-10-15", "end": "2026-11-02", "period_amount": "1000"},
+        ],
+    })
+    assert details["observed_supplier_payment_days"] == "7"
+    assert "activity_supplier_debt" not in details
+    paid = supplier_payment_indicators(details)
+    assert paid["count"] == 2
+    assert paid["total"] == Decimal("9000.00")
+    assert paid["average"] == Decimal("4500.00")
+    assert paid["last_date"] == "2026-10-31"
+    assert paid["last_amount"] == Decimal("9000.00")
+    day = validate_details({
+        "analysis_period_mode": "DAY",
+        "analysis_period_start": "2026-10-01",
+        "analysis_period_end": "2026-10-31",
+        "supplier_payments": [
+            {"start": "2026-10-01", "end": "2026-10-31", "period_amount": "9000"},
+            {"date": "2026-09-20", "supplier": "Ada", "amount": "100", "payment_mode": "CASH"},
+        ],
+    })
+    assert supplier_payment_indicators(day)["total"] == Decimal("100.00")
+    assert supplier_payment_indicators(day)["last_date"] == "2026-09-20"
+    with pytest.raises(ValidationError):
+        validate_details({"supplier_payments": [{"start": "2026-10-31", "end": "2026-10-01", "period_amount": "10"}]})
 
 
 def test_sales_rhythm_becomes_the_monthly_turnover():
@@ -1024,3 +1107,71 @@ def test_consulted_document_flags_stay_empty_or_yes():
     assert saved["consulted_bank_statements"] == "yes"
     with pytest.raises(ValidationError):
         validate_details({"consulted_sales_book": "no"})
+
+
+def test_service_goods_flag_stays_empty_or_yes():
+    saved = validate_details({"service_has_goods": "yes"})
+    assert saved["service_has_goods"] == "yes"
+    assert validate_details({"service_has_goods": ""})["service_has_goods"] == ""
+    with pytest.raises(ValidationError):
+        validate_details({"service_has_goods": "no"})
+
+
+@pytest.mark.django_db
+def test_informal_service_keeps_purchases_and_stock_out_until_the_box_is_checked(tenant_a, client_a, product_a):
+    class Files(dict):
+        def getlist(self, key):
+            return []
+
+    class Request:
+        FILES = Files()
+
+    details = {
+        "analysis_period_start": "2026-10-01",
+        "analysis_period_end": "2026-10-31",
+        "analysis_period_mode": "DAY",
+        "activity_charge_place": "1000",
+        "purchase_history": [
+            {"date": "2026-10-05", "product": "Riz", "supplier": "Ada", "quantity": "10", "unit": "kg", "unit_price": "400"},
+            {"date": "2026-10-18", "product": "Tomate", "supplier": "Marché", "quantity": "4", "unit": "kg", "unit_price": "250"},
+            {"date": "2026-10-18", "product": "Oignon", "supplier": "Marché", "quantity": "2", "unit": "kg", "unit_price": "300"},
+        ],
+        "products": [{"quantity": "10", "unit_cost": "100"}],
+    }
+    with tenant_context(tenant_a.id):
+        app = CreditApplication.objects.create(
+            tenant=tenant_a, client=client_a, product=product_a,
+            reference="FA-SERVICE", amount_requested=1000, duration_months=12,
+            tax_regime="INFORMAL", activity_nature="SERVICE",
+        )
+        closed = FinancialAnalysisSerializer(
+            data={
+                "application": str(app.id),
+                "activity_purchases": "999",
+                "activity_expenses": "5000",
+                "activity_stock_value": "250",
+                "analysis_details": details,
+            },
+            context={"request": Request()},
+        )
+        assert closed.is_valid(), closed.errors
+        analysis = closed.save(tenant=tenant_a)
+        assert analysis.activity_purchases == Decimal("0")
+        assert analysis.activity_expenses == Decimal("1000.00")
+        assert analysis.activity_stock_value == Decimal("250.00")
+        assert analysis.analysis_details["purchase_history"]
+
+        opened = dict(details)
+        opened["service_has_goods"] = "yes"
+        checked = FinancialAnalysisSerializer(
+            analysis,
+            data={"analysis_details": opened, "activity_stock_value": "250"},
+            partial=True,
+            context={"request": Request()},
+        )
+        assert checked.is_valid(), checked.errors
+        analysis = checked.save()
+        assert analysis.activity_purchases == Decimal("5419.35")
+        assert analysis.activity_expenses == Decimal("6419.35")
+        assert analysis.activity_stock_value == Decimal("1000.00")
+

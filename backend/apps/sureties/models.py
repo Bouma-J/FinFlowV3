@@ -59,6 +59,14 @@ class Surety(TenantScopedModel, AuthoredModel):
         "estimation de revenu", max_digits=18, decimal_places=2,
         null=True, blank=True,
     )
+    monthly_charges = models.DecimalField(
+        "charges mensuelles", max_digits=18, decimal_places=2,
+        null=True, blank=True,
+    )
+    existing_monthly_payments = models.DecimalField(
+        "mensualités déjà supportées", max_digits=18, decimal_places=2,
+        null=True, blank=True,
+    )
 
     # Pièce d'identité
     id_document_type = models.CharField(

@@ -435,6 +435,8 @@ export function FinancialAnalysisForm({
       individualProfile === "MIXTE" ||
       (individualProfile === "SALARIE" && hasSideActivity));
   const informalActivity = showActivityBlock && application.tax_regime === "INFORMAL";
+  const serviceActivity = informalActivity && application.activity_nature === "SERVICE";
+  const serviceGoodsOpen = !serviceActivity || details.service_has_goods === "yes";
   const showStabilityBlock = showSalaryBlock;
 
   useEffect(() => {
@@ -483,6 +485,7 @@ export function FinancialAnalysisForm({
   const groupSavings = enteredAmount(numbers.collective_savings);
   const groupRepaymentSource = groupContributions == null && groupActivityMargin == null ? null : (groupContributions ?? 0) + (groupActivityMargin ?? 0);
   const statementBasis = isCorporate || showActivityBlock || isGroupement ? resolveStatementBasis(details as { statement_basis?: unknown; financial_statements?: unknown }) : "RECONSTITUTED";
+  const formalDatedActivity = showActivityBlock && !informalActivity && statementBasis !== "STATEMENTS";
   const path = resolveAnalysisPath({
     clientType,
     individualProfile,
@@ -529,13 +532,13 @@ export function FinancialAnalysisForm({
         { id: "fa-quality", icon: Shield, label: "Fiabilité des données", show: true },
         { id: "fa-debt", icon: Landmark, label: "Endettement", show: true },
         { id: "fa-income", icon: Wallet, label: "Revenus du ménage", show: isIndividual },
-        { id: "fa-stock-margin", icon: Store, label: "Stock et marge", show: informalActivity },
-        { id: "fa-purchases", icon: ReceiptText, label: "Fournisseurs", show: informalActivity },
+        { id: "fa-stock-margin", icon: Store, label: serviceActivity ? "Achats et stock" : "Stock et marge", show: informalActivity },
+        { id: "fa-purchases", icon: ReceiptText, label: "Fournisseurs", show: informalActivity && serviceGoodsOpen },
         { id: "fa-sales-calc", icon: Wallet, label: "Ventes", show: informalActivity },
         { id: "fa-operating", icon: ReceiptText, label: "Charges d'exploitation", show: informalActivity },
         { id: "fa-family", icon: Users, label: "Charges familiales", show: informalActivity },
         { id: "fa-simplified-result", icon: Calculator, label: "Résultat et capacité", show: informalActivity },
-        { id: "fa-cash-check", icon: Wallet, label: "Trésorerie depuis l'achat", show: informalActivity },
+        { id: "fa-cash-check", icon: Wallet, label: "Trésorerie depuis l'achat", show: informalActivity && serviceGoodsOpen },
         { id: "fa-prior-year", icon: Gauge, label: "Comparatif N / N-1", show: informalActivity },
         { id: "fa-patrimony", icon: Landmark, label: "Bilan et patrimoine", show: informalActivity },
         { id: "fa-committee", icon: Calculator, label: "Indicateurs du comité", show: informalActivity },
@@ -573,6 +576,8 @@ export function FinancialAnalysisForm({
       individualProfile,
       showActivityBlock,
       informalActivity,
+      serviceActivity,
+      serviceGoodsOpen,
       showStabilityBlock,
       groupHasActivity,
       statementBasis,
@@ -620,10 +625,10 @@ export function FinancialAnalysisForm({
   const purchaseRows = readPurchaseRows(details);
   const purchaseStart = analysisWindow ? analysisStart : (typeof details.purchase_period_start === "string" ? details.purchase_period_start : "");
   const purchaseEnd = analysisWindow ? analysisEnd : (typeof details.purchase_period_end === "string" ? details.purchase_period_end : "");
-  const purchaseReading = purchaseHistoryReading(purchaseRows, purchaseStart, purchaseEnd);
+  const purchaseReading = purchaseHistoryReading(purchaseRows, purchaseStart, purchaseEnd, analysisPeriodMode);
   const purchaseStored = analysisWindow ? purchaseReading.monthly : purchaseReading.periodTotal;
   function writePurchaseHistory(rows: Record<string, string>[], start: string, end: string) {
-    const reading = purchaseHistoryReading(rows, start, end);
+    const reading = purchaseHistoryReading(rows, start, end, analysisPeriodMode);
     setDetails((current) => ({
       ...current,
       purchase_history: rows,
@@ -657,7 +662,8 @@ export function FinancialAnalysisForm({
     }));
     const sales = salesPeriodReading(readSalesPeriodRows(details.sales_periods), mode, window);
     if (sales.monthly != null) set("activity_turnover")(sales.monthly);
-    const purchases = purchaseHistoryReading(purchaseRows, window ? start : purchaseStart, window ? end : purchaseEnd);
+    if (!serviceGoodsOpen) return;
+    const purchases = purchaseHistoryReading(purchaseRows, window ? start : purchaseStart, window ? end : purchaseEnd, mode);
     const stored = window ? purchases.monthly : purchases.periodTotal;
     if (stored != null) {
       set("activity_purchases")(stored);
@@ -665,6 +671,27 @@ export function FinancialAnalysisForm({
       if (detailed != null) set("activity_expenses")(detailed);
     }
   }
+  function setServiceGoods(checked: boolean) {
+    setDetails((current) => ({ ...current, service_has_goods: checked ? "yes" : "" }));
+    if (checked) {
+      const stored = analysisWindow ? purchaseReading.monthly : purchaseReading.periodTotal;
+      if (stored != null) {
+        set("activity_purchases")(stored);
+        const detailed = activityExpensesFromOperating(operatingChargesExcludingPurchases(details), stored);
+        if (detailed != null) set("activity_expenses")(detailed);
+      }
+      const total = stockInventoryTotal(readProductRows(details));
+      if (total != null) set("activity_stock_value")(total.toFixed(2));
+      return;
+    }
+    const cleared = activityExpensesFromOperating(operatingChargesExcludingPurchases(details), "0");
+    const purchases = Number(numbers.activity_purchases || 0);
+    const expenses = Number(numbers.activity_expenses || 0);
+    set("activity_purchases")("0");
+    if (cleared != null) set("activity_expenses")(cleared);
+    else if (purchases) set("activity_expenses")(Math.max(0, expenses - purchases).toFixed(2));
+  }
+  const countedPurchaseInput = serviceGoodsOpen ? numbers.activity_purchases : "0";
   const collectionPeriodRows = readSalesPeriodRows(details.collection_periods);
   function writeSalesPeriods(rows: Record<string, string>[], mode: string) {
     const reading = salesPeriodReading(rows, mode, analysisWindow);
@@ -708,13 +735,19 @@ export function FinancialAnalysisForm({
       val("other_activity_income") + val("other_income") +
       val("variable_income") + val("pension_income") +
       completeLineTotal(readMoneyLines(details, "extra_income"));
+    const serviceWithoutGoods = informalActivity && application.activity_nature === "SERVICE" && details.service_has_goods !== "yes";
+    const operatingOnly = operatingChargesExcludingPurchases(details);
+    const countedPurchases = serviceWithoutGoods ? 0 : val("activity_purchases");
+    const countedExpenses = serviceWithoutGoods
+      ? (operatingOnly != null ? operatingOnly : Math.max(0, val("activity_expenses") - val("activity_purchases")))
+      : val("activity_expenses");
     let income = householdIncome;
     if (
       individualProfile === "INDEPENDANT" ||
       individualProfile === "MIXTE" ||
       hasSideActivity
     ) {
-      income += val("activity_turnover") - val("activity_expenses");
+      income += val("activity_turnover") - countedExpenses;
     }
     const charges =
       val("rent_expense") + val("food_expense") + val("utilities_expense") +
@@ -750,7 +783,7 @@ export function FinancialAnalysisForm({
     ) * monthlyFactor;
     let retained = stableMonthly + informalMonthly * weight / 100;
     const activityCounted = individualProfile === "INDEPENDANT" || individualProfile === "MIXTE" || hasSideActivity;
-    const activityNet = activityCounted ? (val("activity_turnover") - val("activity_expenses")) * monthlyFactor : 0;
+    const activityNet = activityCounted ? (val("activity_turnover") - countedExpenses) * monthlyFactor : 0;
     const activityHaircut = activityCounted && !activityFormal && activityNet > 0;
     const mainActivityRetained = activityCounted ? (activityHaircut ? activityNet * weight / 100 : activityNet) : 0;
     if (activityCounted) retained += mainActivityRetained;
@@ -761,8 +794,8 @@ export function FinancialAnalysisForm({
     const hasOtherActivity = readActivityLines(details).some((row) => row.label.trim() !== "" && (row.turnover.trim() !== "" || row.expenses.trim() !== ""));
     retained += otherActivityRetained;
     const activityMonthlyTurnover = val("activity_turnover") * monthlyFactor;
-    const activityMonthlyPurchases = val("activity_purchases") * monthlyFactor;
-    const activityMonthlyExpenses = val("activity_expenses") * monthlyFactor;
+    const activityMonthlyPurchases = countedPurchases * monthlyFactor;
+    const activityMonthlyExpenses = countedExpenses * monthlyFactor;
     const activityMonthlyNet = activityMonthlyTurnover - activityMonthlyExpenses;
     const activityMargin = activityMonthlyTurnover !== 0 ? (activityMonthlyNet / activityMonthlyTurnover) * 100 : null;
     const campaignReplacesActivity = campaignOpen && campaignMonthly != null;
@@ -812,8 +845,8 @@ export function FinancialAnalysisForm({
       })(),
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [numbers, isCorporate, dependents, individualProfile, hasSideActivity, period, details, externalCredits, configuration.data, analysisBool.activity_is_formal, dossierProfile, application.tax_regime, campaignOpen, campaignMonthly]);
-  const inventoryStock = informalActivity ? stockInventoryTotal(readProductRows(details)) : null;
+  }, [numbers, isCorporate, dependents, individualProfile, hasSideActivity, period, details, externalCredits, configuration.data, analysisBool.activity_is_formal, dossierProfile, application.tax_regime, application.activity_nature, informalActivity, campaignOpen, campaignMonthly]);
+  const inventoryStock = informalActivity && serviceGoodsOpen ? stockInventoryTotal(readProductRows(details)) : null;
   useEffect(() => {
     if (inventoryStock == null) return;
     const text = inventoryStock.toFixed(2);
@@ -1069,7 +1102,7 @@ export function FinancialAnalysisForm({
               options={INDIVIDUAL_PROFILES}
             />
           )}
-          {informalActivity ? (
+          {informalActivity || formalDatedActivity ? (
             <div className="form-grid two-col">
               <label className="field">
                 <span>Début de l&apos;analyse</span>
@@ -1093,12 +1126,25 @@ export function FinancialAnalysisForm({
               <Money label="Date de l'analyse" type="date" value={analysisDate} onChange={setAnalysisDate} />
             </div>
           )}
+          {isCorporate && (
+            <>
+              <p className="subsection-label">Mouvements créditeurs du compte dans l&apos;institution</p>
+              <div className="finance-recap">
+                <RecapItem label="Numéro de compte" value={application.client_account_number?.trim() || "—"} />
+              </div>
+              <InstitutionFlows
+                rows={readInstitutionFlows(details)}
+                currency={cur}
+                onChange={(rows) => setDetails((current) => ({ ...current, institution_credit_flows: rows }))}
+              />
+            </>
+          )}
           <Checkbox
             label="Analyse de référence du dossier (score, risque, comité)"
             checked={isReference}
             onChange={setIsReference}
           />
-          {!informalActivity && (
+          {!informalActivity && !formalDatedActivity && (
             <p className="muted small" style={{ marginBottom: 0 }}>
               Les revenus et charges d&apos;exploitation sont saisis sur la période ({FINANCE_LABELS.reference_period[period]}). Défaut : {isCorporate ? "annuelle (personne morale)" : isGroupement ? "mensuelle (groupement)" : "mensuelle (personne physique)"}. Les bilans et patrimoines sont des soldes à la date d&apos;arrêté. Les mensualités de dettes et prévisions de trésorerie restent mensuelles.
             </p>
@@ -1422,6 +1468,15 @@ export function FinancialAnalysisForm({
               cur={cur}
             />
           </div>
+          <div className="form-grid two-col">
+            <Text label="Composition du bureau" value={typeof details.group_bureau === "string" ? details.group_bureau : ""} onChange={(value) => setDetails((current) => ({ ...current, group_bureau: value }))} />
+            <Text label="Rythme des réunions" value={typeof details.group_meeting_rhythm === "string" ? details.group_meeting_rhythm : ""} onChange={(value) => setDetails((current) => ({ ...current, group_meeting_rhythm: value }))} />
+          </div>
+          <Checkbox
+            label="Règlement intérieur vérifié"
+            checked={details.group_rules_verified === "yes"}
+            onChange={(checked) => setDetails((current) => ({ ...current, group_rules_verified: checked ? "yes" : "" }))}
+          />
           <p className="muted small">Les cotisations, les autres recettes et les charges de fonctionnement forment la source collective. L'épargne est un stock : elle n'est pas un revenu et n'est pas ajoutée aux cotisations.</p>
           <Checkbox
             label="Le groupement a une activité commune, distincte des cotisations"
@@ -1540,6 +1595,16 @@ export function FinancialAnalysisForm({
                 cur={cur}
               />
             )}
+            <div className="form-grid two-col">
+              {(application.client_marital_status === "MARRIED" || numbers.spouse_income.trim() !== "") && (
+                <Money label="Revenus du conjoint" value={numbers.spouse_income} onChange={set("spouse_income")} cur={cur} />
+              )}
+              <Money label="Pension" value={numbers.pension_income} onChange={set("pension_income")} cur={cur} />
+              <Money label="Loyers / rentes" value={numbers.rental_income} onChange={set("rental_income")} cur={cur} />
+              <Money label="Primes / revenus variables" value={numbers.variable_income} onChange={set("variable_income")} cur={cur} />
+              <Money label="Revenus d'activité hors bloc dédié" value={numbers.other_activity_income} onChange={set("other_activity_income")} cur={cur} />
+              <Money label="Autres revenus" value={numbers.other_income} onChange={set("other_income")} cur={cur} />
+            </div>
             <MoneyLines
               rows={readMoneyLines(details, "extra_income")}
               onChange={(rows) => setDetails((current) => ({ ...current, extra_income: rows }))}
@@ -1566,18 +1631,27 @@ export function FinancialAnalysisForm({
           </FormSection>
 
           {informalActivity && <>
-            <FormSection id="fa-stock-margin" icon={Store} title="Inventaire du stock et calcul de la marge" description={periodNote}>
-              <StockMarginTable
-                rows={readProductRows(details)}
-                onChange={(rows) => {
-                  setDetails((current) => ({ ...current, products: rows }));
-                  const total = stockInventoryTotal(rows);
-                  if (total != null) set("activity_stock_value")(total.toFixed(2));
-                }}
-                currency={cur}
-              />
+            <FormSection id="fa-stock-margin" icon={Store} title={serviceActivity ? "Achats et stock" : "Inventaire du stock et calcul de la marge"} description={periodNote}>
+              {serviceActivity && (
+                <Checkbox
+                  label="Cette prestation a des achats ou un stock"
+                  checked={details.service_has_goods === "yes"}
+                  onChange={setServiceGoods}
+                />
+              )}
+              {serviceGoodsOpen && (
+                <StockMarginTable
+                  rows={readProductRows(details)}
+                  onChange={(rows) => {
+                    setDetails((current) => ({ ...current, products: rows }));
+                    const total = stockInventoryTotal(rows);
+                    if (total != null) set("activity_stock_value")(total.toFixed(2));
+                  }}
+                  currency={cur}
+                />
+              )}
             </FormSection>
-            <FormSection id="fa-purchases" icon={ReceiptText} title="Fournisseurs et achats" description={periodNote}>
+            {serviceGoodsOpen && <FormSection id="fa-purchases" icon={ReceiptText} title="Fournisseurs et achats" description={periodNote}>
               <p className="subsection-label">Fournisseurs</p>
               <div className="finance-recap">
                 <RecapItem label="Approvisionnement" value={application.activity_supply?.trim() || "—"} />
@@ -1595,6 +1669,7 @@ export function FinancialAnalysisForm({
                 rows={purchaseRows}
                 start={purchaseStart}
                 end={purchaseEnd}
+                mode={analysisPeriodMode}
                 currency={cur}
                 onChange={writePurchaseHistory}
                 normalizeToMonth={Boolean(analysisWindow)}
@@ -1608,6 +1683,9 @@ export function FinancialAnalysisForm({
               <p className="subsection-label subsection-split">Paiement fournisseurs</p>
               <SupplierPayments
                 rows={readSupplierPaymentRows(details)}
+                mode={analysisPeriodMode}
+                start={analysisWindow ? analysisStart : ""}
+                end={analysisWindow ? analysisEnd : ""}
                 currency={cur}
                 onChange={(rows) => setDetails((current) => ({ ...current, supplier_payments: rows }))}
               />
@@ -1632,7 +1710,7 @@ export function FinancialAnalysisForm({
                   onChange={(event) => setDetails((current) => ({ ...current, purchase_comment: event.target.value }))}
                 />
               </label>
-            </FormSection>
+            </FormSection>}
             <FormSection id="fa-sales-calc" icon={Wallet} title="Ventes et chiffre d'affaires" description={periodNote}>
               <p className="subsection-label">Clientèle</p>
               <div className="finance-recap">
@@ -1678,7 +1756,7 @@ export function FinancialAnalysisForm({
                     onChange={(value) => {
                       const next = { ...details, [item.key]: value };
                       setDetails(next);
-                      const detailed = activityExpensesFromOperating(operatingChargesExcludingPurchases(next), numbers.activity_purchases);
+                      const detailed = activityExpensesFromOperating(operatingChargesExcludingPurchases(next), countedPurchaseInput);
                       if (detailed != null) set("activity_expenses")(detailed);
                     }}
                     cur={cur}
@@ -1690,7 +1768,7 @@ export function FinancialAnalysisForm({
                 onChange={(rows) => {
                   const next = { ...details, activity_extra_charges: rows };
                   setDetails(next);
-                  const detailed = activityExpensesFromOperating(operatingChargesExcludingPurchases(next), numbers.activity_purchases);
+                  const detailed = activityExpensesFromOperating(operatingChargesExcludingPurchases(next), countedPurchaseInput);
                   if (detailed != null) set("activity_expenses")(detailed);
                 }}
                 addLabel="Ajouter une charge"
@@ -1703,8 +1781,8 @@ export function FinancialAnalysisForm({
               ) : (
                 <div className="finance-recap">
                   <RecapItem label="Charges hors achats" value={formatMoney(operatingChargesExcludingPurchases(details), cur)} />
-                  <RecapItem label="Achats" value={numbers.activity_purchases.trim() === "" ? "—" : formatMoney(numbers.activity_purchases, cur)} />
-                  <RecapItem label="Charges totales, achats inclus" value={formatMoney(numbers.activity_expenses, cur)} strong />
+                  <RecapItem label="Achats" value={countedPurchaseInput.trim() === "" ? "—" : formatMoney(countedPurchaseInput, cur)} />
+                  <RecapItem label="Charges totales, achats inclus" value={formatMoney(activityExpensesFromOperating(operatingChargesExcludingPurchases(details), countedPurchaseInput) ?? numbers.activity_expenses, cur)} strong />
                 </div>
               )}
               <label className="field">
@@ -1761,12 +1839,18 @@ export function FinancialAnalysisForm({
               </label>
               {detailTable("cashflow")}
               {supplements(["opening_cash_balance"])}
-              {operatingPurpose && supplements(["receivable_delay_days"], ["receivable_delay_days"])}
+              {operatingPurpose && (!serviceActivity || (numbers.activity_receivables.trim() !== "" && Number(numbers.activity_receivables) > 0)) && supplements(["receivable_delay_days"], ["receivable_delay_days"])}
+              {operatingPurpose && !(serviceActivity && !serviceGoodsOpen) && salesPeriods.monthly == null && (
+                <label className="field">
+                  <span>Commentaire sur l&apos;écart de stock ou de ventes</span>
+                  <textarea rows={2} value={typeof details.stock_risks === "string" ? details.stock_risks : ""} onChange={(event) => setDetails((current) => ({ ...current, stock_risks: event.target.value }))} />
+                </label>
+              )}
               {investmentPurpose && supplements(["maintenance_investment"])}
             </FormSection>
-            <FormSection id="fa-cash-check" icon={Wallet} title="Vérification de la trésorerie à partir de la date du dernier achat" description={periodNote}>
+            {serviceGoodsOpen && <FormSection id="fa-cash-check" icon={Wallet} title="Vérification de la trésorerie à partir de la date du dernier achat" description={periodNote}>
               <TpeReconstitution details={details} onChange={setDetails} currency={cur} part="cash" omitLastPurchase />
-            </FormSection>
+            </FormSection>}
             <FormSection id="fa-prior-year" icon={Gauge} title="Étude comparative N / N-1" description={periodNote}>
               <div className="form-grid two-col">
                 <Money label="CA de l'activité N-1" value={numbers.turnover_prev} onChange={set("turnover_prev")} cur={cur} />
@@ -1787,7 +1871,7 @@ export function FinancialAnalysisForm({
                 currency={cur}
                 setNumber={set}
                 setDetails={setDetails}
-                stockLocked={stockInventoryTotal(readProductRows(details)) != null}
+                stockLocked={serviceGoodsOpen && stockInventoryTotal(readProductRows(details)) != null}
               />
             </FormSection>
             <FormSection id="fa-committee" icon={Calculator} title="Indicateurs clés pour le comité de crédit" description={periodNote}>
@@ -1826,6 +1910,25 @@ export function FinancialAnalysisForm({
           >
             {showActivityBlock && (
               <>
+                {formalDatedActivity && (
+                  <>
+                    <p className="subsection-label">Recettes</p>
+                    <SalesPeriods rows={salesPeriodRows} mode={salesPeriodMode} currency={cur} onChange={writeSalesPeriods} periodLocked bounds={analysisWindow} />
+                    <p className="subsection-label subsection-split">Encaissements</p>
+                    <SalesPeriods
+                      rows={collectionPeriodRows}
+                      mode={collectionPeriodMode}
+                      currency={cur}
+                      onChange={writeCollectionPeriods}
+                      periodLocked
+                      bounds={analysisWindow}
+                      amountLabel="Montant encaissé"
+                      totalLabel="Total encaissé"
+                      averageLabel="Encaissement moyen"
+                      monthlyLabel="Encaissé sur le mois"
+                    />
+                  </>
+                )}
                 <ProductSheetTable value={details} onChange={setDetails} currency={cur} showIntro={false} />
                 <TpeReconstitution details={details} onChange={setDetails} currency={cur} part="sales" />
                 {detailText("business_model", "Modèle économique : clientèle, fournisseurs et approvisionnements")}
@@ -1851,12 +1954,14 @@ export function FinancialAnalysisForm({
                     value={numbers.activity_sales_days}
                     onChange={set("activity_sales_days")}
                   />
+                  {!(formalDatedActivity && salesPeriods.monthly != null) && (
                   <Money
                     label="CA / recettes activité"
                     value={numbers.activity_turnover}
                     onChange={set("activity_turnover")}
                     cur={cur}
                   />
+                  )}
                   <Money
                     label="Charges totales d'activité (achats inclus)"
                     value={numbers.activity_expenses}
@@ -2520,6 +2625,53 @@ function DossierEmployment({ application }: { application: CreditApplication }) 
   );
 }
 
+function readInstitutionFlows(details: AnalysisDetails): { month: string; amount: string }[] {
+  const value = details.institution_credit_flows;
+  if (!Array.isArray(value)) return [];
+  return value.map((row) => {
+    const source = (row ?? {}) as Record<string, unknown>;
+    return {
+      month: source.month == null ? "" : String(source.month),
+      amount: source.amount == null ? "" : String(source.amount),
+    };
+  });
+}
+
+function InstitutionFlows({
+  rows,
+  currency,
+  onChange,
+}: {
+  rows: { month: string; amount: string }[];
+  currency: string;
+  onChange: (rows: { month: string; amount: string }[]) => void;
+}) {
+  return (
+    <div className="stack">
+      {rows.map((row, index) => (
+        <div className="form-grid two-col" key={`${row.month}-${index}`}>
+          <label className="field">
+            <span>Mois</span>
+            <input
+              type="month"
+              value={row.month}
+              onChange={(event) => onChange(rows.map((item, itemIndex) => itemIndex === index ? { ...item, month: event.target.value } : item))}
+            />
+          </label>
+          <Money
+            label="Montant créditeur"
+            value={row.amount}
+            onChange={(value) => onChange(rows.map((item, itemIndex) => itemIndex === index ? { ...item, amount: value } : item))}
+            cur={currency}
+          />
+          <button type="button" className="btn btn-ghost" onClick={() => onChange(rows.filter((_, itemIndex) => itemIndex !== index))}>Retirer</button>
+        </div>
+      ))}
+      <button type="button" className="btn btn-ghost" onClick={() => onChange([...rows, { month: "", amount: "" }])}>Ajouter un mois</button>
+    </div>
+  );
+}
+
 function RecapItem({
   label,
   value,
@@ -2652,7 +2804,7 @@ function StockMarginTable({
   );
 }
 
-const PURCHASE_KEYS = ["date", "product", "supplier", "quantity", "unit", "unit_price"] as const;
+const PURCHASE_KEYS = ["date", "product", "supplier", "quantity", "unit", "unit_price", "start", "end", "amount"] as const;
 
 function readPurchaseRows(details: AnalysisDetails): Record<string, string>[] {
   const value = details.purchase_history;
@@ -2911,6 +3063,7 @@ function PurchaseHistory({
   rows,
   start,
   end,
+  mode,
   currency,
   onChange,
   normalizeToMonth = false,
@@ -2919,19 +3072,27 @@ function PurchaseHistory({
   rows: Record<string, string>[];
   start: string;
   end: string;
+  mode: string;
   currency: string;
   onChange: (rows: Record<string, string>[], start: string, end: string) => void;
   normalizeToMonth?: boolean;
   windowLocked?: boolean;
 }) {
+  const periodMode = mode === "WEEK" || mode === "MONTH";
   function update(index: number, key: string, content: string) {
     const next = rows.slice();
     next[index] = { ...next[index], [key]: content };
     onChange(next, start, end);
   }
-  const blank = { date: "", product: "", supplier: "", quantity: "", unit: "", unit_price: "" };
-  const reading = purchaseHistoryReading(rows, start, end);
-  const indicators: { label: string; value: string }[] = [
+  const blank = { date: "", product: "", supplier: "", quantity: "", unit: "", unit_price: "", start: "", end: "", amount: "" };
+  const reading = purchaseHistoryReading(rows, start, end, mode);
+  const indicators: { label: string; value: string }[] = periodMode ? [
+    { label: "Achats de la période", value: reading.periodTotal == null ? "—" : formatMoney(reading.periodTotal, currency) },
+    ...(normalizeToMonth ? [{ label: "Achats du mois", value: reading.monthly == null ? "—" : formatMoney(reading.monthly, currency) }] : []),
+    { label: "Nombre de périodes", value: reading.count == null ? "—" : String(reading.count) },
+    { label: "Montant moyen de la période", value: reading.average == null ? "—" : formatMoney(reading.average, currency) },
+    { label: "Dernière période", value: reading.periodLastDate ? `${formatDate(reading.periodLastDate)} · ${formatMoney(reading.periodLastAmount, currency)}` : "—" },
+  ] : [
     { label: "Achats de la période", value: reading.periodTotal == null ? "—" : formatMoney(reading.periodTotal, currency) },
     ...(normalizeToMonth ? [{ label: "Achats du mois", value: reading.monthly == null ? "—" : formatMoney(reading.monthly, currency) }] : []),
     { label: "Nombre d'achats", value: reading.count == null ? "—" : String(reading.count) },
@@ -2959,26 +3120,46 @@ function PurchaseHistory({
         <table className="table">
           <thead>
             <tr>
-              <th scope="col">Date</th>
-              <th scope="col">Produit</th>
-              <th scope="col">Fournisseur</th>
-              <th scope="col">Quantité</th>
-              <th scope="col">Unité</th>
-              <th scope="col">Prix unitaire</th>
-              <th scope="col">Montant</th>
+              {periodMode ? (
+                <>
+                  <th scope="col">Début</th>
+                  <th scope="col">Fin</th>
+                  <th scope="col">Montant des achats</th>
+                </>
+              ) : (
+                <>
+                  <th scope="col">Date</th>
+                  <th scope="col">Produit</th>
+                  <th scope="col">Fournisseur</th>
+                  <th scope="col">Quantité</th>
+                  <th scope="col">Unité</th>
+                  <th scope="col">Prix unitaire</th>
+                  <th scope="col">Montant</th>
+                </>
+              )}
               <th scope="col" aria-label="Retirer" />
             </tr>
           </thead>
           <tbody>
             {rows.map((row, index) => (
               <tr key={index}>
-                <td><input aria-label={`Date d'achat, ligne ${index + 1}`} type="date" value={row.date ?? ""} onChange={(event) => update(index, "date", event.target.value)} /></td>
-                <td><input aria-label={`Produit acheté, ligne ${index + 1}`} type="text" value={row.product ?? ""} onChange={(event) => update(index, "product", event.target.value)} /></td>
-                <td><input aria-label={`Fournisseur de l'achat, ligne ${index + 1}`} type="text" value={row.supplier ?? ""} onChange={(event) => update(index, "supplier", event.target.value)} /></td>
-                <td><input aria-label={`Quantité achetée, ligne ${index + 1}`} type="number" min={0} step="any" value={row.quantity ?? ""} onChange={(event) => update(index, "quantity", event.target.value)} /></td>
-                <td><input aria-label={`Unité, ligne ${index + 1}`} type="text" value={row.unit ?? ""} onChange={(event) => update(index, "unit", event.target.value)} /></td>
-                <td><input aria-label={`Prix unitaire, ligne ${index + 1}`} type="number" min={0} step="any" value={row.unit_price ?? ""} onChange={(event) => update(index, "unit_price", event.target.value)} /></td>
-                <td className="num">{formatMoney(purchaseLineAmount(row), currency)}</td>
+                {periodMode ? (
+                  <>
+                    <td><input aria-label={`Début de l'achat, ligne ${index + 1}`} type="date" value={row.start ?? ""} onChange={(event) => update(index, "start", event.target.value)} /></td>
+                    <td><input aria-label={`Fin de l'achat, ligne ${index + 1}`} type="date" value={row.end ?? ""} onChange={(event) => update(index, "end", event.target.value)} /></td>
+                    <td><input aria-label={`Montant des achats, ligne ${index + 1}`} type="number" min={0} step="any" value={row.amount ?? ""} onChange={(event) => update(index, "amount", event.target.value)} /></td>
+                  </>
+                ) : (
+                  <>
+                    <td><input aria-label={`Date d'achat, ligne ${index + 1}`} type="date" value={row.date ?? ""} onChange={(event) => update(index, "date", event.target.value)} /></td>
+                    <td><input aria-label={`Produit acheté, ligne ${index + 1}`} type="text" value={row.product ?? ""} onChange={(event) => update(index, "product", event.target.value)} /></td>
+                    <td><input aria-label={`Fournisseur de l'achat, ligne ${index + 1}`} type="text" value={row.supplier ?? ""} onChange={(event) => update(index, "supplier", event.target.value)} /></td>
+                    <td><input aria-label={`Quantité achetée, ligne ${index + 1}`} type="number" min={0} step="any" value={row.quantity ?? ""} onChange={(event) => update(index, "quantity", event.target.value)} /></td>
+                    <td><input aria-label={`Unité, ligne ${index + 1}`} type="text" value={row.unit ?? ""} onChange={(event) => update(index, "unit", event.target.value)} /></td>
+                    <td><input aria-label={`Prix unitaire, ligne ${index + 1}`} type="number" min={0} step="any" value={row.unit_price ?? ""} onChange={(event) => update(index, "unit_price", event.target.value)} /></td>
+                    <td className="num">{formatMoney(purchaseLineAmount(row), currency)}</td>
+                  </>
+                )}
                 <td>
                   <button type="button" className="btn btn-ghost btn-icon" aria-label={`Retirer la ligne ${index + 1}`} onClick={() => onChange(rows.filter((_, rowIndex) => rowIndex !== index), start, end)}>
                     <Trash2 size={16} />
@@ -2990,7 +3171,7 @@ function PurchaseHistory({
           <tfoot>
             {indicators.map((indicator) => (
               <tr key={indicator.label}>
-                <th scope="row" colSpan={6}>{indicator.label}</th>
+                <th scope="row" colSpan={periodMode ? 2 : 6}>{indicator.label}</th>
                 <td className="num">{indicator.value}</td>
                 <td />
               </tr>
@@ -3003,7 +3184,7 @@ function PurchaseHistory({
   );
 }
 
-const SUPPLIER_PAYMENT_KEYS = ["date", "supplier", "amount", "payment_mode"] as const;
+const SUPPLIER_PAYMENT_KEYS = ["date", "supplier", "amount", "payment_mode", "start", "end", "period_amount"] as const;
 
 function readSupplierPaymentRows(details: AnalysisDetails): Record<string, string>[] {
   const value = details.supplier_payments;
@@ -3016,21 +3197,33 @@ function readSupplierPaymentRows(details: AnalysisDetails): Record<string, strin
 
 function SupplierPayments({
   rows,
+  mode,
+  start,
+  end,
   currency,
   onChange,
 }: {
   rows: Record<string, string>[];
+  mode: string;
+  start: string;
+  end: string;
   currency: string;
   onChange: (rows: Record<string, string>[]) => void;
 }) {
+  const periodMode = mode === "WEEK" || mode === "MONTH";
   function update(index: number, key: string, content: string) {
     const next = rows.slice();
     next[index] = { ...next[index], [key]: content };
     onChange(next);
   }
-  const blank = { date: "", supplier: "", amount: "", payment_mode: "" };
-  const reading = supplierPaymentReading(rows);
-  const indicators = [
+  const blank = { date: "", supplier: "", amount: "", payment_mode: "", start: "", end: "", period_amount: "" };
+  const reading = supplierPaymentReading(rows, mode, start, end);
+  const indicators = periodMode ? [
+    { label: "Total payé", value: reading.total == null ? "—" : formatMoney(reading.total, currency) },
+    { label: "Nombre de périodes", value: reading.count == null ? "—" : String(reading.count) },
+    { label: "Montant moyen de la période", value: reading.average == null ? "—" : formatMoney(reading.average, currency) },
+    { label: "Dernière période", value: reading.lastDate ? `${formatDate(reading.lastDate)} · ${formatMoney(reading.lastAmount, currency)}` : "—" },
+  ] : [
     { label: "Total payé", value: reading.total == null ? "—" : formatMoney(reading.total, currency) },
     { label: "Nombre de paiements", value: reading.count == null ? "—" : String(reading.count) },
     { label: "Paiement moyen", value: reading.average == null ? "—" : formatMoney(reading.average, currency) },
@@ -3042,28 +3235,48 @@ function SupplierPayments({
         <table className="table">
           <thead>
             <tr>
-              <th scope="col">Date</th>
-              <th scope="col">Fournisseur</th>
-              <th scope="col">Montant</th>
-              <th scope="col">Mode de paiement</th>
+              {periodMode ? (
+                <>
+                  <th scope="col">Début</th>
+                  <th scope="col">Fin</th>
+                  <th scope="col">Montant des paiements</th>
+                </>
+              ) : (
+                <>
+                  <th scope="col">Date</th>
+                  <th scope="col">Fournisseur</th>
+                  <th scope="col">Montant</th>
+                  <th scope="col">Mode de paiement</th>
+                </>
+              )}
               <th scope="col" aria-label="Retirer" />
             </tr>
           </thead>
           <tbody>
             {rows.map((row, index) => (
               <tr key={index}>
-                <td><input aria-label={`Date du paiement, ligne ${index + 1}`} type="date" value={row.date ?? ""} onChange={(event) => update(index, "date", event.target.value)} /></td>
-                <td><input aria-label={`Fournisseur payé, ligne ${index + 1}`} type="text" value={row.supplier ?? ""} onChange={(event) => update(index, "supplier", event.target.value)} /></td>
-                <td><input aria-label={`Montant payé, ligne ${index + 1}`} type="number" min={0} step="any" value={row.amount ?? ""} onChange={(event) => update(index, "amount", event.target.value)} /></td>
-                <td>
-                  <select aria-label={`Mode de paiement, ligne ${index + 1}`} value={row.payment_mode ?? ""} onChange={(event) => update(index, "payment_mode", event.target.value)}>
-                    <option value="">—</option>
-                    <option value="CASH">Espèces</option>
-                    <option value="MOBILE">Mobile Money</option>
-                    <option value="TRANSFER">Virement</option>
-                    <option value="CHEQUE">Chèque</option>
-                  </select>
-                </td>
+                {periodMode ? (
+                  <>
+                    <td><input aria-label={`Début du paiement, ligne ${index + 1}`} type="date" value={row.start ?? ""} onChange={(event) => update(index, "start", event.target.value)} /></td>
+                    <td><input aria-label={`Fin du paiement, ligne ${index + 1}`} type="date" value={row.end ?? ""} onChange={(event) => update(index, "end", event.target.value)} /></td>
+                    <td><input aria-label={`Montant des paiements, ligne ${index + 1}`} type="number" min={0} step="any" value={row.period_amount ?? ""} onChange={(event) => update(index, "period_amount", event.target.value)} /></td>
+                  </>
+                ) : (
+                  <>
+                    <td><input aria-label={`Date du paiement, ligne ${index + 1}`} type="date" value={row.date ?? ""} onChange={(event) => update(index, "date", event.target.value)} /></td>
+                    <td><input aria-label={`Fournisseur payé, ligne ${index + 1}`} type="text" value={row.supplier ?? ""} onChange={(event) => update(index, "supplier", event.target.value)} /></td>
+                    <td><input aria-label={`Montant payé, ligne ${index + 1}`} type="number" min={0} step="any" value={row.amount ?? ""} onChange={(event) => update(index, "amount", event.target.value)} /></td>
+                    <td>
+                      <select aria-label={`Mode de paiement, ligne ${index + 1}`} value={row.payment_mode ?? ""} onChange={(event) => update(index, "payment_mode", event.target.value)}>
+                        <option value="">—</option>
+                        <option value="CASH">Espèces</option>
+                        <option value="MOBILE">Mobile Money</option>
+                        <option value="TRANSFER">Virement</option>
+                        <option value="CHEQUE">Chèque</option>
+                      </select>
+                    </td>
+                  </>
+                )}
                 <td>
                   <button type="button" className="btn btn-ghost btn-icon" aria-label={`Retirer le paiement ${index + 1}`} onClick={() => onChange(rows.filter((_, rowIndex) => rowIndex !== index))}>
                     <Trash2 size={16} />
@@ -3076,7 +3289,7 @@ function SupplierPayments({
             {indicators.map((indicator) => (
               <tr key={indicator.label}>
                 <th scope="row" colSpan={2}>{indicator.label}</th>
-                <td className="num" colSpan={2}>{indicator.value}</td>
+                <td className="num" colSpan={periodMode ? 1 : 2}>{indicator.value}</td>
                 <td />
               </tr>
             ))}

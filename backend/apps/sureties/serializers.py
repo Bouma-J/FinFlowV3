@@ -8,6 +8,13 @@ from apps.common.storage_urls import file_download_url, presign_file_fields
 from .models import Surety, SuretyDocument, SuretyEngagement, SuretyPhone
 
 
+class EmptyAsNullDecimal(serializers.DecimalField):
+    def to_internal_value(self, data):
+        if data in ("", None):
+            return None
+        return super().to_internal_value(data)
+
+
 class SuretyEngagementSerializer(serializers.ModelSerializer):
     surety_display = serializers.CharField(
         source="surety.display_name", read_only=True
@@ -259,6 +266,12 @@ class SuretySerializer(serializers.ModelSerializer):
     available_ceiling = serializers.DecimalField(
         max_digits=18, decimal_places=2, read_only=True
     )
+    monthly_charges = EmptyAsNullDecimal(
+        max_digits=18, decimal_places=2, required=False, allow_null=True,
+    )
+    existing_monthly_payments = EmptyAsNullDecimal(
+        max_digits=18, decimal_places=2, required=False, allow_null=True,
+    )
 
     class Meta:
         model = Surety
@@ -267,6 +280,7 @@ class SuretySerializer(serializers.ModelSerializer):
             # Identité physique
             "first_name", "last_name", "birth_date", "birth_country",
             "activity", "marital_status", "matrimonial_regime", "estimated_income",
+            "monthly_charges", "existing_monthly_payments",
             # Pièce d'identité
             "id_document_type", "national_id", "id_document_issue_date",
             "id_document_expiry_date", "id_document_scan", "photo",

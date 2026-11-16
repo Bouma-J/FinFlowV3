@@ -36,11 +36,22 @@ function periodDays(start: string, end: string): number | null {
   return days > 0 ? days : null;
 }
 
-export function purchaseHistoryReading(rows: Record<string, string>[], start: string, end: string): PurchaseHistoryReading {
+export function purchaseHistoryReading(
+  rows: Record<string, string>[],
+  start: string,
+  end: string,
+  mode = "DAY",
+): PurchaseHistoryReading {
+  const periodMode = mode === "WEEK" || mode === "MONTH";
   const complete = rows.flatMap((row) => {
+    if (periodMode) {
+      const amount = productAmount(row.amount);
+      if (!row.start || !row.end || row.end < row.start || amount == null) return [];
+      return [{ date: row.end, spanStart: row.start, amount, supplier: "" }];
+    }
     const amount = purchaseLineAmount(row);
     if (!row.date || amount == null) return [];
-    return [{ date: row.date, amount, supplier: (row.supplier || "").trim() }];
+    return [{ date: row.date, spanStart: row.date, amount, supplier: (row.supplier || "").trim() }];
   });
   let latestDate = "";
   let latestTotal = 0;
@@ -53,7 +64,7 @@ export function purchaseHistoryReading(rows: Record<string, string>[], start: st
     }
   }
   const counted = start && end && start <= end
-    ? complete.filter((line) => line.date >= start && line.date <= end)
+    ? complete.filter((line) => periodMode ? line.spanStart >= start && line.date <= end : line.date >= start && line.date <= end)
     : [];
   const total = counted.reduce((sum, line) => sum + line.amount, 0);
   const suppliers = new Map<string, { label: string; amount: number }>();
@@ -81,7 +92,7 @@ export function purchaseHistoryReading(rows: Record<string, string>[], start: st
     periodTotal: counted.length ? money(total) : null,
     count: counted.length ? counted.length : null,
     average: counted.length ? money(total / counted.length) : null,
-    perMonth: days ? money(counted.length / days * 30) : null,
+    perMonth: !periodMode && days ? money(counted.length / days * 30) : null,
     monthly: days ? money(total / days * 30) : null,
     periodLastDate,
     periodLastAmount: periodLastDate ? money(periodLastTotal) : "",

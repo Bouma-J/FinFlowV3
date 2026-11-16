@@ -346,29 +346,52 @@ class FinancialAnalysisSerializer(serializers.ModelSerializer):
         if "analysis_details" in attrs:
             from .analysis_details import (
                 activity_expenses_with_purchases, apply_reference_statement,
-                inventory_stock_value, purchase_monthly_total, purchase_period_total,
-                sales_monthly_total,
+                informal_service_without_goods, inventory_stock_value,
+                operating_charges_excluding_purchases, purchase_monthly_total,
+                purchase_period_total, sales_monthly_total,
             )
             application = attrs.get("application", getattr(self.instance, "application", None))
             client = getattr(application, "client", None) if application is not None else None
             apply_reference_statement(attrs, client_type=getattr(client, "client_type", None))
-            monthly_purchases = purchase_monthly_total(attrs["analysis_details"])
-            if monthly_purchases is not None:
-                attrs["activity_purchases"] = monthly_purchases
+            goods_closed = informal_service_without_goods(application, attrs["analysis_details"])
+            if goods_closed:
+                incoming_purchases = attrs.get("activity_purchases")
+                if incoming_purchases is None and self.instance is not None:
+                    incoming_purchases = self.instance.activity_purchases
+                attrs["activity_purchases"] = Decimal("0")
+                excluding = operating_charges_excluding_purchases(attrs["analysis_details"])
+                if excluding is not None:
+                    attrs["activity_expenses"] = excluding
+                else:
+                    expenses = attrs.get("activity_expenses")
+                    if expenses is None and self.instance is not None:
+                        expenses = self.instance.activity_expenses
+                    if expenses not in (None, "") and incoming_purchases not in (None, "", 0):
+                        reduced = Decimal(str(expenses)) - Decimal(str(incoming_purchases))
+                        attrs["activity_expenses"] = reduced if reduced > 0 else Decimal("0")
             else:
-                total = purchase_period_total(attrs["analysis_details"])
-                if total is not None:
-                    attrs["activity_purchases"] = total
+                monthly_purchases = purchase_monthly_total(attrs["analysis_details"])
+                if monthly_purchases is not None:
+                    attrs["activity_purchases"] = monthly_purchases
+                else:
+                    total = purchase_period_total(attrs["analysis_details"])
+                    if total is not None:
+                        attrs["activity_purchases"] = total
             monthly_sales = sales_monthly_total(attrs["analysis_details"])
             if monthly_sales is not None:
                 attrs["activity_turnover"] = monthly_sales
-            purchases = attrs.get("activity_purchases")
-            if purchases is None and self.instance is not None:
-                purchases = self.instance.activity_purchases
-            detailed_expenses = activity_expenses_with_purchases(attrs["analysis_details"], purchases)
-            if detailed_expenses is not None:
-                attrs["activity_expenses"] = detailed_expenses
-            if getattr(application, "tax_regime", "") == "INFORMAL" and getattr(client, "client_type", "") == "INDIVIDUAL":
+            if not goods_closed:
+                purchases = attrs.get("activity_purchases")
+                if purchases is None and self.instance is not None:
+                    purchases = self.instance.activity_purchases
+                detailed_expenses = activity_expenses_with_purchases(attrs["analysis_details"], purchases)
+                if detailed_expenses is not None:
+                    attrs["activity_expenses"] = detailed_expenses
+            if (
+                not goods_closed
+                and getattr(application, "tax_regime", "") == "INFORMAL"
+                and getattr(client, "client_type", "") == "INDIVIDUAL"
+            ):
                 stock_value = inventory_stock_value(attrs["analysis_details"])
                 if stock_value is not None:
                     attrs["activity_stock_value"] = stock_value

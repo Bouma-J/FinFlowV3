@@ -57,6 +57,7 @@ const TEXT_KEYS = [
   // Physique
   "last_name", "first_name", "birth_date", "birth_country",
   "activity", "marital_status", "matrimonial_regime", "estimated_income",
+  "monthly_charges", "existing_monthly_payments",
   "id_document_type", "national_id", "id_document_issue_date",
   "id_document_expiry_date",
   // Entreprise
@@ -178,6 +179,7 @@ export function SuretyForm({
     },
     onSuccess: (data: Surety) => {
       qc.invalidateQueries({ queryKey: ["sureties"] });
+      qc.invalidateQueries({ queryKey: ["collateral-summary"] });
       if (initial) {
         qc.invalidateQueries({ queryKey: ["surety", initial.id] });
       }
@@ -307,6 +309,8 @@ export function SuretyForm({
                 <Select label="Régime matrimonial" value={text.matrimonial_regime} onChange={set("matrimonial_regime")} options={MATRIMONIAL_REGIME} />
               )}
               <Text label="Estimation de revenu (XOF)" type="number" value={text.estimated_income} onChange={set("estimated_income")} />
+              <Text label="Charges mensuelles (XOF)" type="number" value={text.monthly_charges} onChange={set("monthly_charges")} />
+              <Text label="Mensualités déjà supportées (XOF)" type="number" value={text.existing_monthly_payments} onChange={set("existing_monthly_payments")} />
             </div>
           </Card>
 

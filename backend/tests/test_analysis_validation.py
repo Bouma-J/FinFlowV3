@@ -342,3 +342,111 @@ def test_refresh_reference_analysis_after_amount_change(
         assert refreshed.new_installment is not None
         assert refreshed.new_installment != before
         assert refreshed.new_installment > before
+
+
+def test_informal_service_skips_stock_delay_and_cash_until_goods_or_receivables(tenant_a, product_a, client_a):
+    with tenant_context(tenant_a.id):
+        application = _app(tenant_a, client_a, product_a, ref="D-SERVICE")
+        application.purpose_type = "TREASURY"
+        application.tax_regime = "INFORMAL"
+        application.activity_nature = "SERVICE"
+        application.save(update_fields=["purpose_type", "tax_regime", "activity_nature", "updated_at"])
+        analysis = FinancialAnalysis.objects.create(
+            tenant=tenant_a,
+            application=application,
+            is_reference=True,
+            recommendation=FinancialAnalysis.Recommendation.FAVORABLE,
+            client_type="INDIVIDUAL",
+            individual_profile=FinancialAnalysis.IndividualProfile.INDEPENDANT,
+            activity_turnover=Decimal("300000"),
+            analysis_details={
+                "last_purchase_date": "2026-10-01",
+                "cash_control_date": "2026-10-11",
+                "cash_at_last_purchase": "0",
+                "observed_cash": "0",
+                "charges_paid_in_window": "0",
+                "retained_daily_sales": "10000",
+            },
+        )
+        assert assert_analysis_ready_for_submission(application) is not None
+
+        analysis.activity_receivables = Decimal("10000")
+        analysis.save(update_fields=["activity_receivables", "updated_at"])
+        with pytest.raises(WorkflowError, match="créances"):
+            assert_analysis_ready_for_submission(application)
+
+        analysis.analysis_details = {
+            "receivable_delay_days": "0",
+            "service_has_goods": "yes",
+        }
+        analysis.save(update_fields=["analysis_details", "updated_at"])
+        with pytest.raises(WorkflowError, match="stock"):
+            assert_analysis_ready_for_submission(application)
+
+        application.activity_nature = "TRADE"
+        application.save(update_fields=["activity_nature", "updated_at"])
+        analysis.activity_receivables = Decimal("0")
+        analysis.analysis_details = {
+            "last_purchase_date": "2026-10-01",
+            "cash_control_date": "2026-10-11",
+            "cash_at_last_purchase": "0",
+            "observed_cash": "0",
+            "charges_paid_in_window": "0",
+            "retained_daily_sales": "10000",
+        }
+        analysis.save(update_fields=["activity_receivables", "analysis_details", "updated_at"])
+        with pytest.raises(WorkflowError, match="créances|dernier achat"):
+            assert_analysis_ready_for_submission(application)
+
+
+def test_informal_dated_sales_count_as_the_sales_reconciliation(tenant_a, product_a, client_a):
+    with tenant_context(tenant_a.id):
+        application = _app(tenant_a, client_a, product_a, ref="D-DATED")
+        application.purpose_type = "TREASURY"
+        application.tax_regime = "INFORMAL"
+        application.activity_nature = "TRADE"
+        application.save(update_fields=["purpose_type", "tax_regime", "activity_nature", "updated_at"])
+        FinancialAnalysis.objects.create(
+            tenant=tenant_a,
+            application=application,
+            is_reference=True,
+            recommendation=FinancialAnalysis.Recommendation.FAVORABLE,
+            client_type="INDIVIDUAL",
+            individual_profile=FinancialAnalysis.IndividualProfile.INDEPENDANT,
+            activity_turnover=Decimal("300000"),
+            analysis_details={
+                "receivable_delay_days": "0",
+                "analysis_period_start": "2026-10-01",
+                "analysis_period_end": "2026-10-31",
+                "analysis_period_mode": "DAY",
+                "sales_period_mode": "DAY",
+                "sales_periods": [{"date": "2026-10-02", "amount": "10000"}],
+                "products": [{"quantity": "1", "sale_price": "100", "unit_cost": "50", "nature": "RESOLD"}],
+            },
+        )
+        assert assert_analysis_ready_for_submission(application) is not None
+
+
+def test_group_governance_and_institution_flows_stay_in_the_detail():
+    from apps.credits.analysis_details import validate_details
+    from rest_framework.exceptions import ValidationError
+
+    saved = validate_details({
+        "group_bureau": "Présidente et trésorière",
+        "group_meeting_rhythm": "Une fois par mois",
+        "group_rules_verified": "yes",
+        "institution_credit_flows": [
+            {"month": "2026-09", "amount": "1500000"},
+            {"month": "2026-10", "amount": "800000"},
+        ],
+    })
+    assert saved["group_rules_verified"] == "yes"
+    assert len(saved["institution_credit_flows"]) == 2
+    with pytest.raises(ValidationError):
+        validate_details({"group_rules_verified": "no"})
+    with pytest.raises(ValidationError):
+        validate_details({"institution_credit_flows": [
+            {"month": "2026-10", "amount": "1"},
+            {"month": "2026-10", "amount": "2"},
+        ]})
+

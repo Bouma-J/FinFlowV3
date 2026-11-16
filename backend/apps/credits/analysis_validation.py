@@ -126,14 +126,15 @@ def assert_analysis_ready_for_submission(application):
             "Renseignez les encaissements ou les sorties. Le chiffre d'affaires passé n'est pas exigé."
         )
 
-    from .analysis_details import detail_metrics
+    from .analysis_details import detail_metrics, informal_service_without_goods
 
     detailed = detail_metrics(reference)
+    goods_closed = informal_service_without_goods(application, reference.analysis_details)
     if detailed.get("debt_service_reconciled") is False:
         raise WorkflowError(
             "Rapprochez les mensualités des engagements détaillés avec le total consolidé avant soumission."
         )
-    if detailed.get("tpe_cash_conclusion") in {"TO_JUSTIFY", "INCOHERENT"} and not str(
+    if not goods_closed and detailed.get("tpe_cash_conclusion") in {"TO_JUSTIFY", "INCOHERENT"} and not str(
         (reference.analysis_details or {}).get("cash_check_comment") or ""
     ).strip():
         raise WorkflowError(
@@ -250,14 +251,32 @@ def _purpose_test_failures(application, reference, detailed):
         return failures
     if purpose in {"WORKING_CAPITAL", "TREASURY", "STOCK"}:
         failures = []
-        if details.get("receivable_delay_days") in (None, ""):
+        from .analysis_details import informal_service_without_goods
+
+        client = getattr(application, "client", None)
+        informal_service = (
+            getattr(application, "activity_nature", "") == "SERVICE"
+            and getattr(application, "tax_regime", "") == "INFORMAL"
+            and getattr(client, "client_type", "") == "INDIVIDUAL"
+        )
+        needs_delay = not informal_service or _dec(reference.activity_receivables) > 0
+        if needs_delay and details.get("receivable_delay_days") in (None, ""):
             failures.append(
                 "Cet objet exige l'allongement des créances : indiquez le retard clients, y compris zéro s'il n'y en a pas."
             )
-        if _reconstituted_activity(reference):
-            sales_known = detailed.get("sales_reconciled") is True
+        if _reconstituted_activity(reference) and not informal_service_without_goods(application, details):
+            from .analysis_details import sales_monthly_total
+
+            dated_sales = sales_monthly_total(details) is not None
+            informal_inventory = (
+                getattr(application, "tax_regime", "") == "INFORMAL"
+                and getattr(client, "client_type", "") == "INDIVIDUAL"
+                and reference.is_individual
+            )
+            sales_known = detailed.get("sales_reconciled") is True or dated_sales
             stock_known = detailed.get("stock_reconciled") is True
-            gap = detailed.get("sales_reconciled") is False or detailed.get("stock_reconciled") is False
+            sales_gap = False if informal_inventory else detailed.get("sales_reconciled") is False
+            gap = sales_gap or detailed.get("stock_reconciled") is False
             if gap and not _detail_text(reference, "stock_risks"):
                 failures.append(
                     "Le stock ou les ventes reconstituées s'écartent du déclaré : expliquez l'écart dans le commentaire sur le stock."

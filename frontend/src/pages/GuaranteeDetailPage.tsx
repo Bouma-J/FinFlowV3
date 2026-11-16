@@ -656,6 +656,18 @@ export function GuaranteeDetailPage({
             <Row term="Référence du rapport" value={g.expertise_reference} />
             <Row term="Bien assuré" value={g.is_insured ? "Oui" : "Non"} />
             <Row term="Réf. assurance" value={g.insurance_reference} />
+            <Row
+              term="Montant assuré"
+              value={
+                g.insured_amount != null && g.insured_amount !== ""
+                  ? formatMoney(g.insured_amount)
+                  : undefined
+              }
+            />
+            <Row
+              term="Fin de l'assurance"
+              value={g.insurance_end_date && formatDate(g.insurance_end_date)}
+            />
           </dl>
         </Section>
 
@@ -763,6 +775,22 @@ export function GuaranteeDetailPage({
                 }
               />
               <Row term="Adresse du bien" value={g.address} />
+              <Row
+                term="Rang de l'hypothèque"
+                value={
+                  g.mortgage_rank
+                    ? lbl(GUARANTEE_LABELS.mortgage_rank, g.mortgage_rank)
+                    : undefined
+                }
+              />
+              <Row
+                term="Inscriptions antérieures"
+                value={
+                  g.prior_lien_amount != null && g.prior_lien_amount !== ""
+                    ? formatMoney(g.prior_lien_amount)
+                    : undefined
+                }
+              />
               <Row
                 term="Statut d'occupation"
                 value={

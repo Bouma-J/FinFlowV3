@@ -60,6 +60,12 @@ class FinancialType(models.TextChoices):
     SECURITY = "SECURITY", "Titre"
 
 
+class MortgageRank(models.TextChoices):
+    FIRST = "1", "1er rang"
+    SECOND = "2", "2e rang"
+    OTHER = "OTHER", "Autre"
+
+
 class Guarantee(TenantScopedModel, AuthoredModel):
     """Garantie adossée à un ou plusieurs crédits."""
 
@@ -150,6 +156,18 @@ class Guarantee(TenantScopedModel, AuthoredModel):
     )
     is_insured = models.BooleanField("assurée", default=False)
     insurance_reference = models.CharField("réf. assurance", max_length=100, blank=True)
+    insured_amount = models.DecimalField(
+        "montant assuré", max_digits=18, decimal_places=2, null=True, blank=True,
+    )
+    insurance_end_date = models.DateField("fin de l'assurance", null=True, blank=True)
+    mortgage_rank = models.CharField(
+        "rang de l'hypothèque", max_length=10,
+        choices=MortgageRank.choices, blank=True,
+    )
+    prior_lien_amount = models.DecimalField(
+        "montant des inscriptions antérieures",
+        max_digits=18, decimal_places=2, null=True, blank=True,
+    )
 
     # ------------------------------------------------------------------ #
     # Propriétaire du bien (hypothèque / gage)

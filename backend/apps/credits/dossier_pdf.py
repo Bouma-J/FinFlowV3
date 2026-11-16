@@ -86,6 +86,19 @@ def _money(amount, currency: str) -> str:
     return f"{text.replace(',', ' ')} {currency or ''}".strip()
 
 
+def _institution_credit_rows(item, currency: str) -> list[tuple[str, str]]:
+    rows = []
+    for row in (item.analysis_details or {}).get("institution_credit_flows") or []:
+        if not isinstance(row, dict):
+            continue
+        month = str(row.get("month") or "").strip()
+        amount = row.get("amount")
+        if not month or amount in (None, ""):
+            continue
+        rows.append((month, _money(amount, currency)))
+    return rows
+
+
 def _date(value) -> str:
     if not value:
         return "—"
@@ -658,9 +671,20 @@ def _comparison_tables(item, currency: str) -> list[dict]:
             "widths": [32, 28, 28, 18, 28, 22, 18],
         })
     history = details.get("purchase_history") if isinstance(details.get("purchase_history"), list) else []
+    period_mode = str(details.get("analysis_period_mode") or "") in {"WEEK", "MONTH"}
     history_rows = []
     for row in history:
         if not isinstance(row, dict):
+            continue
+        if period_mode:
+            if not any(str(row.get(field) or "").strip() for field in ("start", "end", "amount")):
+                continue
+            amount = row.get("amount")
+            history_rows.append((
+                str(row.get("start") or "—"),
+                str(row.get("end") or "—"),
+                "—" if amount in (None, "") else _money(amount, currency),
+            ))
             continue
         quantity = _optional_decimal(row.get("quantity"))
         price = _optional_decimal(row.get("unit_price"))
@@ -680,9 +704,9 @@ def _comparison_tables(item, currency: str) -> list[dict]:
         period = " — ".join(part for part in (str(details.get("purchase_period_start") or ""), str(details.get("purchase_period_end") or "")) if part)
         tables.append({
             "title": f"Historique des achats{f' ({period})' if period else ''}",
-            "headers": ["Date", "Produit", "Fournisseur", "Quantité", "Unité", "Prix", "Montant"],
+            "headers": ["Début", "Fin", "Montant"] if period_mode else ["Date", "Produit", "Fournisseur", "Quantité", "Unité", "Prix", "Montant"],
             "rows": history_rows,
-            "widths": [24, 32, 32, 22, 16, 24, 24],
+            "widths": [36, 36, 40] if period_mode else [24, 32, 32, 22, 16, 24, 24],
         })
         from apps.credits.analysis_details import purchase_history_indicators, purchase_monthly_total
         indicators = purchase_history_indicators(details)
@@ -694,13 +718,19 @@ def _comparison_tables(item, currency: str) -> list[dict]:
         last = "—"
         if indicators["last_date"]:
             last = f"{indicators['last_date']} · {shown(indicators['last_amount'], money=True)}"
-        main = indicators["main_supplier"] or "—"
-        if indicators["main_supplier"] and indicators["main_share"] is not None:
-            main = f"{indicators['main_supplier']} · {indicators['main_share']} %"
-        tables.append({
-            "title": "Indicateurs des achats",
-            "headers": ["Indicateur", "Valeur"],
-            "rows": [
+        if period_mode:
+            indicator_rows = [
+                ("Achats de la période", shown(indicators["total"], money=True)),
+                ("Nombre de périodes", shown(indicators["count"])),
+                ("Montant moyen de la période", shown(indicators["average"], money=True)),
+                *( [("Achats du mois", shown(monthly_purchases, money=True))] if monthly_purchases is not None else [] ),
+                ("Dernière période", last),
+            ]
+        else:
+            main = indicators["main_supplier"] or "—"
+            if indicators["main_supplier"] and indicators["main_share"] is not None:
+                main = f"{indicators['main_supplier']} · {indicators['main_share']} %"
+            indicator_rows = [
                 ("Achats de la période", shown(indicators["total"], money=True)),
                 ("Nombre d'achats", shown(indicators["count"])),
                 ("Achat moyen", shown(indicators["average"], money=True)),
@@ -709,13 +739,28 @@ def _comparison_tables(item, currency: str) -> list[dict]:
                 ("Dernier achat de la période", last),
                 ("Nombre de fournisseurs", shown(indicators["supplier_count"])),
                 ("Principal fournisseur", main),
-            ],
+            ]
+        tables.append({
+            "title": "Indicateurs des achats",
+            "headers": ["Indicateur", "Valeur"],
+            "rows": indicator_rows,
             "widths": [90, 84],
         })
     payments = details.get("supplier_payments") if isinstance(details.get("supplier_payments"), list) else []
+    payment_period = str(details.get("analysis_period_mode") or "") in {"WEEK", "MONTH"}
     payment_rows = []
     for row in payments:
         if not isinstance(row, dict):
+            continue
+        if payment_period:
+            if not any(str(row.get(field) or "").strip() for field in ("start", "end", "period_amount")):
+                continue
+            amount = row.get("period_amount")
+            payment_rows.append((
+                str(row.get("start") or "—"),
+                str(row.get("end") or "—"),
+                "—" if amount in (None, "") else _money(amount, currency),
+            ))
             continue
         if not any(str(row.get(field) or "").strip() for field in ("date", "supplier", "amount", "payment_mode")):
             continue
@@ -738,18 +783,18 @@ def _comparison_tables(item, currency: str) -> list[dict]:
             last_payment = f"{paid['last_date']} · {paid_shown(paid['last_amount'], money=True)}"
         tables.append({
             "title": "Paiements fournisseurs",
-            "headers": ["Date", "Fournisseur", "Montant", "Mode"],
+            "headers": ["Début", "Fin", "Montant"] if payment_period else ["Date", "Fournisseur", "Montant", "Mode"],
             "rows": payment_rows,
-            "widths": [32, 60, 40, 42],
+            "widths": [36, 36, 40] if payment_period else [32, 60, 40, 42],
         })
         tables.append({
             "title": "Indicateurs des paiements",
             "headers": ["Indicateur", "Valeur"],
             "rows": [
                 ("Total payé", paid_shown(paid["total"], money=True)),
-                ("Nombre de paiements", paid_shown(paid["count"])),
-                ("Paiement moyen", paid_shown(paid["average"], money=True)),
-                ("Dernier paiement", last_payment),
+                ("Nombre de périodes" if payment_period else "Nombre de paiements", paid_shown(paid["count"])),
+                ("Montant moyen de la période" if payment_period else "Paiement moyen", paid_shown(paid["average"], money=True)),
+                ("Dernière période" if payment_period else "Dernier paiement", last_payment),
             ],
             "widths": [90, 84],
         })
@@ -1273,6 +1318,13 @@ def _analyses(application, currency: str) -> list[dict]:
                 ("Autres détails du contexte", _detail_text(item, "analysis_context_comment")),
             ]),
         }]
+        if item.is_corporate:
+            flow_rows = _institution_credit_rows(item, currency)
+            if flow_rows:
+                sections.append({
+                    "title": "Mouvements créditeurs du compte dans l'institution",
+                    "rows": flow_rows,
+                })
         if not item.is_corporate and not item.is_groupement:
             sections.extend([
                 {"title": "Revenus du ménage", "rows": _nonzero_money_rows(item, currency, [
@@ -1330,6 +1382,9 @@ def _analyses(application, currency: str) -> list[dict]:
                 ("Membres", item.members_count if item.members_count else ""),
                 ("Cotisants actifs", item.active_contributing_members if item.active_contributing_members else ""),
                 ("Commentaire", item.group_comment),
+                ("Composition du bureau", _detail_text(item, "group_bureau")),
+                ("Rythme des réunions", _detail_text(item, "group_meeting_rhythm")),
+                ("Règlement intérieur vérifié", "Oui" if (item.analysis_details or {}).get("group_rules_verified") == "yes" else ""),
             ])})
         else:
             sections.append({"title": "Compte de résultat et bilan", "rows": _nonzero_money_rows(item, currency, [

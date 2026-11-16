@@ -67,6 +67,7 @@ api.interceptors.response.use(
       error.response?.status === 401 &&
       original &&
       !original._retry &&
+      !original.url?.includes("/auth/logout/") &&
       tokenStore.getRefresh()
     ) {
       original._retry = true;

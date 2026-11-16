@@ -12,8 +12,21 @@ function money(value: number): string {
   return (Math.round(value * 100) / 100).toFixed(2);
 }
 
-export function supplierPaymentReading(rows: Record<string, string>[]): SupplierPaymentReading {
+export function supplierPaymentReading(
+  rows: Record<string, string>[],
+  mode = "DAY",
+  start = "",
+  end = "",
+): SupplierPaymentReading {
+  const periodMode = mode === "WEEK" || mode === "MONTH";
+  const windowed = periodMode && Boolean(start && end && start <= end);
   const complete = rows.flatMap((row) => {
+    if (periodMode) {
+      const amount = productAmount(row.period_amount);
+      if (!row.start || !row.end || row.end < row.start || amount == null) return [];
+      if (windowed && (row.start < start || row.end > end)) return [];
+      return [{ date: row.end, amount }];
+    }
     const amount = productAmount(row.amount);
     if (!row.date || amount == null) return [];
     return [{ date: row.date, amount }];

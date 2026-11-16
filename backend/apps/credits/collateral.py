@@ -15,6 +15,15 @@ def _dec(value) -> Decimal:
         return Decimal("0")
 
 
+def _optional_dec(value) -> Decimal | None:
+    if value is None or value == "":
+        return None
+    try:
+        return Decimal(str(value))
+    except (InvalidOperation, TypeError, ValueError):
+        return None
+
+
 def _haircut_pct(thresholds, key: str, default: Decimal = Decimal("0")) -> Decimal:
     raw = getattr(thresholds, key, None)
     if raw is None:
@@ -89,6 +98,28 @@ def build_collateral_summary(application, thresholds=None) -> dict:
                 f"Garantie {g.reference or g.pk} : valeur nulle "
                 f"({g.get_guarantee_type_display()})."
             )
+        label = g.reference or g.pk
+        if g.guarantee_type == Guarantee.GuaranteeType.MORTGAGE:
+            rank_note = {"2": "de 2e rang", "OTHER": "d'un rang autre que le premier"}.get(g.mortgage_rank or "")
+            prior = _optional_dec(g.prior_lien_amount)
+            notes = []
+            if rank_note:
+                notes.append(rank_note)
+            if prior is not None and prior > 0:
+                notes.append(f"inscriptions antérieures de {prior}")
+            if notes:
+                alerts.append(f"Garantie {label} : hypothèque {', '.join(notes)}.")
+        if g.is_insured:
+            insured = _optional_dec(g.insured_amount)
+            if insured is not None and insured < retained:
+                alerts.append(
+                    f"Garantie {label} : le montant assuré est inférieur à la valeur retenue."
+                )
+            credit_end = getattr(application, "last_due_date", None)
+            if g.insurance_end_date and credit_end and g.insurance_end_date < credit_end:
+                alerts.append(
+                    f"Garantie {label} : l'assurance se termine avant la fin du crédit."
+                )
         if not g.belongs_to_applicant and not g.surety_id:
             alerts.append(
                 f"Garantie {g.reference or g.pk} : bien hors client sans caution propriétaire."
@@ -147,11 +178,20 @@ def build_collateral_summary(application, thresholds=None) -> dict:
                 f"Caution {surety.display_name if surety else eng.pk} : "
                 "plafond d'engagement ouvert (0)."
             )
-        income = _dec(getattr(surety, "estimated_income", 0) or 0)
-        if income > 0 and eng_amt > income * Decimal("12"):
-            alerts.append(
-                f"Caution {surety.display_name} : engagement élevé vs revenu estimé."
-            )
+        income = _optional_dec(getattr(surety, "estimated_income", None)) if surety else None
+        if income is not None:
+            charges = _optional_dec(getattr(surety, "monthly_charges", None))
+            payments = _optional_dec(getattr(surety, "existing_monthly_payments", None))
+            if charges is not None or payments is not None:
+                base = income - (charges or Decimal("0")) - (payments or Decimal("0"))
+                if eng_amt > base * Decimal("12"):
+                    alerts.append(
+                        f"Caution {surety.display_name} : l'engagement dépasse douze mois de revenu après charges et mensualités."
+                    )
+            elif eng_amt > income * Decimal("12"):
+                alerts.append(
+                    f"Caution {surety.display_name} : engagement élevé vs revenu estimé."
+                )
         surety_rows.append(
             {
                 "id": str(eng.id),

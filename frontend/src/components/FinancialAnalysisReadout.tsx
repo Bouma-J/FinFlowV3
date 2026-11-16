@@ -148,6 +148,145 @@ function detailRows(details: FinancialAnalysis["analysis_details"], key: string)
   return Array.isArray(value) ? value : [];
 }
 
+function PurchaseHistoryTable({ rows, start, end, mode, currency }: { rows: DetailRow[]; start: string; end: string; mode: string; currency: string }) {
+  const periodMode = mode === "WEEK" || mode === "MONTH";
+  const reading = purchaseHistoryReading(rows, start, end, mode);
+  const lines: [string, string][] = periodMode ? [
+    ["Achats de la période", reading.periodTotal == null ? "—" : formatMoney(reading.periodTotal, currency)],
+    ["Nombre de périodes", reading.count == null ? "—" : String(reading.count)],
+    ["Montant moyen de la période", reading.average == null ? "—" : formatMoney(reading.average, currency)],
+    ["Dernière période", reading.periodLastDate ? `${formatDate(reading.periodLastDate)} · ${formatMoney(reading.periodLastAmount, currency)}` : "—"],
+  ] : [
+    ["Achats de la période", reading.periodTotal == null ? "—" : formatMoney(reading.periodTotal, currency)],
+    ["Nombre d'achats", reading.count == null ? "—" : String(reading.count)],
+    ["Achat moyen", reading.average == null ? "—" : formatMoney(reading.average, currency)],
+    ["Approvisionnements par mois", reading.perMonth ?? "—"],
+    ["Dernier achat de la période", reading.periodLastDate ? `${formatDate(reading.periodLastDate)} · ${formatMoney(reading.periodLastAmount, currency)}` : "—"],
+    ["Nombre de fournisseurs", reading.supplierCount == null ? "—" : String(reading.supplierCount)],
+    ["Principal fournisseur", reading.mainSupplier ? `${reading.mainSupplier}${reading.mainShare == null ? "" : ` · ${reading.mainShare} %`}` : "—"],
+  ];
+  return (
+    <div className="table-scroll">
+      <table className="table">
+        <thead>
+          <tr>
+            {periodMode ? (
+              <>
+                <th scope="col">Début</th>
+                <th scope="col">Fin</th>
+                <th scope="col">Montant des achats</th>
+              </>
+            ) : (
+              <>
+                <th scope="col">Date</th>
+                <th scope="col">Produit</th>
+                <th scope="col">Fournisseur</th>
+                <th scope="col">Quantité</th>
+                <th scope="col">Unité</th>
+                <th scope="col">Prix unitaire</th>
+                <th scope="col">Montant</th>
+              </>
+            )}
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((row, index) => periodMode ? (
+            <tr key={index}>
+              <td>{row.start ? formatDate(row.start) : "—"}</td>
+              <td>{row.end ? formatDate(row.end) : "—"}</td>
+              <td>{row.amount === "" || row.amount == null ? "—" : moneyCell(numeric(row.amount), currency)}</td>
+            </tr>
+          ) : (
+            <tr key={index}>
+              <td>{row.date ? formatDate(row.date) : "—"}</td>
+              <td>{row.product || "—"}</td>
+              <td>{row.supplier || "—"}</td>
+              <td>{row.quantity ? Number(row.quantity).toLocaleString("fr-FR") : "—"}</td>
+              <td>{row.unit || "—"}</td>
+              <td>{moneyCell(numeric(row.unit_price), currency)}</td>
+              <td>{moneyCell(purchaseLineAmount(row), currency)}</td>
+            </tr>
+          ))}
+        </tbody>
+        <tfoot>
+          {lines.map(([label, value]) => (
+            <tr key={label}>
+              <th scope="row" colSpan={periodMode ? 2 : 6}>{label}</th>
+              <td className="num">{value}</td>
+            </tr>
+          ))}
+        </tfoot>
+      </table>
+    </div>
+  );
+}
+
+const PAYMENT_MODES: Record<string, string> = { CASH: "Espèces", MOBILE: "Mobile Money", TRANSFER: "Virement", CHEQUE: "Chèque" };
+
+function SupplierPaymentTable({ rows, mode, start, end, currency }: { rows: DetailRow[]; mode: string; start: string; end: string; currency: string }) {
+  const periodMode = mode === "WEEK" || mode === "MONTH";
+  const reading = supplierPaymentReading(rows, mode, start, end);
+  const lines: [string, string][] = periodMode ? [
+    ["Total payé", reading.total == null ? "—" : formatMoney(reading.total, currency)],
+    ["Nombre de périodes", reading.count == null ? "—" : String(reading.count)],
+    ["Montant moyen de la période", reading.average == null ? "—" : formatMoney(reading.average, currency)],
+    ["Dernière période", reading.lastDate ? `${formatDate(reading.lastDate)} · ${formatMoney(reading.lastAmount, currency)}` : "—"],
+  ] : [
+    ["Total payé", reading.total == null ? "—" : formatMoney(reading.total, currency)],
+    ["Nombre de paiements", reading.count == null ? "—" : String(reading.count)],
+    ["Paiement moyen", reading.average == null ? "—" : formatMoney(reading.average, currency)],
+    ["Dernier paiement", reading.lastDate ? `${formatDate(reading.lastDate)} · ${formatMoney(reading.lastAmount, currency)}` : "—"],
+  ];
+  return (
+    <div className="table-scroll">
+      <table className="table">
+        <thead>
+          <tr>
+            {periodMode ? (
+              <>
+                <th scope="col">Début</th>
+                <th scope="col">Fin</th>
+                <th scope="col">Montant des paiements</th>
+              </>
+            ) : (
+              <>
+                <th scope="col">Date</th>
+                <th scope="col">Fournisseur</th>
+                <th scope="col">Montant</th>
+                <th scope="col">Mode de paiement</th>
+              </>
+            )}
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((row, index) => periodMode ? (
+            <tr key={index}>
+              <td>{row.start ? formatDate(row.start) : "—"}</td>
+              <td>{row.end ? formatDate(row.end) : "—"}</td>
+              <td>{row.period_amount === "" || row.period_amount == null ? "—" : moneyCell(numeric(row.period_amount), currency)}</td>
+            </tr>
+          ) : (
+            <tr key={index}>
+              <td>{row.date ? formatDate(row.date) : "—"}</td>
+              <td>{row.supplier || "—"}</td>
+              <td>{row.amount === "" || row.amount == null ? "—" : moneyCell(numeric(row.amount), currency)}</td>
+              <td>{PAYMENT_MODES[row.payment_mode] || "—"}</td>
+            </tr>
+          ))}
+        </tbody>
+        <tfoot>
+          {lines.map(([label, value]) => (
+            <tr key={label}>
+              <th scope="row" colSpan={2}>{label}</th>
+              <td className="num" colSpan={periodMode ? 1 : 2}>{value}</td>
+            </tr>
+          ))}
+        </tfoot>
+      </table>
+    </div>
+  );
+}
+
 const PURCHASE_METHOD_LABELS: Record<string, string> = {
   INVOICES: "factures",
   LEDGER: "cahier d'achats",
@@ -478,6 +617,16 @@ export function FinancialAnalysisReadout({ analysis: a, currency, part, paymentC
     {!corp && <ActivityStatementReading statements={savedStatements} margin={group ? retainedActivityMargin(a.analysis_details?.products, a.group_activity_turnover, a.group_activity_expenses) : activityMargin} currency={currency} audience={group ? "group" : "activity"} />}
     <FinancialStatementsReadout statements={savedStatements} documents={a.documents || []} currency={currency} />
   </>, corp ? savedStatements.length > 0 || showProductionIdentity : showIndividualStatements || groupStatements);
+  if (corp) add("Compte dans l'institution", <>
+    <dl className="def-list two">
+      {detailRows(a.analysis_details, "institution_credit_flows").flatMap((row) => {
+        const month = String(row.month || "").trim();
+        const amount = numeric(row.amount);
+        if (!month || amount == null) return [];
+        return [<div key={month}><dt>{month}</dt><dd>{formatMoney(amount, currency)}</dd></div>];
+      })}
+    </dl>
+  </>, detailRows(a.analysis_details, "institution_credit_flows").some((row) => String(row.month || "").trim() && numeric(row.amount) != null));
   if (corp) add("Compte de résultat", <>
     {fields(RESULT)}
     <p className="muted small">Reconstitution à partir des postes fournis. Les compléments inconnus ne constituent pas une certification de résultat comptable.</p>
@@ -489,6 +638,9 @@ export function FinancialAnalysisReadout({ analysis: a, currency, part, paymentC
     {fields(GROUP)}
     <p className="muted small">{groupOpen ? "La source retient les cotisations et les autres recettes, moins les charges de fonctionnement, plus la marge de l'activité commune. L'épargne reste hors revenu." : "La source retient les cotisations et les autres recettes, moins les charges de fonctionnement. L'activité commune n'est pas retenue. L'épargne reste hors revenu."}</p>
     <Note label="Activité commune" text={detailText("group_activity_description")} />
+    <Note label="Composition du bureau" text={detailText("group_bureau")} />
+    <Note label="Rythme des réunions" text={detailText("group_meeting_rhythm")} />
+    {a.analysis_details?.group_rules_verified === "yes" && <p className="muted small">Règlement intérieur vérifié.</p>}
     {!groupOpen && (numeric(a.group_activity_turnover) != null || numeric(a.group_activity_expenses) != null) && <p className="muted small">Un chiffre d'affaires ou des charges d'activité sont enregistrés. Ils ne sont pas retenus tant que l'activité commune est fermée.</p>}
     <Note label="Commentaire sur le groupement" text={a.group_comment || ""} />
     {alert(purchaseAlert, "Les achats retenus s'écartent de plus de 10 % des achats déclarés, ramenés au mois.")}
@@ -764,6 +916,7 @@ export function FinancialAnalysisReadout({ analysis: a, currency, part, paymentC
     "activity_charge_place", "activity_charge_staff", "activity_charge_transport", "activity_charge_utilities",
     "activity_charge_telecom", "activity_charge_maintenance", "activity_charge_fees", "activity_charge_supplies",
     "consulted_sales_book", "consulted_sales_invoices", "consulted_bank_statements", "consulted_purchase_invoices", "consulted_purchase_ledger", "analysis_context_comment",
+    "group_bureau", "group_meeting_rhythm", "group_rules_verified", "institution_credit_flows", "service_has_goods",
     ...PRODUCTION_IDENTITY.map((field) => field.key), ...PRODUCTION_STOCKS.map((stock) => stock.key),
   ]);
   const leftovers = Object.entries(a.analysis_details || {}).filter(([key, value]) => !placed.has(key) && !key.endsWith("_detail_mode") && typeof value === "string" && value.trim());
@@ -858,11 +1011,11 @@ export function FinancialAnalysisReadout({ analysis: a, currency, part, paymentC
         {detailRows(a.analysis_details, "suppliers").length > 0 && <div className="table-scroll"><table className="table"><thead><tr><th scope="col">Fournisseur</th><th scope="col">Lieu</th><th scope="col">Produit</th><th scope="col">Part</th><th scope="col">Montant</th><th scope="col">Paiement</th><th scope="col">Délai</th></tr></thead><tbody>{detailRows(a.analysis_details, "suppliers").map((row, index) => <tr key={index}><td>{row.name || "—"}</td><td>{row.place || "—"}</td><td>{row.product || "—"}</td><td>{row.share ? `${row.share} %` : "—"}</td><td>{moneyCell(numeric(row.amount), currency)}</td><td>{row.payment_mode === "CASH" ? "Comptant" : row.payment_mode === "CREDIT" ? "À crédit" : "—"}</td><td>{row.delay_days ? `${row.delay_days} j` : "—"}</td></tr>)}</tbody></table></div>}
         {detailRows(a.analysis_details, "supplier_payments").length > 0 && <>
           <p className="subsection-label">Paiement fournisseurs</p>
-          <div className="table-scroll"><table className="table"><thead><tr><th scope="col">Date</th><th scope="col">Fournisseur</th><th scope="col">Montant</th><th scope="col">Mode de paiement</th></tr></thead><tbody>{detailRows(a.analysis_details, "supplier_payments").map((row, index) => <tr key={index}><td>{row.date ? formatDate(row.date) : "—"}</td><td>{row.supplier || "—"}</td><td>{row.amount === "" || row.amount == null ? "—" : moneyCell(numeric(row.amount), currency)}</td><td>{({ CASH: "Espèces", MOBILE: "Mobile Money", TRANSFER: "Virement", CHEQUE: "Chèque" } as Record<string, string>)[row.payment_mode] || "—"}</td></tr>)}</tbody><tfoot>{(() => { const reading = supplierPaymentReading(detailRows(a.analysis_details, "supplier_payments")); const lines = [["Total payé", reading.total == null ? "—" : formatMoney(reading.total, currency)], ["Nombre de paiements", reading.count == null ? "—" : String(reading.count)], ["Paiement moyen", reading.average == null ? "—" : formatMoney(reading.average, currency)], ["Dernier paiement", reading.lastDate ? `${formatDate(reading.lastDate)} · ${formatMoney(reading.lastAmount, currency)}` : "—"]]; return lines.map(([label, value]) => <tr key={label}><th scope="row" colSpan={2}>{label}</th><td className="num" colSpan={2}>{value}</td></tr>); })()}</tfoot></table></div>
+          <SupplierPaymentTable rows={detailRows(a.analysis_details, "supplier_payments")} mode={detailText("analysis_period_mode")} start={detailText("analysis_period_start")} end={detailText("analysis_period_end")} currency={currency} />
         </>}
         {detailRows(a.analysis_details, "purchase_history").length > 0 && <>
           <p className="subsection-label">Historique des achats{(detailText("purchase_period_start") || detailText("purchase_period_end")) ? ` · ${formatDate(detailText("purchase_period_start"))} – ${formatDate(detailText("purchase_period_end"))}` : ""}</p>
-          <div className="table-scroll"><table className="table"><thead><tr><th scope="col">Date</th><th scope="col">Produit</th><th scope="col">Fournisseur</th><th scope="col">Quantité</th><th scope="col">Unité</th><th scope="col">Prix unitaire</th><th scope="col">Montant</th></tr></thead><tbody>{detailRows(a.analysis_details, "purchase_history").map((row, index) => { const amount = purchaseLineAmount(row); return <tr key={index}><td>{row.date ? formatDate(row.date) : "—"}</td><td>{row.product || "—"}</td><td>{row.supplier || "—"}</td><td>{row.quantity ? Number(row.quantity).toLocaleString("fr-FR") : "—"}</td><td>{row.unit || "—"}</td><td>{moneyCell(numeric(row.unit_price), currency)}</td><td>{moneyCell(amount, currency)}</td></tr>; })}</tbody><tfoot>{(() => { const reading = purchaseHistoryReading(detailRows(a.analysis_details, "purchase_history"), detailText("purchase_period_start"), detailText("purchase_period_end")); const lines = [["Achats de la période", reading.periodTotal == null ? "—" : formatMoney(reading.periodTotal, currency)], ["Nombre d'achats", reading.count == null ? "—" : String(reading.count)], ["Achat moyen", reading.average == null ? "—" : formatMoney(reading.average, currency)], ["Approvisionnements par mois", reading.perMonth ?? "—"], ["Dernier achat de la période", reading.periodLastDate ? `${formatDate(reading.periodLastDate)} · ${formatMoney(reading.periodLastAmount, currency)}` : "—"], ["Nombre de fournisseurs", reading.supplierCount == null ? "—" : String(reading.supplierCount)], ["Principal fournisseur", reading.mainSupplier ? `${reading.mainSupplier}${reading.mainShare == null ? "" : ` · ${reading.mainShare} %`}` : "—"]]; return lines.map(([label, value]) => <tr key={label}><th scope="row" colSpan={6}>{label}</th><td className="num">{value}</td></tr>); })()}</tfoot></table></div>
+          <PurchaseHistoryTable rows={detailRows(a.analysis_details, "purchase_history")} start={detailText("purchase_period_start")} end={detailText("purchase_period_end")} mode={detailText("analysis_period_mode")} currency={currency} />
         </>}
         <Note label="Commentaire sur les achats" text={detailText("purchase_comment")} />
         {n("tpe_margin_rate_pct") != null && <p className="muted small">Taux de marge issu des fiches produits : {n("tpe_margin_rate_pct")} %. Taux de coût : {n("tpe_cost_rate_pct") ?? "—"} %.</p>}

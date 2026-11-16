@@ -21,6 +21,20 @@ from .models import (
     FormalizationFee,
 )
 
+class EmptyAsNullDecimal(serializers.DecimalField):
+    def to_internal_value(self, data):
+        if data in ("", None):
+            return None
+        return super().to_internal_value(data)
+
+
+class EmptyAsNullDate(serializers.DateField):
+    def to_internal_value(self, data):
+        if data in ("", None):
+            return None
+        return super().to_internal_value(data)
+
+
 _OPEN_DATION_STATUSES = (
     DationRequest.Status.DRAFT,
     DationRequest.Status.IN_APPROVAL,
@@ -323,6 +337,13 @@ class GuaranteeSerializer(serializers.ModelSerializer):
     accept_existing = serializers.BooleanField(
         write_only=True, required=False, default=False
     )
+    prior_lien_amount = EmptyAsNullDecimal(
+        max_digits=18, decimal_places=2, required=False, allow_null=True,
+    )
+    insured_amount = EmptyAsNullDecimal(
+        max_digits=18, decimal_places=2, required=False, allow_null=True,
+    )
+    insurance_end_date = EmptyAsNullDate(required=False, allow_null=True)
 
     class Meta:
         model = Guarantee
@@ -334,7 +355,8 @@ class GuaranteeSerializer(serializers.ModelSerializer):
             "collection_case_id", "collection_stage_display",
             "belongs_to_applicant", "surety", "surety_display",
             "description", "owners", "expertise_value", "current_value",
-            "is_insured", "insurance_reference",
+            "is_insured", "insurance_reference", "insured_amount", "insurance_end_date",
+            "mortgage_rank", "prior_lien_amount",
             # Propriétaire
             "owner_last_name", "owner_first_name", "owner_marital_status",
             "matrimonial_regime",
