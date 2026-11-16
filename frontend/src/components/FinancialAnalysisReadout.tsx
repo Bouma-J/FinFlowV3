@@ -736,22 +736,25 @@ export function FinancialAnalysisReadout({ analysis: a, currency, part, paymentC
           paymentRows={detailRows(a.analysis_details, "supplier_payments")}
           includePurchases={a.analysis_details?.service_has_goods == null || a.analysis_details.service_has_goods === "yes"}
           currency={currency}
-          salesRetained={formatMoney(numeric(a.activity_turnover), currency)}
-          purchasesRetained={formatMoney(numeric(a.activity_purchases), currency)}
           whenPeriods
-          tailRows={(() => {
-            const turnover = numeric(a.activity_turnover);
-            const purchases = numeric(a.activity_purchases);
-            const expenses = numeric(a.activity_expenses);
-            const charges = expenses != null && purchases != null ? expenses - purchases : null;
-            const net = turnover != null && expenses != null ? turnover - expenses : null;
-            const margin = turnover != null && turnover !== 0 && net != null ? (net / turnover) * 100 : null;
-            return [
-              { label: "Charges d'exploitation hors achats", value: charges == null ? "—" : formatMoney(charges, currency) },
-              { label: "Résultat de l'activité", value: net == null ? "—" : formatMoney(net, currency), strong: true },
-              { label: "Marge de l'activité", value: margin == null ? "—" : `${new Intl.NumberFormat("fr-FR", { minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(margin)} %` },
-            ];
-          })()}
+          monthComparison={(sharedPeriod || periodMode) === "MONTH" ? {
+            charges: numeric(a.activity_expenses) != null && numeric(a.activity_purchases) != null ? (numeric(a.activity_expenses) ?? 0) - (numeric(a.activity_purchases) ?? 0) : null,
+            otherActivities: 0,
+            household: 0,
+            family: 0,
+            installments: null,
+            weight: 100,
+            activityCounted: false,
+            activityInformal: false,
+            stable: 0,
+            informal: 0,
+            otherRetained: 0,
+            showHouseholdHaircut: false,
+            showOther: false,
+            otherHaircut: false,
+            dependents: null,
+            showCapacity: false,
+          } : undefined}
         />
         {( (!collectionRows.length && (collectionRhythm || detailText("collection_amount"))) || (!periodRows.length && (salesRhythm || detailText("sales_amount"))) ) && (
           <dl className="def-list two">

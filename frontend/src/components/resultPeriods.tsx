@@ -1,7 +1,5 @@
 import { purchaseLineAmount } from "@/components/purchaseHistory";
 import { productAmount } from "@/components/productLine";
-import { salesPeriodReading } from "@/components/salesPeriods";
-import { supplierPaymentReading } from "@/components/supplierPayments";
 import { formatDate, formatMoney } from "@/components/ui";
 
 type Row = Record<string, unknown>;
@@ -100,8 +98,103 @@ function columnLabel(column: Span): string {
   return column.start === column.end ? formatDate(column.start) : `${formatDate(column.start)} – ${formatDate(column.end)}`;
 }
 
-function shown(value: number | null, currency: string): string {
-  return value == null ? "—" : formatMoney(value, currency);
+function shown(value: number | null, currency: string, percent = false): string {
+  if (value == null) return "—";
+  if (percent) return `${new Intl.NumberFormat("fr-FR", { minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(value)} %`;
+  return formatMoney(value, currency);
+}
+
+function roundMoney(value: number): number {
+  return Math.round(value * 100) / 100;
+}
+
+export type MonthComparison = {
+  charges: number | null;
+  otherActivities: number;
+  household: number;
+  family: number;
+  installments: number | null;
+  weight: number;
+  activityCounted: boolean;
+  activityInformal: boolean;
+  stable: number;
+  informal: number;
+  otherRetained: number;
+  showHouseholdHaircut: boolean;
+  showOther: boolean;
+  otherHaircut: boolean;
+  dependents: number | null;
+  showCapacity: boolean;
+};
+
+type ComparisonRow = { label: string; cells: Array<number | null>; strong: boolean; percent?: boolean };
+
+function monthRows(sales: Array<number | null>, purchases: Array<number | null>, includePurchases: boolean, month: MonthComparison): ComparisonRow[] {
+  const nets = sales.map((sale, index) => {
+    if (sale == null || month.charges == null) return null;
+    if (includePurchases && purchases[index] == null) return null;
+    return roundMoney(sale - (includePurchases ? purchases[index] ?? 0 : 0) - month.charges);
+  });
+  const margins = nets.map((net, index) => {
+    const sale = sales[index];
+    return net == null || sale == null || sale === 0 ? null : (net / sale) * 100;
+  });
+  const activityRetained = nets.map((net) => {
+    if (net == null || !month.activityCounted) return null;
+    return month.activityInformal && net > 0 ? roundMoney(net * month.weight / 100) : net;
+  });
+  const retained = nets.map((net, index) => net == null ? null : roundMoney(month.stable + month.informal * month.weight / 100 + (activityRetained[index] ?? 0) + month.otherRetained));
+  const disposable = nets.map((net, index) => {
+    if (net == null || retained[index] == null) return null;
+    const declared = month.household + net + month.otherActivities;
+    const base = Math.abs(declared - retained[index]) > 0.5 ? retained[index] : declared;
+    return roundMoney(base - month.family - (month.installments ?? 0));
+  });
+  const repeat = (value: number | null) => sales.map(() => value);
+  const weightLabel = new Intl.NumberFormat("fr-FR", { maximumFractionDigits: 2 }).format(month.weight);
+  const rows: ComparisonRow[] = [
+    { label: "Charges d'exploitation hors achats", cells: repeat(month.charges), strong: false },
+    { label: "Résultat de l'activité", cells: nets, strong: true },
+    { label: "Marge de l'activité", cells: margins, strong: false, percent: true },
+  ];
+  if (!month.showCapacity) return rows;
+  rows.push(
+    { label: "Autres activités", cells: repeat(month.otherActivities), strong: false },
+    { label: "Revenus du ménage", cells: repeat(month.household), strong: false },
+    { label: "Charges familiales", cells: repeat(month.family), strong: false },
+  );
+  if (month.showHouseholdHaircut) {
+    rows.push({ label: `Retenue ${weightLabel} % · revenus du ménage`, cells: repeat(roundMoney(month.informal * month.weight / 100)), strong: false });
+  }
+  if (month.activityInformal && month.activityCounted) {
+    rows.push({
+      label: `Retenue ${weightLabel} % · activité`,
+      cells: nets.map((net, index) => net != null && net > 0 ? activityRetained[index] : null),
+      strong: false,
+    });
+  }
+  if (month.showOther) {
+    rows.push({
+      label: month.otherHaircut ? `Retenue ${weightLabel} % · autres activités` : "Autres activités retenues",
+      cells: repeat(month.otherRetained),
+      strong: false,
+    });
+  }
+  if (month.showHouseholdHaircut || (month.activityInformal && month.activityCounted) || (month.showOther && month.otherHaircut)) {
+    rows.push({ label: "Revenus retenus après pondération", cells: retained, strong: true });
+  }
+  rows.push(
+    { label: "Mensualités déjà en cours", cells: repeat(month.installments), strong: false },
+    { label: "Reste à vivre avant la nouvelle échéance", cells: disposable, strong: true },
+  );
+  if (month.dependents != null) {
+    rows.push({
+      label: `Reste à vivre / personne (${month.dependents + 1})`,
+      cells: disposable.map((value) => value == null ? null : value / (month.dependents! + 1)),
+      strong: false,
+    });
+  }
+  return rows;
 }
 
 export function ResultPeriodTable({
@@ -113,9 +206,7 @@ export function ResultPeriodTable({
   paymentRows,
   includePurchases,
   currency,
-  salesRetained,
-  purchasesRetained,
-  tailRows,
+  monthComparison,
   whenPeriods = false,
 }: {
   mode: string;
@@ -126,9 +217,7 @@ export function ResultPeriodTable({
   paymentRows: Row[];
   includePurchases: boolean;
   currency: string;
-  salesRetained: string;
-  purchasesRetained: string;
-  tailRows: { label: string; value: string; strong?: boolean }[];
+  monthComparison?: MonthComparison;
   whenPeriods?: boolean;
 }) {
   const sales = salesRows.flatMap((row) => {
@@ -156,23 +245,13 @@ export function ResultPeriodTable({
   const collectionCells = place(collections, columns);
   const paymentCells = place(payments, columns);
   const beforeCharges = difference(salesCells, purchaseCells);
-  const collectionReading = salesPeriodReading(
-    collectionRows.map((row) => Object.fromEntries(Object.entries(row).map(([key, value]) => [key, value == null ? "" : String(value)]))),
-    mode,
-    bounds,
-  );
-  const paymentReading = supplierPaymentReading(
-    paymentRows.map((row) => Object.fromEntries(Object.entries(row).map(([key, value]) => [key, value == null ? "" : String(value)]))),
-    mode,
-    bounds?.start || "",
-    bounds?.end || "",
-  );
-  const periodRows = [
-    { label: "Chiffre d'affaires", cells: salesCells, retained: salesRetained, strong: false },
-    { label: "Achats", cells: purchaseCells, retained: purchasesRetained, strong: false },
-    { label: "Encaissements", cells: collectionCells, retained: collectionReading.monthly == null ? "—" : formatMoney(collectionReading.monthly, currency), strong: false },
-    { label: "Paiements fournisseurs", cells: paymentCells, retained: paymentReading.total == null ? "—" : formatMoney(paymentReading.total, currency), strong: false },
-    ...(includePurchases ? [{ label: "Résultat avant charges hors achats", cells: beforeCharges, retained: "—", strong: true }] : []),
+  const periodRows: ComparisonRow[] = [
+    { label: "Chiffre d'affaires", cells: salesCells, strong: false },
+    { label: "Achats", cells: purchaseCells, strong: false },
+    { label: "Encaissements", cells: collectionCells, strong: false },
+    { label: "Paiements fournisseurs", cells: paymentCells, strong: false },
+    ...(includePurchases ? [{ label: "Résultat avant charges hors achats", cells: beforeCharges, strong: true }] : []),
+    ...(mode === "MONTH" && monthComparison ? monthRows(salesCells, purchaseCells, includePurchases, monthComparison) : []),
   ];
   return (
     <div className="table-scroll result-period-table">
@@ -181,22 +260,13 @@ export function ResultPeriodTable({
           <tr>
             <th scope="col">Rubrique</th>
             {columns.map((column) => <th scope="col" key={`${column.start}:${column.end}`}>{columnLabel(column)}</th>)}
-            <th scope="col">Mois retenu</th>
           </tr>
         </thead>
         <tbody>
           {periodRows.map((row) => (
             <tr key={row.label}>
               <th scope="row">{row.strong ? <strong>{row.label}</strong> : row.label}</th>
-              {row.cells.map((value, index) => <td className="num" key={index}>{shown(value, currency)}</td>)}
-              <td className="num">{row.retained}</td>
-            </tr>
-          ))}
-          {tailRows.map((row) => (
-            <tr key={row.label}>
-              <th scope="row">{row.strong ? <strong>{row.label}</strong> : row.label}</th>
-              {columns.map((column) => <td className="num" key={`${row.label}:${column.start}:${column.end}`}>—</td>)}
-              <td className="num">{row.value}</td>
+              {row.cells.map((value, index) => <td className="num" key={index}>{shown(value, currency, row.percent)}</td>)}
             </tr>
           ))}
         </tbody>

@@ -815,6 +815,11 @@ export function FinancialAnalysisForm({
       income,
       householdIncome,
       householdMonthly: householdIncome * monthlyFactor,
+      chargesExcludingPurchases: activityMonthlyExpenses - activityMonthlyPurchases,
+      stableMonthly,
+      informalMonthly,
+      activityCounted,
+      activityInformal: activityCounted && !activityFormal,
       activityMonthlyTurnover,
       activityMonthlyPurchases,
       activityMonthlyExpenses,
@@ -1828,24 +1833,24 @@ export function FinancialAnalysisForm({
                 paymentRows={readSupplierPaymentRows(details)}
                 includePurchases={serviceGoodsOpen}
                 currency={cur}
-                salesRetained={formatMoney(recap.activityMonthlyTurnover, cur)}
-                purchasesRetained={formatMoney(recap.activityMonthlyPurchases, cur)}
-                tailRows={[
-                  { label: "Charges d'exploitation hors achats", value: formatMoney(recap.activityMonthlyExpenses - recap.activityMonthlyPurchases, cur) },
-                  { label: "Résultat de l'activité", value: formatMoney(recap.activityMonthlyNet, cur), strong: true },
-                  { label: "Marge de l'activité", value: recap.activityMargin == null ? "—" : `${new Intl.NumberFormat("fr-FR", { minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(recap.activityMargin)} %` },
-                  { label: "Autres activités", value: formatMoney(recap.otherActivityMonthly, cur) },
-                  { label: "Revenus du ménage", value: formatMoney(recap.householdMonthly, cur) },
-                  { label: "Charges familiales", value: formatMoney(recap.familyMonthly, cur) },
-                  ...(recap.retained != null && recap.householdHaircut ? [{ label: `Retenue ${new Intl.NumberFormat("fr-FR", { maximumFractionDigits: 2 }).format(recap.weight)} % · revenus du ménage`, value: formatMoney(recap.householdInformalRetained, cur) }] : []),
-                  ...(recap.retained != null && recap.activityHaircut ? [{ label: `Retenue ${new Intl.NumberFormat("fr-FR", { maximumFractionDigits: 2 }).format(recap.weight)} % · activité`, value: formatMoney(recap.mainActivityRetained, cur) }] : []),
-                  ...(recap.retained != null && recap.hasOtherActivity ? [{ label: recap.otherHaircut ? `Retenue ${new Intl.NumberFormat("fr-FR", { maximumFractionDigits: 2 }).format(recap.weight)} % · autres activités` : "Autres activités retenues", value: formatMoney(recap.otherActivityRetained, cur) }] : []),
-                  ...(recap.retained != null ? [{ label: "Revenus retenus après pondération", value: formatMoney(recap.retained, cur), strong: true }] : []),
-                  { label: "Mensualités déjà en cours", value: formatMoney(recap.existingInstallments, cur) },
-                  { label: "Reste à vivre avant la nouvelle échéance", value: formatMoney(recap.disposable, cur), strong: true },
-                  ...(recap.perCapita !== null ? [{ label: `Reste à vivre / personne (${(dependents ?? 0) + 1})`, value: formatMoney(recap.perCapita, cur) }] : []),
-                  { label: "Solde de trésorerie prévisionnel", value: formatMoney(recap.surplus, cur) },
-                ]}
+                monthComparison={analysisPeriodMode === "MONTH" ? {
+                  charges: recap.chargesExcludingPurchases,
+                  otherActivities: recap.otherActivityMonthly,
+                  household: recap.householdMonthly,
+                  family: recap.familyMonthly,
+                  installments: recap.existingInstallments,
+                  weight: recap.weight,
+                  activityCounted: recap.activityCounted,
+                  activityInformal: recap.activityInformal,
+                  stable: recap.stableMonthly,
+                  informal: recap.informalMonthly,
+                  otherRetained: recap.otherActivityRetained,
+                  showHouseholdHaircut: recap.householdHaircut,
+                  showOther: recap.hasOtherActivity,
+                  otherHaircut: recap.otherHaircut,
+                  dependents: dependents ?? null,
+                  showCapacity: true,
+                } : undefined}
               />
             </FormSection>
             <FormSection id="fa-forecast" icon={Wallet} title="Trésorerie prévisionnelle">
