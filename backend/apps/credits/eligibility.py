@@ -60,8 +60,8 @@ def assess_rules(application, *, configuration=None, reference=None):
 
     config = configuration or application_configuration(application)
     if reference is None:
-        reference = (application.financial_analyses.filter(is_reference=True).first()
-                     or application.financial_analyses.order_by("-created_at").first())
+        from .models import FinancialAnalysis
+        reference = FinancialAnalysis.reference_for(application)
     score, breakdown = None, {"total": None, "components": [], "missing_metrics": []}
     if reference:
         # L'aperçu d'un candidat peut fournir ses propres seuils et sa grille.

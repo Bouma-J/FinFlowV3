@@ -7,7 +7,7 @@ from django.core.serializers.json import DjangoJSONEncoder
 from django.db.models import Q
 from django.utils import timezone
 
-from apps.credits.models import AnalysisThreshold, CreditInstructionPolicy
+from apps.credits.models import AnalysisThreshold, CreditInstructionPolicy, FinancialAnalysis
 
 from .catalog import ANALYSIS_FIELDS, DETAIL_LABELS, OPERATIONAL_POLICY_KEYS, model_values
 from .models import ConfigurationProfile
@@ -31,8 +31,7 @@ def digest(value):
 def context_for(application, individual_profile=None):
     profile = individual_profile
     if profile is None and getattr(application, "pk", None):
-        reference = (application.financial_analyses.filter(is_reference=True).first()
-                     or application.financial_analyses.order_by("-created_at").first())
+        reference = FinancialAnalysis.reference_for(application)
         profile = reference.individual_profile if reference else ""
     return {
         "product": str(getattr(getattr(application, "product", None), "pk", "") or ""),

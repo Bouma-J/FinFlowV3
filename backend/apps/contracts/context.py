@@ -564,12 +564,9 @@ def build_context(
     ctx["societe_telephone"] = client.phone or ""
     ctx["societe_email"] = client.email or ""
     # Activité / effectif : portés par l'analyse financière (plus sur le dossier).
-    analysis = (
-        application.financial_analyses.filter(is_reference=True)
-        .order_by("-created_at")
-        .first()
-        or application.financial_analyses.order_by("-created_at").first()
-    )
+    from apps.credits.models import FinancialAnalysis
+
+    analysis = FinancialAnalysis.reference_for(application)
     activite = ""
     effectif = ""
     if analysis is not None:

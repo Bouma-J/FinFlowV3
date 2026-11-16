@@ -228,7 +228,7 @@ class FinancialAnalysisSerializer(serializers.ModelSerializer):
         fields = [
             "id", "application", "author_role", "created_by",
             "created_by_display", "can_edit",
-            "is_reference",
+            "is_reference", "is_draft",
             "client_type", "client_type_source",
             "individual_profile",
             "reference_period", "analysis_date", "analysis_details", "custom_fields",

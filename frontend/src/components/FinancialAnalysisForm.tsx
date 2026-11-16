@@ -28,7 +28,6 @@ import {
   useEffect,
   useMemo,
   useState,
-  type FormEvent,
   type ReactNode,
 } from "react";
 import { Link } from "react-router-dom";
@@ -862,7 +861,7 @@ export function FinancialAnalysisForm({
   const liveDebtRatio = incomeBase > 0 && debtService != null ? Math.round(debtService / incomeBase * 10000) / 100 : null;
 
   const mutation = useMutation({
-    mutationFn: async (derived: DerivedExternalDebt) => {
+    mutationFn: async ({ derived, draft }: { derived: DerivedExternalDebt; draft: boolean }) => {
       const fd = new FormData();
       const applied = path === "STATEMENTS" ? referenceFieldOverrides(statements) : { numbers: {}, details: {} };
       const rest = { ...details } as AnalysisDetails & { financial_statements?: unknown; statement_basis?: string };
@@ -941,6 +940,7 @@ export function FinancialAnalysisForm({
           if (age != null) fd.set("activity_business_age_months", String(age));
         }
       }
+      fd.append("is_draft", draft ? "true" : "false");
       fd.append("recommendation", recommendation);
       fd.append("analysis_date", analysisDate);
       fd.append("comment", comment);
@@ -990,7 +990,7 @@ export function FinancialAnalysisForm({
     },
   });
 
-  function submit(e: FormEvent) {
+  function submit(e: { preventDefault: () => void }, draft = false) {
     e.preventDefault();
     const derived = deriveExternalDebt(externalCredits);
     if (derived.error) {
@@ -1011,7 +1011,7 @@ export function FinancialAnalysisForm({
       return;
     }
     setError(null);
-    mutation.mutate(derived);
+    mutation.mutate({ derived, draft });
   }
 
   function updateExternalCredit(index: number, patch: Partial<ExternalCredit>) {
@@ -2512,10 +2512,13 @@ export function FinancialAnalysisForm({
           <Link className="btn btn-ghost" to={backTo}>
             Annuler
           </Link>
+          <button type="button" className="btn btn-ghost" disabled={mutation.isPending} onClick={(event) => submit(event, true)}>
+            {mutation.isPending ? "Enregistrement…" : "Enregistrer en brouillon"}
+          </button>
           <button className="btn btn-primary" disabled={mutation.isPending}>
             {mutation.isPending
               ? "Enregistrement…"
-              : mode === "edit"
+              : mode === "edit" && !initial?.is_draft
                 ? "Enregistrer les modifications"
                 : "Enregistrer l'analyse"}
           </button>

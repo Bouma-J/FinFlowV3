@@ -788,6 +788,9 @@ function AnalysisDetail({
             {analysis.author_role && (
               <span className="analysis-role">{analysis.author_role}</span>
             )}
+            {analysis.is_draft && (
+              <Badge value="DRAFT" label="Brouillon" />
+            )}
             {analysis.is_reference && (
               <Badge value="REFERENCE" label="Référence" />
             )}
@@ -808,7 +811,7 @@ function AnalysisDetail({
               to={`/dossiers/${appId}/analyse-financiere/${analysis.id}`}
             >
               <FilePenLine size={14} />
-              Modifier
+              {analysis.is_draft ? "Continuer" : "Modifier"}
             </Link>
           )}
         </div>
@@ -2209,6 +2212,9 @@ export function CreditApplicationDetailPage() {
   // Suppression réservée au créateur et uniquement sur un brouillon non soumis.
   const canDelete = isCreator && canDeleteCredit && app.status === "DRAFT";
   const canContributeAnalysis = app.can_add_financial_analysis === true;
+  const continuableDraft = [...(financials?.results ?? [])]
+    .filter((item) => item.is_draft && item.can_edit)
+    .sort((left, right) => String(right.updated_at).localeCompare(String(left.updated_at)))[0];
   const canContributeVisit = app.can_add_field_visit === true;
   const cur = app.currency;
 
@@ -2421,7 +2427,16 @@ export function CreditApplicationDetailPage() {
                   Modifier
                 </Link>
               )}
-              {canContributeAnalysis && (
+              {canContributeAnalysis && continuableDraft && (
+                <Link
+                  className="btn btn-banner"
+                  to={`/dossiers/${id}/analyse-financiere/${continuableDraft.id}`}
+                >
+                  <LineChart size={15} />
+                  Continuer le brouillon
+                </Link>
+              )}
+              {canContributeAnalysis && !continuableDraft && (
                 <Link
                   className="btn btn-banner"
                   to={`/dossiers/${id}/analyse-financiere`}

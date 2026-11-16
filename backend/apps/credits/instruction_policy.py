@@ -159,10 +159,7 @@ def build_readiness(application) -> dict:
         ),
     )
 
-    reference = (
-        application.financial_analyses.filter(is_reference=True).first()
-        or application.financial_analyses.order_by("-created_at").first()
-    )
+    reference = FinancialAnalysis.reference_for(application)
     analysis_ok = reference is not None and bool(reference.recommendation)
     add(
         "analysis",
@@ -372,10 +369,7 @@ def assert_policy_submit_gates(application):
             "Le type de client ne correspond pas au produit de crédit sélectionné."
         )
 
-    reference = (
-        application.financial_analyses.filter(is_reference=True).first()
-        or application.financial_analyses.order_by("-created_at").first()
-    )
+    reference = FinancialAnalysis.reference_for(application)
     if (
         reference
         and not policy.allow_unfavorable_analysis_submit

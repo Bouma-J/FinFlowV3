@@ -24,10 +24,7 @@ def assert_analysis_ready_for_submission(application):
 
     from .models import FinancialAnalysis
 
-    reference = (
-        application.financial_analyses.filter(is_reference=True).first()
-        or application.financial_analyses.order_by("-created_at").first()
-    )
+    reference = FinancialAnalysis.reference_for(application)
     if reference is None:
         raise WorkflowError(
             "Une analyse financière de référence est obligatoire avant soumission."
@@ -304,10 +301,9 @@ def refresh_reference_analysis(application):
     """Recalcule l'analyse de référence à partir des conditions actuelles."""
     if application is None or not getattr(application, "pk", None):
         return None
-    reference = (
-        application.financial_analyses.filter(is_reference=True).first()
-        or application.financial_analyses.order_by("-created_at").first()
-    )
+    from .models import FinancialAnalysis
+
+    reference = FinancialAnalysis.reference_for(application)
     if reference is None:
         return None
     reference.save()

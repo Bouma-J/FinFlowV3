@@ -29,6 +29,54 @@ def _app(tenant, client, product, *, ref="D-AV"):
     )
 
 
+def test_draft_stays_out_of_the_reference_until_it_is_recorded(tenant_a, product_a, client_a):
+    with tenant_context(tenant_a.id):
+        application = _app(tenant_a, client_a, product_a, ref="D-DRAFT")
+        draft = FinancialAnalysis.objects.create(
+            tenant=tenant_a,
+            application=application,
+            is_draft=True,
+            client_type="INDIVIDUAL",
+            individual_profile=FinancialAnalysis.IndividualProfile.SALARIE,
+            salary_income=Decimal("150000"),
+            comment="à reprendre",
+        )
+        draft.refresh_from_db()
+        assert draft.is_draft is True
+        assert draft.is_reference is False
+        assert draft.salary_income == Decimal("150000.00")
+        assert draft.recommendation == ""
+        with pytest.raises(WorkflowError, match="analyse financière"):
+            assert_analysis_ready_for_submission(application)
+
+        finished = FinancialAnalysis.objects.create(
+            tenant=tenant_a,
+            application=application,
+            recommendation=FinancialAnalysis.Recommendation.FAVORABLE,
+            client_type="INDIVIDUAL",
+            individual_profile=FinancialAnalysis.IndividualProfile.SALARIE,
+            salary_income=Decimal("200000"),
+        )
+        assert FinancialAnalysis.reference_for(application).pk == finished.pk
+        draft.refresh_from_db()
+        assert draft.is_reference is False
+
+        finished.is_draft = True
+        finished.save()
+        finished.refresh_from_db()
+        assert finished.is_reference is False
+        with pytest.raises(WorkflowError, match="analyse financière"):
+            assert_analysis_ready_for_submission(application)
+
+        draft.is_draft = False
+        draft.recommendation = FinancialAnalysis.Recommendation.FAVORABLE
+        draft.save()
+        draft.refresh_from_db()
+        assert draft.is_draft is False
+        assert draft.is_reference is True
+        assert assert_analysis_ready_for_submission(application).pk == draft.pk
+
+
 def test_blocks_without_reference_analysis(tenant_a, product_a, client_a):
     with tenant_context(tenant_a.id):
         application = _app(tenant_a, client_a, product_a)

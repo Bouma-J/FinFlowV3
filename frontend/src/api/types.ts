@@ -1264,6 +1264,7 @@ export interface FinancialAnalysis {
   application: string;
   author_role: string;
   is_reference?: boolean;
+  is_draft?: boolean;
   created_by: string | null;
   created_by_display: string;
   can_edit: boolean;

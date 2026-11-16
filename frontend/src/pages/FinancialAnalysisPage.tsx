@@ -162,7 +162,9 @@ export function FinancialAnalysisPage() {
         icon={LineChart}
         title={
           isEdit
-            ? "Modifier l'analyse financière"
+            ? existing?.is_draft
+              ? "Continuer l'analyse financière"
+              : "Modifier l'analyse financière"
             : "Nouvelle analyse financière"
         }
         subtitle={`${app.client_display} · dossier ${app.reference || app.id.slice(0, 8)}`}

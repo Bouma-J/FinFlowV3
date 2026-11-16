@@ -1311,6 +1311,7 @@ def _analyses(application, currency: str) -> list[dict]:
         sections = [{
             "title": "Identification",
             "rows": _kept_rows([
+                ("Statut", "Brouillon" if item.is_draft else ""),
                 ("Date d'analyse", _date(item.analysis_date) if item.analysis_date else ""),
                 ("Période de référence", item.get_reference_period_display()),
                 ("Profil", profile),
@@ -1435,7 +1436,7 @@ def _analyses(application, currency: str) -> list[dict]:
             ]) + documents},
         ])
         analyses.append({
-            "title": f"Analyse du {_date(item.created_at)}",
+            "title": f"Analyse du {_date(item.created_at)}" + (" · brouillon" if item.is_draft else ""),
             "sections": [block for block in sections if block["rows"]],
             "tables": _comparison_tables(item, currency),
         })

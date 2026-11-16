@@ -1104,6 +1104,11 @@ class FinancialAnalysis(TenantScopedModel, AuthoredModel):
         default=False,
         help_text="Une seule analyse de référence par dossier (score, risque, comité).",
     )
+    is_draft = models.BooleanField(
+        "brouillon",
+        default=False,
+        help_text="Analyse enregistrée pour être reprise. Elle ne sert ni à la soumission ni au comité.",
+    )
     client_type = models.CharField(
         "type de client", max_length=20, blank=True,
         help_text="Renseigné automatiquement d'après le client.",
@@ -2153,6 +2158,17 @@ class FinancialAnalysis(TenantScopedModel, AuthoredModel):
             self.activity_business_age_months = max(months, 0)
         return True
 
+    @staticmethod
+    def reference_for(application):
+        """Analyse utilisée pour la soumission et le comité. Un brouillon n'en fait pas partie."""
+        if application is None or not getattr(application, "pk", None):
+            return None
+        related = application.financial_analyses
+        return (
+            related.filter(is_reference=True, is_draft=False).first()
+            or related.filter(is_draft=False).order_by("-created_at").first()
+        )
+
     @transaction.atomic
     def save(self, *args, **kwargs):
         # Sérialiser la désignation de référence sur le dossier parent.
@@ -2218,6 +2234,8 @@ class FinancialAnalysis(TenantScopedModel, AuthoredModel):
         score, breakdown = compute_score(self, metrics, th)
         self.internal_score = self._clamp(score, 6, 2)
         self.score_breakdown = breakdown
+        if self.is_draft:
+            self.is_reference = False
 
         if kwargs.get("update_fields") is not None:
             extra = {
@@ -2232,8 +2250,13 @@ class FinancialAnalysis(TenantScopedModel, AuthoredModel):
                     "employment_seniority_months", "salary_paid_through_bank",
                     "activity_name", "activity_is_formal", "activity_business_age_months",
                 }
+            if self.is_draft:
+                extra.add("is_reference")
             kwargs["update_fields"] = set(kwargs["update_fields"]) | extra
         super().save(*args, **kwargs)
+
+        if self.is_draft or not self.application_id:
+            return
 
         # Une seule analyse de référence par dossier.
         if self.is_reference and self.application_id:
