@@ -9,6 +9,7 @@ import { purchaseHistoryReading, purchaseLineAmount } from "@/components/purchas
 import { supplierPaymentReading } from "@/components/supplierPayments";
 import { rhythmMonthly } from "@/components/salesRhythm";
 import { readSalesPeriodRows, salesPeriodReading } from "@/components/salesPeriods";
+import { ResultPeriodTable } from "@/components/resultPeriods";
 import { OPERATING_CHARGES, operatingChargesExcludingPurchases } from "@/components/operatingCharges";
 import { readStatements } from "@/components/financialStatements";
 import { groupActivityOpen, resolveAnalysisPath, resolveStatementBasis, themeAllowed } from "@/components/analysisPath";
@@ -726,6 +727,32 @@ export function FinancialAnalysisReadout({ analysis: a, currency, part, paymentC
         {(windowText || grainText) && <Note label="Période d'analyse" text={[windowText, grainText].filter(Boolean).join(" · ")} />}
         <DatedPeriodReadout rows={periodRows} mode={periodMode} currency={currency} amountHeader="Chiffre d'affaires" totalLabel="Chiffre d'affaires total" averageLabel="CA moyen" monthlyLabel="CA du mois" bounds={analysisBounds} />
         <DatedPeriodReadout rows={collectionRows} mode={collectionMode} currency={currency} amountHeader="Montant encaissé" totalLabel="Total encaissé" averageLabel="Encaissement moyen" monthlyLabel="Encaissé sur le mois" bounds={analysisBounds} />
+        <ResultPeriodTable
+          mode={sharedPeriod || periodMode}
+          bounds={analysisBounds}
+          salesRows={periodRows}
+          collectionRows={collectionRows}
+          purchaseRows={detailRows(a.analysis_details, "purchase_history")}
+          paymentRows={detailRows(a.analysis_details, "supplier_payments")}
+          includePurchases={a.analysis_details?.service_has_goods == null || a.analysis_details.service_has_goods === "yes"}
+          currency={currency}
+          salesRetained={formatMoney(numeric(a.activity_turnover), currency)}
+          purchasesRetained={formatMoney(numeric(a.activity_purchases), currency)}
+          whenPeriods
+          tailRows={(() => {
+            const turnover = numeric(a.activity_turnover);
+            const purchases = numeric(a.activity_purchases);
+            const expenses = numeric(a.activity_expenses);
+            const charges = expenses != null && purchases != null ? expenses - purchases : null;
+            const net = turnover != null && expenses != null ? turnover - expenses : null;
+            const margin = turnover != null && turnover !== 0 && net != null ? (net / turnover) * 100 : null;
+            return [
+              { label: "Charges d'exploitation hors achats", value: charges == null ? "—" : formatMoney(charges, currency) },
+              { label: "Résultat de l'activité", value: net == null ? "—" : formatMoney(net, currency), strong: true },
+              { label: "Marge de l'activité", value: margin == null ? "—" : `${new Intl.NumberFormat("fr-FR", { minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(margin)} %` },
+            ];
+          })()}
+        />
         {( (!collectionRows.length && (collectionRhythm || detailText("collection_amount"))) || (!periodRows.length && (salesRhythm || detailText("sales_amount"))) ) && (
           <dl className="def-list two">
             {!periodRows.length && salesRhythm && <div><dt>Rythme des ventes</dt><dd>{rhythmLabel[salesRhythm] || salesRhythm}</dd></div>}

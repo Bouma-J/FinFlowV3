@@ -44,6 +44,7 @@ import {
 import { FinancialAnalysisDetails } from "@/components/FinancialAnalysisDetails";
 import { PRODUCTION_IDENTITY, productAmount, retainedActivityMargin } from "@/components/productLine";
 import { purchaseHistoryReading, purchaseLineAmount } from "@/components/purchaseHistory";
+import { ResultPeriodTable } from "@/components/resultPeriods";
 import { supplierPaymentReading } from "@/components/supplierPayments";
 import { ANALYSIS_GRAINS, readSalesPeriodRows, salesPeriodReading, SALES_APPRECIATIONS, SALES_PERIODS } from "@/components/salesPeriods";
 import { activityExpensesFromOperating, OPERATING_CHARGES, operatingChargesExcludingPurchases } from "@/components/operatingCharges";
@@ -1809,24 +1810,34 @@ export function FinancialAnalysisForm({
               </div>
             </FormSection>
             <FormSection id="fa-simplified-result" icon={Calculator} title="Compte de résultat du mois et capacité de remboursement" description={periodNote}>
-              <div className="finance-recap">
-                <RecapItem label="Chiffre d'affaires" value={formatMoney(recap.activityMonthlyTurnover, cur)} />
-                <RecapItem label="Achats" value={formatMoney(recap.activityMonthlyPurchases, cur)} />
-                <RecapItem label="Charges d'exploitation hors achats" value={formatMoney(recap.activityMonthlyExpenses - recap.activityMonthlyPurchases, cur)} />
-                <RecapItem label="Résultat de l'activité" value={formatMoney(recap.activityMonthlyNet, cur)} strong />
-                <RecapItem label="Marge de l'activité" value={recap.activityMargin == null ? "—" : `${new Intl.NumberFormat("fr-FR", { minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(recap.activityMargin)} %`} />
-                <RecapItem label="Autres activités" value={formatMoney(recap.otherActivityMonthly, cur)} />
-                <RecapItem label="Revenus du ménage" value={formatMoney(recap.householdMonthly, cur)} />
-                <RecapItem label="Charges familiales" value={formatMoney(recap.familyMonthly, cur)} />
-                {recap.retained != null && recap.householdHaircut && <RecapItem label={`Retenue ${new Intl.NumberFormat("fr-FR", { maximumFractionDigits: 2 }).format(recap.weight)} % · revenus du ménage`} value={formatMoney(recap.householdInformalRetained, cur)} />}
-                {recap.retained != null && recap.activityHaircut && <RecapItem label={`Retenue ${new Intl.NumberFormat("fr-FR", { maximumFractionDigits: 2 }).format(recap.weight)} % · activité`} value={formatMoney(recap.mainActivityRetained, cur)} />}
-                {recap.retained != null && recap.hasOtherActivity && <RecapItem label={recap.otherHaircut ? `Retenue ${new Intl.NumberFormat("fr-FR", { maximumFractionDigits: 2 }).format(recap.weight)} % · autres activités` : "Autres activités retenues"} value={formatMoney(recap.otherActivityRetained, cur)} />}
-                {recap.retained != null && <RecapItem label="Revenus retenus après pondération" value={formatMoney(recap.retained, cur)} strong />}
-                <RecapItem label="Mensualités déjà en cours" value={formatMoney(recap.existingInstallments, cur)} />
-                <RecapItem label="Reste à vivre avant la nouvelle échéance" value={formatMoney(recap.disposable, cur)} strong />
-                {recap.perCapita !== null && <RecapItem label={`Reste à vivre / personne (${(dependents ?? 0) + 1})`} value={formatMoney(recap.perCapita, cur)} />}
-                <RecapItem label="Solde de trésorerie prévisionnel" value={formatMoney(recap.surplus, cur)} />
-              </div>
+              <ResultPeriodTable
+                mode={analysisPeriodMode}
+                bounds={analysisWindow}
+                salesRows={salesPeriodRows}
+                collectionRows={collectionPeriodRows}
+                purchaseRows={purchaseRows}
+                paymentRows={readSupplierPaymentRows(details)}
+                includePurchases={serviceGoodsOpen}
+                currency={cur}
+                salesRetained={formatMoney(recap.activityMonthlyTurnover, cur)}
+                purchasesRetained={formatMoney(recap.activityMonthlyPurchases, cur)}
+                tailRows={[
+                  { label: "Charges d'exploitation hors achats", value: formatMoney(recap.activityMonthlyExpenses - recap.activityMonthlyPurchases, cur) },
+                  { label: "Résultat de l'activité", value: formatMoney(recap.activityMonthlyNet, cur), strong: true },
+                  { label: "Marge de l'activité", value: recap.activityMargin == null ? "—" : `${new Intl.NumberFormat("fr-FR", { minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(recap.activityMargin)} %` },
+                  { label: "Autres activités", value: formatMoney(recap.otherActivityMonthly, cur) },
+                  { label: "Revenus du ménage", value: formatMoney(recap.householdMonthly, cur) },
+                  { label: "Charges familiales", value: formatMoney(recap.familyMonthly, cur) },
+                  ...(recap.retained != null && recap.householdHaircut ? [{ label: `Retenue ${new Intl.NumberFormat("fr-FR", { maximumFractionDigits: 2 }).format(recap.weight)} % · revenus du ménage`, value: formatMoney(recap.householdInformalRetained, cur) }] : []),
+                  ...(recap.retained != null && recap.activityHaircut ? [{ label: `Retenue ${new Intl.NumberFormat("fr-FR", { maximumFractionDigits: 2 }).format(recap.weight)} % · activité`, value: formatMoney(recap.mainActivityRetained, cur) }] : []),
+                  ...(recap.retained != null && recap.hasOtherActivity ? [{ label: recap.otherHaircut ? `Retenue ${new Intl.NumberFormat("fr-FR", { maximumFractionDigits: 2 }).format(recap.weight)} % · autres activités` : "Autres activités retenues", value: formatMoney(recap.otherActivityRetained, cur) }] : []),
+                  ...(recap.retained != null ? [{ label: "Revenus retenus après pondération", value: formatMoney(recap.retained, cur), strong: true }] : []),
+                  { label: "Mensualités déjà en cours", value: formatMoney(recap.existingInstallments, cur) },
+                  { label: "Reste à vivre avant la nouvelle échéance", value: formatMoney(recap.disposable, cur), strong: true },
+                  ...(recap.perCapita !== null ? [{ label: `Reste à vivre / personne (${(dependents ?? 0) + 1})`, value: formatMoney(recap.perCapita, cur) }] : []),
+                  { label: "Solde de trésorerie prévisionnel", value: formatMoney(recap.surplus, cur) },
+                ]}
+              />
               <ActivityLines rows={readActivityLines(details)} onChange={(rows) => setDetails((current) => ({ ...current, extra_activities: rows }))} currency={cur} />
               <TpeReconstitution details={details} onChange={setDetails} currency={cur} part="safety" />
               <div className="form-grid two-col">

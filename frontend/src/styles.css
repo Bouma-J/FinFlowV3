@@ -2492,6 +2492,22 @@ table.card {
   width: 100%;
   -webkit-overflow-scrolling: touch;
 }
+.result-period-table {
+  max-height: none;
+}
+.result-period-table th:first-child {
+  position: sticky;
+  left: 0;
+  z-index: 2;
+  background: var(--surface);
+}
+.result-period-table td:first-child,
+.result-period-table tbody th {
+  position: sticky;
+  left: 0;
+  z-index: 1;
+  background: var(--surface);
+}
 /*
  * Référentiels CBS : en-tête et corps en deux tables séparées
  * (évite les conflits display/sticky de .table-scroll sur certains onglets).
