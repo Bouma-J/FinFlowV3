@@ -372,8 +372,9 @@ def compute_metrics(analysis, th, configuration=None, *, recalculate_installment
         ) * ppy / Decimal("12")
         weight = analysis.informal_income_weight
         weight = _dec(weight) if weight is not None else _dec(th.informal_income_weight)
+        outside_activity = Decimal("0") if analysis.has_side_activity else _dec(analysis.other_activity_income)
         weighted_income = stable_income + (
-            _dec(analysis.other_activity_income) + _dec(analysis.other_income)
+            outside_activity + _dec(analysis.other_income)
             + _dec(analysis.variable_income)
         ) * ppy / Decimal("12") * weight / Decimal("100")
         weighted_income += _weighted_extra_income(analysis, weight)

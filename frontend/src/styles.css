@@ -6310,6 +6310,12 @@ code {
 .product-sheet-add {
   margin-top: 12px;
 }
+.sales-periods-add {
+  margin-top: 22px;
+}
+.sales-periods {
+  margin-bottom: 28px;
+}
 .product-line-list {
   display: flex;
   flex-direction: column;

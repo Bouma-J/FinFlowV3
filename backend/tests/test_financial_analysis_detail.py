@@ -8,7 +8,7 @@ from rest_framework.exceptions import ValidationError
 
 from apps.common.tenancy import tenant_context
 from apps.credits.analysis_details import (
-    apply_reference_statement, validate_details, detail_metrics,
+    apply_derived_amounts, apply_reference_statement, validate_details, detail_metrics,
     purchase_history_indicators, purchase_period_total, purchase_monthly_total, supplier_payment_indicators,
     sales_monthly_total, collection_monthly_total, sales_period_indicators, collection_period_indicators,
     operating_charges_excluding_purchases, activity_expenses_with_purchases,
@@ -1174,4 +1174,64 @@ def test_informal_service_keeps_purchases_and_stock_out_until_the_box_is_checked
         assert analysis.activity_purchases == Decimal("5419.35")
         assert analysis.activity_expenses == Decimal("6419.35")
         assert analysis.activity_stock_value == Decimal("1000.00")
+
+
+def test_side_activity_ignores_the_lump_outside_the_activity_block():
+    analysis = FinancialAnalysis(
+        has_side_activity=True,
+        other_activity_income=Decimal("500"),
+        activity_turnover=Decimal("1000"),
+        activity_expenses=Decimal("200"),
+        analysis_details={},
+    )
+    assert analysis.total_income == Decimal("800")
+
+
+def test_plan_history_and_dated_sales_replace_the_parallel_figures():
+    attrs = {
+        "projected_monthly_inflows": Decimal("1"),
+        "projected_monthly_outflows": Decimal("1"),
+        "turnover_prev": Decimal("1"),
+        "net_result_prev": Decimal("1"),
+        "analysis_details": {
+            "cashflow": [
+                {"month": "2026-01", "inflows": "100", "outflows": "40", "investment": "10"},
+                {"month": "2026-02", "inflows": "300", "outflows": "60", "investment": "0"},
+            ],
+            "history": [
+                {"period": "2024", "turnover": "10", "net_result": "-5"},
+                {"period": "2025", "turnover": "20", "net_result": "7"},
+            ],
+            "sales_period_mode": "WEEK",
+            "sales_periods": [
+                {"start": "2026-10-01", "end": "2026-10-07", "amount": "70000"},
+            ],
+            "sales_method": "THREE_DAYS",
+            "retained_daily_sales": "5",
+            "activity_days_per_month": "20",
+            "sales_control_monthly": "9",
+            "sales_observations": [{"kind": "Observé", "label": "Lundi", "amount": "5"}],
+        },
+    }
+    apply_derived_amounts(attrs)
+    assert attrs["projected_monthly_inflows"] == Decimal("200.00")
+    assert attrs["projected_monthly_outflows"] == Decimal("55.00")
+    assert attrs["turnover_prev"] == Decimal("20")
+    assert attrs["net_result_prev"] == Decimal("7")
+    assert attrs["analysis_details"]["sales_method"] == ""
+    assert attrs["analysis_details"]["sales_observations"] == []
+    assert "retained_daily_sales" not in attrs["analysis_details"]
+    assert "activity_days_per_month" not in attrs["analysis_details"]
+
+
+def test_external_credits_win_over_the_legacy_debt_table():
+    analysis = FinancialAnalysis(
+        existing_debt_monthly=Decimal("30"),
+        analysis_details={
+            "external_credits": [{"institution": "BIC", "monthly_payment": "30"}],
+            "debts": [{"outstanding": "500", "monthly_payment": "20"}],
+        },
+    )
+    metrics = detail_metrics(analysis)
+    assert metrics["debt_service_reconciled"] is True
 

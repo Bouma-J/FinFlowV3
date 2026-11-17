@@ -812,7 +812,15 @@ def detail_metrics(analysis):
         declared = analysis.stock_value if analysis.is_corporate else analysis.activity_stock_value if analysis.is_individual else None
         metrics["stock_gap"] = metrics["inventory_net_value"] - Decimal(str(declared)) if declared is not None and complete else None
         metrics["stock_reconciled"] = abs(metrics["stock_gap"]) <= Decimal("0.01") if metrics["stock_gap"] is not None else None
-    if details.get("debts"):
+    external_credits = details.get("external_credits")
+    if isinstance(external_credits, list):
+        service = Decimal("0")
+        for row in external_credits:
+            if not isinstance(row, dict) or row.get("monthly_payment") in (None, ""):
+                continue
+            service += Decimal(str(row["monthly_payment"]))
+        metrics["debt_service_reconciled"] = abs(service - Decimal(str(analysis.existing_debt_monthly or 0))) <= Decimal("0.01")
+    elif details.get("debts"):
         metrics["debt_details_complete"] = all(all(row.get(key) not in (None, "") for key in ("outstanding", "monthly_payment")) for row in details["debts"])
         for target, column in (
             ("detailed_debt_outstanding", "outstanding"),
@@ -908,6 +916,85 @@ def sales_monthly_total(details):
     if isinstance(details, dict) and "sales_periods" in details:
         return sales_period_indicators(details)["monthly"]
     return rhythm_monthly_total(details, "sales_rhythm", "sales_amount")
+
+
+def _filled_amount(value):
+    if value in (None, ""):
+        return None
+    return Decimal(str(value))
+
+
+def drop_parallel_sales_method(details):
+    """Les ventes datées sont le chiffre d'affaires. L'ancienne méthode journalière ne le double pas."""
+    if not isinstance(details, dict) or "sales_periods" not in details:
+        return
+    if sales_period_indicators(details).get("monthly") is None:
+        return
+    details["sales_method"] = ""
+    details["sales_observations"] = []
+    for key in ("retained_daily_sales", "sales_control_monthly", "activity_days_per_month"):
+        details.pop(key, None)
+
+
+def previous_period_from_history(details):
+    """La dernière ligne chiffrée de l'historique est N-1."""
+    rows = details.get("history") if isinstance(details, dict) else None
+    if not isinstance(rows, list):
+        return None
+    filled = [
+        row for row in rows
+        if isinstance(row, dict) and (
+            row.get("turnover") not in (None, "") or row.get("net_result") not in (None, "")
+        )
+    ]
+    if not filled:
+        return None
+    last = filled[-1]
+    return _filled_amount(last.get("turnover")), _filled_amount(last.get("net_result"))
+
+
+def forecast_monthly_from_plan(details):
+    """Moyenne du plan. La dette reste hors des sorties : elle est déjà dans le service de la dette."""
+    rows = details.get("cashflow") if isinstance(details, dict) else None
+    if not isinstance(rows, list):
+        return None
+    usable = [
+        row for row in rows
+        if isinstance(row, dict) and any(row.get(key) not in (None, "") for key in ("inflows", "outflows", "investment"))
+    ]
+    if not usable:
+        return None
+    count = Decimal(len(usable))
+
+    def average(keys):
+        total = Decimal("0")
+        for row in usable:
+            for key in keys:
+                amount = _filled_amount(row.get(key))
+                if amount is not None:
+                    total += amount
+        return (total / count).quantize(MONEY, rounding=ROUND_HALF_UP)
+
+    return average(("inflows",)), average(("outflows", "investment"))
+
+
+def apply_derived_amounts(attrs):
+    """Un fait économique, une source. Le plan, l'historique et les ventes datées écrivent les agrégats."""
+    details = attrs.get("analysis_details")
+    if not isinstance(details, dict):
+        return
+    drop_parallel_sales_method(details)
+    if details.get("statement_basis") != "STATEMENTS":
+        previous = previous_period_from_history(details)
+        if previous is not None:
+            turnover, result = previous
+            if turnover is not None:
+                attrs["turnover_prev"] = turnover
+            if result is not None:
+                attrs["net_result_prev"] = result
+    totals = forecast_monthly_from_plan(details)
+    if totals is not None:
+        attrs["projected_monthly_inflows"], attrs["projected_monthly_outflows"] = totals
 
 
 def sales_period_indicators(details):

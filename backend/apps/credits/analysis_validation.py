@@ -145,7 +145,14 @@ def assert_analysis_ready_for_submission(application):
     purpose_failures = _purpose_test_failures(application, reference, detailed)
     if purpose_failures:
         raise WorkflowError(" ".join(purpose_failures))
-    gap = detailed.get("minimal_cash_gap")
+    from .analysis_details import sales_period_indicators
+
+    dated_sales = (
+        isinstance(reference.analysis_details, dict)
+        and "sales_periods" in reference.analysis_details
+        and sales_period_indicators(reference.analysis_details).get("monthly") is not None
+    )
+    gap = None if dated_sales else detailed.get("minimal_cash_gap")
     if gap is not None and gap != 0 and not _detail_text(reference, "minimal_cash_comment"):
         raise WorkflowError(
             "Le document de trésorerie minimale présente un écart entre la clôture lue et la clôture calculée : "
@@ -257,7 +264,12 @@ def _purpose_test_failures(application, reference, detailed):
             and getattr(client, "client_type", "") == "INDIVIDUAL"
         )
         needs_delay = not informal_service or _dec(reference.activity_receivables) > 0
-        if needs_delay and details.get("receivable_delay_days") in (None, ""):
+        informal_activity = (
+            getattr(application, "tax_regime", "") == "INFORMAL"
+            and getattr(client, "client_type", "") == "INDIVIDUAL"
+            and reference.is_individual
+        )
+        if needs_delay and not informal_activity and details.get("receivable_delay_days") in (None, ""):
             failures.append(
                 "Cet objet exige l'allongement des créances : indiquez le retard clients, y compris zéro s'il n'y en a pas."
             )

@@ -508,7 +508,11 @@ export function FinancialAnalysisForm({
   const campaignMonthly = campaignSurplus == null || !application.duration_months ? null : campaignSurplus / application.duration_months;
   const operatingPurpose = application.purpose_type === "WORKING_CAPITAL" || application.purpose_type === "TREASURY" || application.purpose_type === "STOCK";
   const investmentPurpose = application.purpose_type === "EQUIPMENT" || application.purpose_type === "REAL_ESTATE";
-  const minimalCashVisible = statementBasis !== "STATEMENTS" && (isCorporate || showActivityBlock || groupHasActivity);
+  const datedSalesOpen = salesPeriodReading(
+    readSalesPeriodRows(details.sales_periods),
+    detailNumber("analysis_period_mode") || detailNumber("sales_period_mode"),
+  ).monthly != null;
+  const minimalCashVisible = statementBasis !== "STATEMENTS" && (isCorporate || showActivityBlock || groupHasActivity) && !datedSalesOpen;
   const minimalCashOpen = minimalCashVisible && details.minimal_cash_open === "yes";
   const cashNumber = (key: string) => {
     const value = details[key];
@@ -569,7 +573,7 @@ export function FinancialAnalysisForm({
         { id: "fa-conclusion", icon: Calculator, label: "Conclusion", show: true },
       ].filter((s) => sectionAllowed(s.id, path) && (s.show || configuration.data?.protected_analysis_sections?.includes(s.id)) && configuration.data?.forms?.analysis_sections.find((item) => item.id === s.id)?.visible !== false)
        .sort((left, right) => { const sections = configuration.data?.forms?.analysis_sections || []; if (!sections.length) return 0;
-         const position = (id: string) => { const index = sections.findIndex((item) => item.id === id); return index < 0 ? sections.length : index; }; return position(left.id) - position(right.id); }),
+         const position = (id: string) => { if (id === "fa-params") return -1; const index = sections.findIndex((item) => item.id === id); return index < 0 ? sections.length : index; }; return position(left.id) - position(right.id); }),
     [
       isCorporate,
       isIndividual,
@@ -698,6 +702,7 @@ export function FinancialAnalysisForm({
     const reading = salesPeriodReading(rows, mode, analysisWindow);
     setDetails((current) => ({ ...current, sales_periods: rows, sales_period_mode: mode }));
     if (reading.monthly != null) set("activity_turnover")(reading.monthly);
+    else if (informalActivity) set("activity_turnover")("");
   }
   function writeCollectionPeriods(rows: Record<string, string>[], mode: string) {
     setDetails((current) => ({ ...current, collection_periods: rows, collection_period_mode: mode }));
@@ -731,9 +736,12 @@ export function FinancialAnalysisForm({
       val("other_current_debt") +
       val("shareholder_debt");
     // Particulier
+    const activityCounted =
+      individualProfile === "INDEPENDANT" || individualProfile === "MIXTE" || hasSideActivity;
+    const outsideActivity = activityCounted ? 0 : val("other_activity_income");
     const householdIncome =
       val("salary_income") + val("spouse_income") + val("rental_income") +
-      val("other_activity_income") + val("other_income") +
+      outsideActivity + val("other_income") +
       val("variable_income") + val("pension_income") +
       completeLineTotal(readMoneyLines(details, "extra_income"));
     const serviceWithoutGoods = informalActivity && application.activity_nature === "SERVICE" && details.service_has_goods !== "yes";
@@ -779,11 +787,10 @@ export function FinancialAnalysisForm({
       : analysisBool.activity_is_formal;
     const stableMonthly = (val("salary_income") + val("spouse_income") + val("rental_income") + val("pension_income")) * monthlyFactor;
     const informalMonthly = (
-      val("variable_income") + val("other_income") + val("other_activity_income")
+      val("variable_income") + val("other_income") + outsideActivity
       + completeLineTotal(readMoneyLines(details, "extra_income"))
     ) * monthlyFactor;
     let retained = stableMonthly + informalMonthly * weight / 100;
-    const activityCounted = individualProfile === "INDEPENDANT" || individualProfile === "MIXTE" || hasSideActivity;
     const activityNet = activityCounted ? (val("activity_turnover") - countedExpenses) * monthlyFactor : 0;
     const activityHaircut = activityCounted && !activityFormal && activityNet > 0;
     const mainActivityRetained = activityCounted ? (activityHaircut ? activityNet * weight / 100 : activityNet) : 0;
@@ -858,6 +865,27 @@ export function FinancialAnalysisForm({
     const text = inventoryStock.toFixed(2);
     setNumbers((prev) => prev.activity_stock_value === text ? prev : { ...prev, activity_stock_value: text });
   }, [inventoryStock]);
+  const datedTurnover = informalActivity ? (salesPeriods.monthly == null ? "" : salesPeriods.monthly.toFixed(2)) : null;
+  useEffect(() => {
+    if (datedTurnover == null) return;
+    setNumbers((prev) => prev.activity_turnover === datedTurnover ? prev : { ...prev, activity_turnover: datedTurnover });
+  }, [datedTurnover]);
+  const planTotals = planMonthlyTotals(details);
+  const historyPrev = lastHistoryPeriod(details);
+  const planKey = planTotals ? `${planTotals.inflows}|${planTotals.outflows}` : "";
+  const historyKey = historyPrev ? `${historyPrev.turnover ?? ""}|${historyPrev.result ?? ""}` : "";
+  useEffect(() => {
+    setNumbers((prev) => {
+      const updates: Partial<NumericState> = {};
+      if (planTotals) {
+        if (prev.projected_monthly_inflows !== planTotals.inflows) updates.projected_monthly_inflows = planTotals.inflows;
+        if (prev.projected_monthly_outflows !== planTotals.outflows) updates.projected_monthly_outflows = planTotals.outflows;
+      }
+      if (historyPrev?.turnover != null && prev.turnover_prev !== historyPrev.turnover) updates.turnover_prev = historyPrev.turnover;
+      if (historyPrev?.result != null && prev.net_result_prev !== historyPrev.result) updates.net_result_prev = historyPrev.result;
+      return Object.keys(updates).length ? { ...prev, ...updates } : prev;
+    });
+  }, [planKey, historyKey]);
   const recordedInstallment = initial?.new_installment != null && String(initial.new_installment).trim() !== "" && Number.isFinite(Number(initial.new_installment))
     ? Number(initial.new_installment)
     : null;
@@ -894,6 +922,7 @@ export function FinancialAnalysisForm({
         fd.set("projected_monthly_inflows", (recap.income * factor).toFixed(2));
         fd.set("projected_monthly_outflows", (recap.charges * factor).toFixed(2));
       }
+      if (showActivityBlock) fd.set("other_activity_income", "0");
       fd.set("existing_debt_initial_amount", derived.initial_amount);
       fd.set("existing_debt_monthly", derived.monthly);
       fd.set("active_loans_count", derived.count);
@@ -1400,7 +1429,7 @@ export function FinancialAnalysisForm({
               <Money label="Dettes fournisseurs" value={numbers.supplier_debt} onChange={set("supplier_debt")} cur={cur} />
               <Money label="Dettes fiscales et sociales" value={numbers.tax_social_debt} onChange={set("tax_social_debt")} cur={cur} />
               <Money label="Autres dettes d'exploitation" value={numbers.other_current_debt} onChange={set("other_current_debt")} cur={cur} />
-              <Money label="Autres dettes court terme" value={numbers.short_term_debt} onChange={set("short_term_debt")} cur={cur} />
+              <Money label="Autres dettes court terme, hors fournisseurs, fiscal, social et exploitation" value={numbers.short_term_debt} onChange={set("short_term_debt")} cur={cur} />
               <Money label="Encours financier total (court et long terme)" value={numbers.ongoing_credit_balance} onChange={set("ongoing_credit_balance")} cur={cur} />
               <Money label="Dont part long terme de l'encours financier total" value={numbers.long_term_debt} onChange={set("long_term_debt")} cur={cur} />
               <Money label="Comptes courants d'associés" value={numbers.shareholder_debt} onChange={set("shareholder_debt")} cur={cur} />
@@ -1609,7 +1638,7 @@ export function FinancialAnalysisForm({
               <Money label="Pension" value={numbers.pension_income} onChange={set("pension_income")} cur={cur} />
               <Money label="Loyers / rentes" value={numbers.rental_income} onChange={set("rental_income")} cur={cur} />
               <Money label="Primes / revenus variables" value={numbers.variable_income} onChange={set("variable_income")} cur={cur} />
-              <Money label="Revenus d'activité hors bloc dédié" value={numbers.other_activity_income} onChange={set("other_activity_income")} cur={cur} />
+              {!showActivityBlock && <Money label="Revenus d'activité hors bloc dédié" value={numbers.other_activity_income} onChange={set("other_activity_income")} cur={cur} />}
               <Money label="Autres revenus" value={numbers.other_income} onChange={set("other_income")} cur={cur} />
             </div>
             <MoneyLines
@@ -1732,11 +1761,6 @@ export function FinancialAnalysisForm({
               </div>
               <p className="subsection-label subsection-split">Chiffre d&apos;affaires</p>
               <SalesPeriods rows={salesPeriodRows} mode={salesPeriodMode} currency={cur} onChange={writeSalesPeriods} periodLocked bounds={analysisWindow} />
-              {salesPeriods.monthly == null && (
-                <div className="form-grid two-col">
-                  <Money label="CA / recettes de l'activité" value={numbers.activity_turnover} onChange={set("activity_turnover")} cur={cur} />
-                </div>
-              )}
               <p className="subsection-label subsection-split">Encaissements</p>
               <SalesPeriods
                 rows={collectionPeriodRows}
@@ -1754,7 +1778,6 @@ export function FinancialAnalysisForm({
                 <DayField label="Délai moyen paiement clients (jours)" value={detailNumber("observed_client_payment_days")} onChange={(value) => setDetails((current) => ({ ...current, observed_client_payment_days: value }))} />
                 <Money label="Créances clients" value={numbers.activity_receivables} onChange={set("activity_receivables")} cur={cur} />
               </div>
-              {operatingPurpose && (!serviceActivity || (numbers.activity_receivables.trim() !== "" && Number(numbers.activity_receivables) > 0)) && supplements(["receivable_delay_days"], ["receivable_delay_days"])}
               <label className="field">
                 <span>Autres détails</span>
                 <textarea rows={3} value={typeof details.sales_verification === "string" ? details.sales_verification : ""} onChange={(event) => setDetails((current) => ({ ...current, sales_verification: event.target.value }))} />
@@ -1823,7 +1846,7 @@ export function FinancialAnalysisForm({
               </div>
             </FormSection>
             <FormSection id="fa-simplified-result" icon={Calculator} title="Compte de résultat du mois et capacité de remboursement" description={periodNote}>
-              <ActivityLines rows={readActivityLines(details)} onChange={(rows) => setDetails((current) => ({ ...current, extra_activities: rows }))} currency={cur} />
+              <ActivityLines rows={readActivityLines(details)} onChange={(rows) => setDetails((current) => ({ ...current, extra_activities: rows }))} currency={cur} canAdd={false} />
               <ResultPeriodTable
                 mode={analysisPeriodMode}
                 bounds={analysisWindow}
@@ -1854,13 +1877,7 @@ export function FinancialAnalysisForm({
               />
             </FormSection>
             <FormSection id="fa-forecast" icon={Wallet} title="Trésorerie prévisionnelle">
-              <div className="form-grid two-col">
-                <Money label="Encaissements prévisionnels mensuels" value={numbers.projected_monthly_inflows} onChange={set("projected_monthly_inflows")} cur={cur} />
-                <Money label="Sorties de trésorerie prévisionnelles mensuelles" value={numbers.projected_monthly_outflows} onChange={set("projected_monthly_outflows")} cur={cur} />
-              </div>
-              <div className="finance-recap">
-                <RecapItem label="Solde de trésorerie prévisionnel" value={formatMoney(recap.surplus, cur)} strong />
-              </div>
+              <ForecastAmounts numbers={numbers} set={set} currency={cur} plan={planTotals} />
               <label className="field">
                 <span>Commentaire sur les hypothèses de trésorerie</span>
                 <textarea rows={2} value={cashflowComment} onChange={(e) => setCashflowComment(e.target.value)} />
@@ -1872,18 +1889,38 @@ export function FinancialAnalysisForm({
             {serviceGoodsOpen && <FormSection id="fa-cash-check" icon={Wallet} title="Vérification de la trésorerie à partir de la date du dernier achat" description={periodNote}>
               <TpeReconstitution details={details} onChange={setDetails} currency={cur} part="cash" omitLastPurchase />
             </FormSection>}
-            <FormSection id="fa-prior-year" icon={Gauge} title="Étude comparative N / N-1" description={periodNote}>
-              <div className="form-grid two-col">
-                <Money label="CA de l'activité N-1" value={numbers.turnover_prev} onChange={set("turnover_prev")} cur={cur} />
-                <Money label="Résultat de l'activité N-1" value={numbers.net_result_prev} onChange={set("net_result_prev")} cur={cur} signed />
-              </div>
-              <div className="finance-recap">
-                <RecapItem label="Variation du CA" value={formatMoney(yearGap(numbers.activity_turnover, numbers.turnover_prev), cur)} />
-                <RecapItem label="Variation du CA (%)" value={percentText(yearRate(numbers.activity_turnover, numbers.turnover_prev, false))} />
-                <RecapItem label="Variation du résultat" value={formatMoney(yearGap(String(recap.activityMonthlyNet), numbers.net_result_prev), cur)} />
-                <RecapItem label="Variation du résultat (%)" value={percentText(yearRate(String(recap.activityMonthlyNet), numbers.net_result_prev, true))} />
-              </div>
-              {detailTable("history")}
+            <FormSection id="fa-prior-year" icon={Gauge} title="Étude comparative N / N-1" description="La période analysée face à une période antérieure de même durée.">
+              <p className="muted small">
+                N reprend le chiffre d&apos;affaires et le résultat déjà calculés
+                {analysisWindow ? ` pour la période du ${formatDate(analysisStart)} au ${formatDate(analysisEnd)}` : ""}.
+                N-1 est la dernière ligne chiffrée. Saisissez les périodes de la plus ancienne à la plus récente, chacune sur la même durée que N.
+              </p>
+              <HistorySheet
+                rows={readHistoryRows(details)}
+                onChange={(rows) => setDetails((current) => ({ ...current, history: rows }))}
+              />
+              {!historyPrev && (
+                <PreviousPeriodAmounts
+                  history={null}
+                  numbers={numbers}
+                  set={set}
+                  currency={cur}
+                  turnoverLabel="CA de l'activité N-1"
+                  resultLabel="Résultat de l'activité N-1"
+                />
+              )}
+              <YearStudy
+                currency={cur}
+                currentLabel={analysisWindow ? `${formatDate(analysisStart)} – ${formatDate(analysisEnd)}` : "Période analysée"}
+                previousLabel={historyPrev?.period.trim() || "N-1"}
+                currentTurnover={numbers.activity_turnover.trim() === "" ? "" : String(recap.activityMonthlyTurnover)}
+                currentResult={numbers.activity_turnover.trim() === "" && recap.activityMonthlyExpenses === 0 ? "" : String(recap.activityMonthlyNet)}
+                previousTurnover={historyPrev ? (historyPrev.turnover ?? "") : numbers.turnover_prev}
+                previousResult={historyPrev ? (historyPrev.result ?? "") : numbers.net_result_prev}
+                rows={readHistoryRows(details)}
+                cashflow={historyPrev?.cashflow ?? null}
+                equity={historyPrev?.equity ?? null}
+              />
             </FormSection>
             <FormSection id="fa-patrimony" icon={Landmark} title="Comparatif du bilan (patrimoine)" description={periodNote}>
               <PatrimonyComparison
@@ -1904,9 +1941,7 @@ export function FinancialAnalysisForm({
                 <RecapItem label="Reste à vivre avant la nouvelle échéance" value={formatMoney(recap.disposable, cur)} strong />
                 {recap.perCapita !== null && <RecapItem label={`Reste à vivre / personne (${(dependents ?? 0) + 1})`} value={formatMoney(recap.perCapita, cur)} />}
                 <RecapItem label="Échéance institution maximale" value={recordedInstallment == null ? "—" : formatMoney(recordedInstallment, cur)} />
-                <RecapItem label="Capacité avant le nouveau crédit" value={formatMoney(recap.disposable, cur)} />
                 <RecapItem label="Taux d'endettement (%)" value={liveDebtRatio == null ? "—" : new Intl.NumberFormat("fr-FR", { minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(liveDebtRatio)} />
-                <RecapItem label="DSCR (×)" value={initial?.dscr ? initial.dscr : "—"} />
                 <RecapItem label="Score interne (/100)" value={initial?.internal_score ? initial.internal_score : "—"} />
               </div>
             </FormSection>
@@ -1952,9 +1987,14 @@ export function FinancialAnalysisForm({
                   </>
                 )}
                 <ProductSheetTable value={details} onChange={setDetails} currency={cur} showIntro={false} />
-                <TpeReconstitution details={details} onChange={setDetails} currency={cur} part="sales" />
+                <TpeReconstitution details={details} onChange={setDetails} currency={cur} part="sales" omitSales={formalDatedActivity} />
                 {detailText("business_model", "Modèle économique : clientèle, fournisseurs et approvisionnements")}
-                {detailText("sales_verification", "Reconstitution des ventes : recettes journalières, cahier de caisse et mobile money")}
+                {detailText(
+                  "sales_verification",
+                  formalDatedActivity
+                    ? "Écart entre les ventes datées, les pièces et les relevés"
+                    : "Reconstitution des ventes : recettes journalières, cahier de caisse et mobile money",
+                )}
                 {creationOpen && <p className="muted small">Activité en création : ces recettes passées ne sont pas exigées. Elles ne sont pas recopiées dans la prévision.</p>}
                 <div className="form-grid two-col" style={{ marginTop: "0.75rem" }}>
                   {!dossierProfile && (
@@ -1971,11 +2011,13 @@ export function FinancialAnalysisForm({
                     onChange={set("activity_business_age_months")}
                   />
                   )}
+                  {formalDatedActivity && (
                   <Money
                     label="Jours de vente sur la période"
                     value={numbers.activity_sales_days}
                     onChange={set("activity_sales_days")}
                   />
+                  )}
                   {!(formalDatedActivity && salesPeriods.monthly != null) && (
                   <Money
                     label="CA / recettes activité"
@@ -2261,13 +2303,7 @@ export function FinancialAnalysisForm({
         >
         {(isCorporate || showActivityBlock) && <TpeReconstitution details={details} onChange={setDetails} currency={cur} part="safety" />}
         {path !== "SALARY" && <>
-          <div className="form-grid two-col">
-            <Money label="Encaissements prévisionnels mensuels" value={numbers.projected_monthly_inflows} onChange={set("projected_monthly_inflows")} cur={cur} />
-            <Money label="Sorties de trésorerie prévisionnelles mensuelles" value={numbers.projected_monthly_outflows} onChange={set("projected_monthly_outflows")} cur={cur} />
-          </div>
-          <div className="finance-recap">
-            <RecapItem label="Solde de trésorerie prévisionnel mensuel" value={formatMoney(recap.surplus, cur)} strong />
-          </div>
+          <ForecastAmounts numbers={numbers} set={set} currency={cur} plan={planTotals} />
           <label className="field">
             <span>Commentaire sur les hypothèses de trésorerie</span>
             <textarea
@@ -2351,10 +2387,14 @@ export function FinancialAnalysisForm({
             </>
           )}
           <TpeReconstitution details={details} onChange={setDetails} currency={cur} part="cash" />
-          <div className="form-grid two-col">
-            <Money label={isCorporate ? "Chiffre d'affaires N-1" : "CA de l'activité N-1"} value={numbers.turnover_prev} onChange={set("turnover_prev")} cur={cur} />
-            <Money label={isCorporate ? "Résultat net N-1" : "Résultat de l'activité N-1"} value={numbers.net_result_prev} onChange={set("net_result_prev")} cur={cur} signed />
-          </div>
+          <PreviousPeriodAmounts
+            history={historyPrev}
+            numbers={numbers}
+            set={set}
+            currency={cur}
+            turnoverLabel={isCorporate ? "Chiffre d'affaires N-1" : "CA de l'activité N-1"}
+            resultLabel={isCorporate ? "Résultat net N-1" : "Résultat de l'activité N-1"}
+          />
           {detailTable("history")}
           <p className="muted small">Les variations sont calculées sur des périodes de même durée. Pour une activité, le bilan ci-dessus est celui de l'exploitation ; le bilan d'entreprise reste dans sa section dédiée.</p>
         </FormSection>
@@ -2569,6 +2609,7 @@ function AnalysisContent({ children }: { children: ReactNode }) {
     const rank = (entry: { child: ReactNode; index: number }) => {
       const id = sectionId(entry.child);
       if (!id) return entry.index < first ? -1000 + entry.index : 10000 + entry.index;
+      if (id === "fa-params") return -1;
       const position = sections.findIndex((section) => section.id === id);
       return position < 0 ? sections.length : position;
     };
@@ -2598,8 +2639,8 @@ function FormSection({
   const fallbackOrder: Record<string, number> = {
     "fa-params": 10, "fa-quality": 20, "fa-debt": 30, "fa-income": 40,
     "fa-stock-margin": 41, "fa-purchases": 42, "fa-sales-calc": 43, "fa-operating": 44, "fa-family": 45,
-    "fa-simplified-result": 46, "fa-forecast": 46.5, "fa-cash-check": 47, "fa-prior-year": 48, "fa-patrimony": 49, "fa-committee": 50,
-    "fa-stability": 51,
+    "fa-simplified-result": 46, "fa-forecast": 47, "fa-cash-check": 48, "fa-prior-year": 49, "fa-patrimony": 50, "fa-committee": 51,
+    "fa-stability": 52,
     "fa-group": 60, "fa-business": 70, "fa-statements": 85, "fa-activity": 80, "fa-exploitation": 90,
     "fa-charges": 100, "fa-cycle": 105, "fa-treasury": 110, "fa-balance": 120, "fa-minimal": 125, "fa-trend": 130,
     "fa-collateral": 140, "fa-sector": 150, "fa-es": 160, "fa-conclusion": 170,
@@ -2914,6 +2955,7 @@ function PatrimonyComparison({
   return (
     <>
       <p className="subsection-label">Bilan de l&apos;activité</p>
+      <p className="muted small">Les créances et les dettes fournisseurs de la colonne N viennent des sections Ventes et Fournisseurs. Le stock d&apos;inventaire est repris tel quel. Seul N-1 se saisit ici, avec la trésorerie et les actifs productifs.</p>
       <div className="table-scroll">
         <table className="table">
           <thead>
@@ -3026,7 +3068,7 @@ function SalesPeriods({
   ];
   const labelSpan = daily ? 1 : 2;
   return (
-    <div className="product-sheet">
+    <div className="product-sheet sales-periods">
       {!periodLocked && (
         <div className="form-grid two-col">
           <Select label="Période" value={mode} onChange={(value) => onChange(rows, value)} options={SALES_PERIODS} />
@@ -3079,7 +3121,7 @@ function SalesPeriods({
               </tfoot>
             </table>
           </div>
-      <button type="button" className="btn btn-ghost" onClick={() => onChange([...rows, blank], mode)}>Ajouter</button>
+      <button type="button" className="btn btn-ghost sales-periods-add" onClick={() => onChange([...rows, blank], mode)}>Ajouter</button>
     </div>
   );
 }
@@ -3432,11 +3474,14 @@ function ActivityLines({
   rows,
   onChange,
   currency,
+  canAdd = true,
 }: {
   rows: ActivityLine[];
   onChange: (rows: ActivityLine[]) => void;
   currency: string;
+  canAdd?: boolean;
 }) {
+  if (!canAdd && rows.length === 0) return null;
   return (
     <div className="stack" style={{ marginTop: "0.75rem" }}>
       <p className="subsection-label">Autre activité</p>
@@ -3487,13 +3532,15 @@ function ActivityLines({
           </button>
         </div>
       ))}
-      <button
-        type="button"
-        className="btn btn-ghost"
-        onClick={() => onChange([...rows, { label: "", turnover: "", expenses: "" }])}
-      >
-        Ajouter une activité
-      </button>
+      {canAdd && (
+        <button
+          type="button"
+          className="btn btn-ghost"
+          onClick={() => onChange([...rows, { label: "", turnover: "", expenses: "" }])}
+        >
+          Ajouter une activité
+        </button>
+      )}
     </div>
   );
 }
@@ -3775,6 +3822,353 @@ function ConclusionFiles({
       >
         <Plus size={16} /> Ajouter un fichier
       </button>
+    </div>
+  );
+}
+
+function moneyText(value: unknown): string | null {
+  if (value == null || String(value).trim() === "") return null;
+  const number = Number(value);
+  if (!Number.isFinite(number)) return null;
+  return (Math.round(number * 100) / 100).toFixed(2);
+}
+
+function planMonthlyTotals(details: AnalysisDetails): { inflows: string; outflows: string } | null {
+  const rows = details.cashflow;
+  if (!Array.isArray(rows)) return null;
+  const usable = rows.filter((row) => {
+    const source = (row ?? {}) as Record<string, unknown>;
+    return ["inflows", "outflows", "investment"].some((key) => String(source[key] ?? "").trim() !== "");
+  });
+  if (!usable.length) return null;
+  const average = (keys: string[]) => {
+    const total = usable.reduce((sum, row) => {
+      const source = (row ?? {}) as Record<string, unknown>;
+      return sum + keys.reduce((part, key) => {
+        const raw = String(source[key] ?? "").trim();
+        const number = raw === "" ? 0 : Number(raw);
+        return part + (Number.isFinite(number) ? number : 0);
+      }, 0);
+    }, 0);
+    return (Math.round((total / usable.length) * 100) / 100).toFixed(2);
+  };
+  return { inflows: average(["inflows"]), outflows: average(["outflows", "investment"]) };
+}
+
+function lastHistoryPeriod(details: AnalysisDetails): {
+  turnover: string | null;
+  result: string | null;
+  period: string;
+  cashflow: string | null;
+  equity: string | null;
+} | null {
+  const filled = readHistoryRows(details).filter((row) => row.turnover.trim() !== "" || row.net_result.trim() !== "");
+  if (!filled.length) return null;
+  const last = filled[filled.length - 1];
+  const turnover = moneyText(last.turnover);
+  const result = moneyText(last.net_result);
+  if (turnover == null && result == null) return null;
+  return {
+    turnover,
+    result,
+    period: last.period,
+    cashflow: moneyText(last.cashflow),
+    equity: moneyText(last.equity),
+  };
+}
+
+function ForecastAmounts({ numbers, set, currency, plan }: {
+  numbers: NumericState;
+  set: (key: NumericKey) => (value: string) => void;
+  currency: string;
+  plan: { inflows: string; outflows: string } | null;
+}) {
+  const inflow = plan ? Number(plan.inflows) : Number(numbers.projected_monthly_inflows);
+  const outflow = plan ? Number(plan.outflows) : Number(numbers.projected_monthly_outflows);
+  const inflowKnown = Number.isFinite(inflow) && (plan != null || numbers.projected_monthly_inflows.trim() !== "");
+  const outflowKnown = Number.isFinite(outflow) && (plan != null || numbers.projected_monthly_outflows.trim() !== "");
+  const surplus = !inflowKnown && !outflowKnown ? null : (inflowKnown ? inflow : 0) - (outflowKnown ? outflow : 0);
+  return (
+    <>
+      {plan ? (
+        <div className="finance-recap">
+          <RecapItem label="Encaissements mensuels, moyenne du plan" value={formatMoney(plan.inflows, currency)} />
+          <RecapItem label="Sorties mensuelles hors dette, moyenne du plan" value={formatMoney(plan.outflows, currency)} />
+        </div>
+      ) : (
+        <div className="form-grid two-col">
+          <Money label="Encaissements prévisionnels mensuels" value={numbers.projected_monthly_inflows} onChange={set("projected_monthly_inflows")} cur={currency} />
+          <Money label="Sorties de trésorerie prévisionnelles mensuelles" value={numbers.projected_monthly_outflows} onChange={set("projected_monthly_outflows")} cur={currency} />
+        </div>
+      )}
+      <div className="finance-recap">
+        <RecapItem label="Solde de trésorerie prévisionnel mensuel" value={formatMoney(surplus, currency)} strong />
+      </div>
+      {plan && <p className="muted small">Le plan mensuel est la seule saisie. Les deux totaux en sont la moyenne. Le service de la dette n&apos;y est pas remis : il est déjà dans les crédits en cours.</p>}
+    </>
+  );
+}
+
+const HISTORY_KEYS = ["period", "turnover", "net_result", "cashflow", "equity", "comment"] as const;
+
+function readHistoryRows(details: AnalysisDetails): Record<(typeof HISTORY_KEYS)[number], string>[] {
+  const value = details.history;
+  if (!Array.isArray(value)) return [];
+  return value.map((row) => {
+    const source = (row ?? {}) as Record<string, unknown>;
+    return {
+      period: source.period == null ? "" : String(source.period),
+      turnover: source.turnover == null ? "" : String(source.turnover),
+      net_result: source.net_result == null ? "" : String(source.net_result),
+      cashflow: source.cashflow == null ? "" : String(source.cashflow),
+      equity: source.equity == null ? "" : String(source.equity),
+      comment: source.comment == null ? "" : String(source.comment),
+    };
+  });
+}
+
+function HistorySheet({
+  rows,
+  onChange,
+}: {
+  rows: Record<(typeof HISTORY_KEYS)[number], string>[];
+  onChange: (rows: Record<(typeof HISTORY_KEYS)[number], string>[]) => void;
+}) {
+  const blank = { period: "", turnover: "", net_result: "", cashflow: "", equity: "", comment: "" };
+  function update(index: number, key: (typeof HISTORY_KEYS)[number], value: string) {
+    const next = rows.slice();
+    next[index] = { ...next[index], [key]: value };
+    onChange(next);
+  }
+  return (
+    <div className="product-sheet sales-periods">
+      <p className="subsection-label">Périodes antérieures</p>
+      <div className="table-scroll result-period-table">
+        <table className="table">
+          <thead>
+            <tr>
+              <th scope="col">Période</th>
+              <th scope="col">Chiffre d&apos;affaires</th>
+              <th scope="col">Résultat</th>
+              <th scope="col">Cash-flow</th>
+              <th scope="col">Capitaux propres</th>
+              <th scope="col">Commentaire</th>
+              <th scope="col" aria-label="Retirer" />
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((row, index) => (
+              <tr key={index}>
+                <td><input aria-label={`Période, ligne ${index + 1}`} value={row.period} onChange={(event) => update(index, "period", event.target.value)} /></td>
+                <td><input aria-label={`Chiffre d'affaires, ligne ${index + 1}`} type="number" min={0} step="any" value={row.turnover} onChange={(event) => update(index, "turnover", event.target.value)} /></td>
+                <td><input aria-label={`Résultat, ligne ${index + 1}`} type="number" step="any" value={row.net_result} onChange={(event) => update(index, "net_result", event.target.value)} /></td>
+                <td><input aria-label={`Cash-flow, ligne ${index + 1}`} type="number" step="any" value={row.cashflow} onChange={(event) => update(index, "cashflow", event.target.value)} /></td>
+                <td><input aria-label={`Capitaux propres, ligne ${index + 1}`} type="number" step="any" value={row.equity} onChange={(event) => update(index, "equity", event.target.value)} /></td>
+                <td><input aria-label={`Commentaire, ligne ${index + 1}`} value={row.comment} onChange={(event) => update(index, "comment", event.target.value)} /></td>
+                <td>
+                  <button type="button" className="btn btn-ghost btn-icon" aria-label={`Retirer la période ${index + 1}`} onClick={() => onChange(rows.filter((_, rowIndex) => rowIndex !== index))}>
+                    <Trash2 size={16} />
+                  </button>
+                </td>
+              </tr>
+            ))}
+            {!rows.length && (
+              <tr>
+                <td colSpan={7}>Aucune période antérieure. Ajoutez le mois ou la campagne comparable.</td>
+              </tr>
+            )}
+          </tbody>
+        </table>
+      </div>
+      <button type="button" className="btn btn-ghost sales-periods-add" onClick={() => onChange([...rows, blank])}>Ajouter une période</button>
+    </div>
+  );
+}
+
+function marginRate(result: string, turnover: string): number | null {
+  const net = presentAmount(result);
+  const sales = presentAmount(turnover);
+  if (net == null || sales == null || sales === 0) return null;
+  return Math.round((net / sales) * 10000) / 100;
+}
+
+function signedMeasure(value: number | null, unit: "%" | "pts"): string {
+  if (value == null) return "—";
+  const text = new Intl.NumberFormat("fr-FR", { signDisplay: "exceptZero", minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(value);
+  return `${text} ${unit}`;
+}
+
+function movementSentence(rate: number | null, subject: string): string | null {
+  if (rate == null) return null;
+  if (rate > 0.5) return `${subject} progresse de ${percentText(rate)}.`;
+  if (rate < -0.5) return `${subject} recule de ${percentText(Math.abs(rate))}.`;
+  return `${subject} est stable.`;
+}
+
+function YearStudy({
+  currency,
+  currentLabel,
+  previousLabel,
+  currentTurnover,
+  currentResult,
+  previousTurnover,
+  previousResult,
+  rows,
+  cashflow,
+  equity,
+}: {
+  currency: string;
+  currentLabel: string;
+  previousLabel: string;
+  currentTurnover: string;
+  currentResult: string;
+  previousTurnover: string;
+  previousResult: string;
+  rows: Record<(typeof HISTORY_KEYS)[number], string>[];
+  cashflow: string | null;
+  equity: string | null;
+}) {
+  const turnoverRate = yearRate(currentTurnover, previousTurnover, false);
+  const resultRate = yearRate(currentResult, previousResult, true);
+  const marginNow = marginRate(currentResult, currentTurnover);
+  const marginBefore = marginRate(previousResult, previousTurnover);
+  const marginGap = marginNow == null || marginBefore == null ? null : Math.round((marginNow - marginBefore) * 100) / 100;
+  const previousKnown = presentAmount(previousTurnover) != null || presentAmount(previousResult) != null;
+  const currentKnown = presentAmount(currentTurnover) != null || presentAmount(currentResult) != null;
+  const moneyRows = [
+    { label: "Chiffre d'affaires", current: currentTurnover, previous: previousTurnover, rate: turnoverRate },
+    { label: "Résultat de l'activité", current: currentResult, previous: previousResult, rate: resultRate },
+  ];
+  const filled = rows.filter((row) => row.turnover.trim() !== "" || row.net_result.trim() !== "");
+  let priorTurnover: string | null = null;
+  let priorResult: string | null = null;
+  const trend = filled.map((row) => {
+    const line = {
+      period: row.period.trim() || "Période",
+      turnover: row.turnover,
+      result: row.net_result,
+      turnoverRate: priorTurnover == null ? null : yearRate(row.turnover, priorTurnover, false),
+      resultRate: priorResult == null ? null : yearRate(row.net_result, priorResult, true),
+    };
+    priorTurnover = row.turnover.trim() === "" ? priorTurnover : row.turnover;
+    priorResult = row.net_result.trim() === "" ? priorResult : row.net_result;
+    return line;
+  });
+  const reading = (() => {
+    if (!previousKnown) return "Ajoutez le chiffre d'affaires et le résultat d'une période de même durée. La comparaison se calcule ensuite.";
+    if (!currentKnown) return "N-1 est saisi. Le chiffre d'affaires de la période analysée viendra des ventes datées.";
+    const sentences = [
+      movementSentence(turnoverRate, "Le chiffre d'affaires"),
+      movementSentence(resultRate, "Le résultat"),
+    ].filter((sentence): sentence is string => sentence != null);
+    if (marginNow != null && marginBefore != null && marginGap != null) {
+      sentences.push(`La marge sur chiffre d'affaires passe de ${percentText(marginBefore)} à ${percentText(marginNow)} (${signedMeasure(marginGap, "pts")}).`);
+      if (turnoverRate != null && turnoverRate > 0 && marginGap <= -5) {
+        sentences.push("Le volume augmente et la marge se contracte d'au moins 5 points : le prix de vente, les achats et les prélèvements du ménage sont à revoir.");
+      }
+    }
+    return sentences.join(" ");
+  })();
+  return (
+    <>
+      {trend.length > 1 && (
+        <>
+          <p className="subsection-label subsection-split">Trajectoire des périodes saisies</p>
+          <div className="table-scroll result-period-table">
+            <table className="table">
+              <thead>
+                <tr>
+                  <th scope="col">Période</th>
+                  <th scope="col">Chiffre d&apos;affaires</th>
+                  <th scope="col">Variation</th>
+                  <th scope="col">Résultat</th>
+                  <th scope="col">Variation</th>
+                </tr>
+              </thead>
+              <tbody>
+                {trend.map((line, index) => (
+                  <tr key={`${line.period}-${index}`}>
+                    <th scope="row">{line.period}</th>
+                    <td className="num">{formatMoney(presentAmount(line.turnover), currency)}</td>
+                    <td className="num">{signedMeasure(line.turnoverRate, "%")}</td>
+                    <td className="num">{formatMoney(presentAmount(line.result), currency)}</td>
+                    <td className="num">{signedMeasure(line.resultRate, "%")}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </>
+      )}
+      <p className="subsection-label subsection-split">Période analysée face à N-1</p>
+      <div className="table-scroll result-period-table">
+        <table className="table">
+          <thead>
+            <tr>
+              <th scope="col">Poste</th>
+              <th scope="col">{currentLabel}</th>
+              <th scope="col">{previousLabel}</th>
+              <th scope="col">Écart</th>
+              <th scope="col">Variation</th>
+            </tr>
+          </thead>
+          <tbody>
+            {moneyRows.map((row) => (
+              <tr key={row.label}>
+                <th scope="row">{row.label}</th>
+                <td className="num">{formatMoney(presentAmount(row.current), currency)}</td>
+                <td className="num">{formatMoney(presentAmount(row.previous), currency)}</td>
+                <td className="num">{formatMoney(yearGap(row.current, row.previous), currency)}</td>
+                <td className="num">{signedMeasure(row.rate, "%")}</td>
+              </tr>
+            ))}
+            <tr>
+              <th scope="row">Marge sur chiffre d&apos;affaires</th>
+              <td className="num">{percentText(marginNow)}</td>
+              <td className="num">{percentText(marginBefore)}</td>
+              <td className="num">{signedMeasure(marginGap, "pts")}</td>
+              <td className="num">{marginGap == null ? "—" : "en points"}</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+      <p className="muted small">{reading}</p>
+      {(cashflow || equity) && (
+        <>
+          <div className="finance-recap">
+            {cashflow && <RecapItem label="Cash-flow N-1" value={formatMoney(cashflow, currency)} />}
+            {equity && <RecapItem label="Capitaux propres N-1" value={formatMoney(equity, currency)} />}
+          </div>
+          <p className="muted small">Ces deux montants décrivent N-1. La trésorerie et le patrimoine de la période analysée restent dans leurs sections.</p>
+        </>
+      )}
+    </>
+  );
+}
+
+function PreviousPeriodAmounts({ history, numbers, set, currency, turnoverLabel, resultLabel }: {
+  history: { turnover: string | null; result: string | null } | null;
+  numbers: NumericState;
+  set: (key: NumericKey) => (value: string) => void;
+  currency: string;
+  turnoverLabel: string;
+  resultLabel: string;
+}) {
+  if (history) {
+    return (
+      <>
+        <div className="finance-recap">
+          <RecapItem label={turnoverLabel} value={formatMoney(history.turnover, currency)} />
+          <RecapItem label={resultLabel} value={formatMoney(history.result, currency)} />
+        </div>
+        <p className="muted small">Ces montants sont la dernière ligne chiffrée de l&apos;historique. Ils ne se ressaisissent pas à côté.</p>
+      </>
+    );
+  }
+  return (
+    <div className="form-grid two-col">
+      <Money label={turnoverLabel} value={numbers.turnover_prev} onChange={set("turnover_prev")} cur={currency} />
+      <Money label={resultLabel} value={numbers.net_result_prev} onChange={set("net_result_prev")} cur={currency} signed />
     </div>
   );
 }

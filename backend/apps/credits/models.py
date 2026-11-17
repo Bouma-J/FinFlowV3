@@ -1770,9 +1770,10 @@ class FinancialAnalysis(TenantScopedModel, AuthoredModel):
     # -------------------- valeurs dérivées (particulier) --------------- #
     @property
     def total_income(self):
+        outside_activity = Decimal("0") if self.has_side_activity else _dec(self.other_activity_income)
         base = (
             _dec(self.salary_income) + _dec(self.spouse_income)
-            + _dec(self.rental_income) + _dec(self.other_activity_income)
+            + _dec(self.rental_income) + outside_activity
             + _dec(self.other_income) + _dec(self.variable_income)
             + _dec(self.pension_income)
         )

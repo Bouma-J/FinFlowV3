@@ -345,7 +345,8 @@ class FinancialAnalysisSerializer(serializers.ModelSerializer):
             )
         if "analysis_details" in attrs:
             from .analysis_details import (
-                activity_expenses_with_purchases, apply_reference_statement,
+                activity_expenses_with_purchases, apply_derived_amounts,
+                apply_reference_statement,
                 informal_service_without_goods, inventory_stock_value,
                 operating_charges_excluding_purchases, purchase_monthly_total,
                 purchase_period_total, sales_monthly_total,
@@ -395,6 +396,11 @@ class FinancialAnalysisSerializer(serializers.ModelSerializer):
                 stock_value = inventory_stock_value(attrs["analysis_details"])
                 if stock_value is not None:
                     attrs["activity_stock_value"] = stock_value
+            apply_derived_amounts(attrs)
+        profile = attrs.get("individual_profile", getattr(self.instance, "individual_profile", None))
+        side = attrs.get("has_side_activity", getattr(self.instance, "has_side_activity", False))
+        if profile in {"INDEPENDANT", "MIXTE"} or side:
+            attrs["other_activity_income"] = Decimal("0")
         errors = {}
         for name, value in attrs.items():
             if isinstance(value, Decimal) and name not in ("net_result_prev",) and value < 0:

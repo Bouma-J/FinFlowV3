@@ -649,7 +649,7 @@ export function FinancialAnalysisReadout({ analysis: a, currency, part, paymentC
   if (!corp && !group) {
     add("Revenus du ménage", <>
       {profileLabel && <p className="muted small">Profil : {profileLabel}.</p>}
-      {fields(path === "SALARY" ? INCOME.filter(([key]) => key !== "other_activity_income") : INCOME)}
+      {fields(path === "SALARY" || a.has_side_activity ? INCOME.filter(([key]) => key !== "other_activity_income") : INCOME)}
       <ExtraMoneyLines details={a.analysis_details} name="extra_income" currency={currency} />
       <Note label="Justificatifs des revenus" text={detailText("household_income_evidence")} />
     </>, true);
@@ -1016,7 +1016,6 @@ export function FinancialAnalysisReadout({ analysis: a, currency, part, paymentC
         <h5>Retenue de prudence</h5>
         <p className="muted small">Base : capacité avant le nouveau crédit, dettes existantes déjà déduites. Les échéances en cours ne sont pas retirées une seconde fois. Cette retenue n'est pas le taux d'endettement.</p>
         <div className="metric-grid">
-          {card("Capacité avant le nouveau crédit", "tpe_safety_base")}
           {card(`Retenue ${n("tpe_safety_pct")} %`, "tpe_safety_provision")}
           {card("Disponible pour la nouvelle échéance", "tpe_safety_available")}
           <div className={`metric ${m.tpe_safety_ok === true ? "metric-ok" : m.tpe_safety_ok === false ? "metric-warn" : ""}`}><span className="metric-label">Couverture de la nouvelle échéance</span><span className="metric-value">{n("tpe_safety_coverage") == null ? "—" : `${n("tpe_safety_coverage")} ×`}</span></div>

@@ -47,13 +47,14 @@ export function withPurchaseMethods(details: AnalysisDetails, selected: string[]
   return setPurchaseMethods(details, selected);
 }
 
-export function TpeReconstitution({ details, onChange, currency, part = "all", omitLastPurchase = false, omitMethods = [], declaredMonthly = undefined }: {
+export function TpeReconstitution({ details, onChange, currency, part = "all", omitLastPurchase = false, omitMethods = [], omitSales = false, declaredMonthly = undefined }: {
   details: AnalysisDetails;
   onChange: (next: AnalysisDetails) => void;
   currency: string;
   part?: "all" | "sales" | "purchases" | "turnover" | "safety" | "cash";
   omitLastPurchase?: boolean;
   omitMethods?: string[];
+  omitSales?: boolean;
   declaredMonthly?: number | null;
 }) {
   const field = (key: string, label: string, type = "number", hint?: string) => (
@@ -81,7 +82,8 @@ export function TpeReconstitution({ details, onChange, currency, part = "all", o
   const costRatePurchases = monthly != null && marginRate != null ? monthly * (1 - marginRate) : null;
   const methodAmount = (code: string) => code === "INVOICES" || code === "LEDGER" ? countedPurchases : code === "COST_RATE" ? costRatePurchases : null;
 
-  const sales = part === "all" || part === "sales";
+  const sales = (part === "all" || part === "sales") && !omitSales;
+  const purchasesBesideSales = (part === "all" || part === "sales") && omitSales;
   const safety = part === "all" || part === "safety";
   const cash = part === "all" || part === "cash";
 
@@ -115,6 +117,16 @@ export function TpeReconstitution({ details, onChange, currency, part = "all", o
       <span>Moyenne observée {money(observed, currency)}</span>
       <span>Moyenne des hypothèses {money(hypothesis, currency)}</span>
       <span>CA mensuel indicatif {money(monthly, currency)}</span>
+    </div>}
+    {purchasesBesideSales && <div className="form-grid two-col">
+      <label className="field">
+        <span>Méthode d&apos;achats</span>
+        <select value={text(details, "purchase_method")} onChange={(event) => onChange(setKey(details, "purchase_method", event.target.value))}>
+          {PURCHASE_METHODS.map(([value, label]) => <option key={value} value={value}>{label}</option>)}
+        </select>
+      </label>
+      {field("purchase_average", "Achat moyen", "number", "Utilisé pour les factures et le cahier d'achats.")}
+      {field("purchase_frequency", "Approvisionnements par mois", "number")}
     </div>}
     {safety && <div className="form-grid two-col">
       {field("safety_provision_pct", "Retenue de prudence (%)", "number", "Souvent 30. Vide : pas de retenue. Elle s'applique à la capacité déjà nette des dettes existantes et ne change pas le taux d'endettement.")}
