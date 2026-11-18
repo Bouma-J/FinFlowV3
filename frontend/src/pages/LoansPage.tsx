@@ -1,7 +1,7 @@
 import { useQuery } from "@tanstack/react-query";
 import { Banknote } from "lucide-react";
 import { useState } from "react";
-import { useNavigate } from "react-router-dom";
+import { useNavigate, useSearchParams } from "react-router-dom";
 
 import { api } from "@/api/client";
 import type { Paginated } from "@/api/types";
@@ -10,6 +10,7 @@ import { PERM_COLLECTIONS, PERM_CREDITS } from "@/auth/routePerms";
 import { PermLink } from "@/components/PermLink";
 import {
   AgencyFilter,
+  ClientFilterBanner,
   FilterField,
   FilterSelect,
   ListFilters,
@@ -17,6 +18,7 @@ import {
   ProductFilter,
   SearchInput,
   countActive,
+  useClientSearchParam,
 } from "@/components/ListFilters";
 import {
   Badge,
@@ -59,10 +61,12 @@ const LIST_PAGE_SIZE = Math.max(15, DEFAULT_PAGE_SIZE);
 
 export function LoansPage() {
   const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
   const { user, activeTenant } = useAuth();
   const needsTenant = Boolean(user?.is_group_level && !activeTenant);
+  const { clientFilter, clearClientFilter } = useClientSearchParam();
   const [page, setPage] = useState(1);
-  const [status, setStatus] = useState("");
+  const [status, setStatus] = useState(() => searchParams.get("status") ?? "");
   const [search, setSearch] = useState("");
   const [product, setProduct] = useState("");
   const [agency, setAgency] = useState("");
@@ -90,6 +94,7 @@ export function LoansPage() {
       gestionnaire,
       disbursedAfter,
       disbursedBefore,
+      clientFilter,
     ],
     queryFn: async () =>
       (
@@ -104,6 +109,7 @@ export function LoansPage() {
             ...(gestionnaire ? { gestionnaire } : {}),
             ...(disbursedAfter ? { disbursed_after: disbursedAfter } : {}),
             ...(disbursedBefore ? { disbursed_before: disbursedBefore } : {}),
+            ...(clientFilter ? { client: clientFilter } : {}),
           },
         })
       ).data,
@@ -136,6 +142,7 @@ export function LoansPage() {
             agency,
             disbursedAfter,
             disbursedBefore,
+            clientFilter,
           )}
           onReset={() => {
             setSearch("");
@@ -146,6 +153,7 @@ export function LoansPage() {
             setDisbursedAfter("");
             setDisbursedBefore("");
             setPage(1);
+            if (clientFilter) clearClientFilter();
           }}
         >
           <OfficerFilter
@@ -177,6 +185,7 @@ export function LoansPage() {
             />
           </FilterField>
         </ListFilters>
+        <ClientFilterBanner clientId={clientFilter} onClear={() => { clearClientFilter(); setPage(1); }} />
       </div>
 
       <div className="list-table-region">

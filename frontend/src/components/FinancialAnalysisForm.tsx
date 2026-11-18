@@ -508,9 +508,14 @@ export function FinancialAnalysisForm({
   const campaignMonthly = campaignSurplus == null || !application.duration_months ? null : campaignSurplus / application.duration_months;
   const operatingPurpose = application.purpose_type === "WORKING_CAPITAL" || application.purpose_type === "TREASURY" || application.purpose_type === "STOCK";
   const investmentPurpose = application.purpose_type === "EQUIPMENT" || application.purpose_type === "REAL_ESTATE";
+  const salesWindowStart = detailNumber("analysis_period_start");
+  const salesWindowEnd = detailNumber("analysis_period_end");
   const datedSalesOpen = salesPeriodReading(
     readSalesPeriodRows(details.sales_periods),
     detailNumber("analysis_period_mode") || detailNumber("sales_period_mode"),
+    salesWindowStart && salesWindowEnd && salesWindowEnd >= salesWindowStart
+      ? { start: salesWindowStart, end: salesWindowEnd }
+      : undefined,
   ).monthly != null;
   const minimalCashVisible = statementBasis !== "STATEMENTS" && (isCorporate || showActivityBlock || groupHasActivity) && !datedSalesOpen;
   const minimalCashOpen = minimalCashVisible && details.minimal_cash_open === "yes";
@@ -865,7 +870,7 @@ export function FinancialAnalysisForm({
     const text = inventoryStock.toFixed(2);
     setNumbers((prev) => prev.activity_stock_value === text ? prev : { ...prev, activity_stock_value: text });
   }, [inventoryStock]);
-  const datedTurnover = informalActivity ? (salesPeriods.monthly == null ? "" : salesPeriods.monthly.toFixed(2)) : null;
+  const datedTurnover = informalActivity ? (salesPeriods.monthly ?? "") : null;
   useEffect(() => {
     if (datedTurnover == null) return;
     setNumbers((prev) => prev.activity_turnover === datedTurnover ? prev : { ...prev, activity_turnover: datedTurnover });

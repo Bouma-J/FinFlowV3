@@ -493,6 +493,37 @@ export interface GuaranteeReleaseRequest {
   updated_at: string;
 }
 
+export interface ClientReceivedCredit {
+  application_id: string;
+  application_reference: string;
+  application_status: string;
+  application_status_display: string;
+  product_label: string;
+  amount: string;
+  currency: string;
+  loan_id: string | null;
+  loan_status: string | null;
+  loan_status_display: string | null;
+  disbursed_at: string | null;
+  cbs_loan_reference: string;
+  cbs_settled: boolean | null;
+  cbs_outstanding: string | null;
+  cbs_currency: string;
+  cbs_error: string | null;
+  cbs_status_label: string;
+}
+
+export interface ClientReceivedCredits {
+  client_id: string;
+  checked_at: string;
+  received_count: number;
+  active_count: number;
+  settled_count: number;
+  defaulted_count: number;
+  open_request_count: number;
+  credits: ClientReceivedCredit[];
+}
+
 export interface ReleaseClientCredit {
   application_id: string;
   application_reference: string;

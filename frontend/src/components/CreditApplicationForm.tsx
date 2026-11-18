@@ -1,4 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { Link } from "react-router-dom";
 import {
   Banknote,
   Briefcase,
@@ -36,6 +37,7 @@ import {
   type CbsCatalogItem,
   type ChecklistItem,
   type Client,
+  type ClientReceivedCredits,
   type CreditApplication,
   type CreditDocument,
   type CreditProduct,
@@ -47,6 +49,7 @@ import {
   clientOptionLabel,
 } from "@/components/ClientAutocomplete";
 import { useAuth } from "@/auth/AuthContext";
+import { formatDate, formatMoney } from "@/components/ui";
 
 const PERIODICITY_FALLBACK = [
   { value: "DAILY", label: "Journalier" },
@@ -1026,6 +1029,7 @@ export function CreditApplicationForm({
               </span>
             </div>
           )}
+          {client && <ClientCreditHistory clientId={client} excludeId={initial?.id} />}
           <div className="form-grid two-col">
             <Select label="Type de crédit" value={text.product} onChange={set("product")} options={products?.results.map((p) => ({ value: p.id, label: p.label })) ?? []} required />
             {canPickAgency ? (
@@ -1726,6 +1730,90 @@ export function CreditApplicationForm({
         </div>
       </div>
     </form>
+  );
+}
+
+function receivedCreditSummary(data: ClientReceivedCredits): string {
+  if (data.received_count === 0) {
+    return "Aucun crédit mis en place pour ce client.";
+  }
+  const parts = [
+    data.active_count ? `${data.active_count} en cours` : "",
+    data.settled_count ? `${data.settled_count} soldé${data.settled_count > 1 ? "s" : ""}` : "",
+    data.defaulted_count ? `${data.defaulted_count} en défaut` : "",
+  ].filter(Boolean);
+  const count = `${data.received_count} crédit${data.received_count > 1 ? "s" : ""} déjà mis en place`;
+  return parts.length ? `${count} : ${parts.join(", ")}.` : `${count}.`;
+}
+
+function ClientCreditHistory({ clientId, excludeId }: { clientId: string; excludeId?: string }) {
+  const { user, activeTenant } = useAuth();
+  const history = useQuery({
+    queryKey: ["client-received-credits", activeTenant || user?.tenant, clientId, excludeId || ""],
+    enabled: Boolean(clientId),
+    queryFn: async () => (await api.get<ClientReceivedCredits>("/credit-applications/client-credits/", {
+      params: { client: clientId, exclude: excludeId || undefined },
+    })).data,
+  });
+  if (history.isLoading) {
+    return <p className="muted small">Vérification des crédits déjà accordés à ce client…</p>;
+  }
+  if (history.isError || !history.data) {
+    return <p className="form-error">La vérification des crédits déjà accordés n&apos;a pas abouti. Le dossier peut continuer, puis la vérification sera relancée.</p>;
+  }
+  const data = history.data;
+  const openLabel = data.open_request_count
+    ? `${data.open_request_count} autre${data.open_request_count > 1 ? "s" : ""} dossier${data.open_request_count > 1 ? "s" : ""} ${data.open_request_count > 1 ? "sont" : "est"} encore ouvert${data.open_request_count > 1 ? "s" : ""}, sans mise en place.`
+    : "";
+  return (
+    <div className="stack">
+      <p className="subsection-label">Crédits déjà accordés</p>
+      <p className="muted small">{receivedCreditSummary(data)}{openLabel ? ` ${openLabel}` : ""} Chaque crédit qui a une référence est relu dans le système bancaire.</p>
+      <div className="form-actions">
+        <Link className="btn btn-ghost" to={`/prets?client=${encodeURIComponent(clientId)}&status=ACTIVE`} target="_blank" rel="noreferrer">
+          Voir les crédits en cours
+        </Link>
+        <Link className="btn btn-ghost" to={`/dossiers?client=${encodeURIComponent(clientId)}`} target="_blank" rel="noreferrer">
+          Voir les autres dossiers
+        </Link>
+      </div>
+      {!!data.credits.length && (
+        <div className="table-scroll result-period-table">
+          <table className="table">
+            <thead>
+              <tr>
+                <th scope="col">Dossier</th>
+                <th scope="col">Produit</th>
+                <th scope="col">Montant</th>
+                <th scope="col">Mise en place</th>
+                <th scope="col">Situation locale</th>
+                <th scope="col">Système bancaire</th>
+              </tr>
+            </thead>
+            <tbody>
+              {data.credits.map((credit) => (
+                <tr key={credit.application_id}>
+                  <th scope="row">
+                    <Link to={`/dossiers/${credit.application_id}`} target="_blank" rel="noreferrer">
+                      {credit.application_reference || "Ouvrir le dossier"}
+                    </Link>
+                  </th>
+                  <td>{credit.product_label || "—"}</td>
+                  <td className="num">{formatMoney(credit.amount, credit.currency)}</td>
+                  <td>{credit.disbursed_at ? formatDate(credit.disbursed_at) : credit.application_status_display}</td>
+                  <td>{credit.loan_status_display || credit.application_status_display}</td>
+                  <td>
+                    {credit.cbs_status_label}
+                    {credit.cbs_outstanding != null && credit.cbs_outstanding !== "" ? ` · encours ${formatMoney(credit.cbs_outstanding, credit.cbs_currency || credit.currency)}` : ""}
+                    {credit.cbs_error ? ` · ${credit.cbs_error}` : ""}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
   );
 }
 

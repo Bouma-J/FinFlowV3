@@ -6313,6 +6313,11 @@ code {
 .sales-periods-add {
   margin-top: 22px;
 }
+.form-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
 .sales-periods {
   margin-bottom: 28px;
 }

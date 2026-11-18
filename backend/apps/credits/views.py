@@ -90,6 +90,7 @@ class CreditApplicationViewSet(AgencyScopedViewSet):
         "cbs_situation": ["credits.view_creditapplication"],
         "exposure": ["credits.view_creditapplication", "credits.view_creditexposureobservation"],
         "export_pdf": ["credits.view_creditapplication"],
+        "client_credits": ["credits.view_creditapplication"],
     }
     filterset_fields = [
         "status", "client", "product", "agency", "currency", "risk_level",
@@ -249,6 +250,34 @@ class CreditApplicationViewSet(AgencyScopedViewSet):
 
         application = self.get_object()
         return Response(build_readiness(application))
+
+    @action(detail=False, methods=["get"], url_path="client-credits")
+    def client_credits(self, request):
+        """Crédits déjà mis en place pour le client choisi, vérifiés au CBS."""
+        from apps.clients.models import Client
+        from apps.common.access import apply_data_scope
+
+        from .client_credits import received_credits
+
+        client_id = request.query_params.get("client")
+        if not client_id:
+            raise ValidationError({"client": "Choisissez un client."})
+        client = get_for_tenant(Client, client_id, error_field="client")
+        visible = apply_data_scope(
+            Client.all_tenants.filter(pk=client.pk, tenant_id=client.tenant_id),
+            request.user,
+        )
+        if not visible.exists():
+            raise PermissionDenied("Ce client est hors de votre périmètre.")
+        exclude = request.query_params.get("exclude") or None
+        if exclude:
+            get_for_tenant(CreditApplication, exclude, error_field="exclude")
+        tenant_id = get_current_tenant_id() or client.tenant_id
+        return Response(received_credits(
+            client=client,
+            tenant_id=tenant_id,
+            exclude_application_id=exclude,
+        ))
 
     @action(detail=True, methods=["get"])
     def exposure(self, request, pk=None):
@@ -1180,6 +1209,9 @@ class LoanViewSet(TenantScopedReadOnlyViewSet):
         agency = query_param(self.request, "agency")
         if agency:
             qs = qs.filter(application__agency_id=agency)
+        client = query_param(self.request, "client")
+        if client:
+            qs = qs.filter(application__client_id=client)
         after = query_param(self.request, "disbursed_after")
         if after:
             qs = qs.filter(disbursed_at__gte=after)
