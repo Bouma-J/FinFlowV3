@@ -78,11 +78,17 @@ def build_collateral_summary(application, thresholds=None) -> dict:
     amount = reference_amount(application)
     amount_dec = _dec(amount) if amount else Decimal("0")
 
-    guarantees = list(
-        application.guarantees.filter(status=Guarantee.Status.ACTIVE).select_related(
-            "surety", "client"
-        )
+    attached = list(
+        application.guarantees.exclude(
+            status__in=(
+                Guarantee.Status.RELEASED,
+                Guarantee.Status.REALIZED,
+                Guarantee.Status.TRANSFERRED,
+            )
+        ).select_related("surety", "client")
     )
+    guarantees = [g for g in attached if g.status == Guarantee.Status.ACTIVE]
+    pending = [g for g in attached if g.status == Guarantee.Status.PENDING]
     guarantee_rows = []
     total_retained = Decimal("0")
     total_gross = Decimal("0")
@@ -220,8 +226,14 @@ def build_collateral_summary(application, thresholds=None) -> dict:
             )
 
     product = getattr(application, "product", None)
+    for g in pending:
+        alerts.append(
+            f"Garantie {g.reference or g.pk} : en attente de formalisation, "
+            "non prise en couverture."
+        )
+
     requires_guarantee = bool(getattr(product, "requires_guarantee", False))
-    if requires_guarantee and not guarantees and not engagements:
+    if requires_guarantee and not attached and not engagements:
         alerts.append(
             "Le produit exige une garantie ou caution : aucune n'est rattachée."
         )

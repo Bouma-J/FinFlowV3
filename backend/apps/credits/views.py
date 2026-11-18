@@ -886,6 +886,11 @@ class CreditDocumentViewSet(TenantScopedViewSet):
 
 
 class FinancialAnalysisViewSet(TenantScopedViewSet):
+    action_perms = {
+        "update": ["credits.change_financialanalysis"],
+        "partial_update": ["credits.change_financialanalysis"],
+        "destroy": ["credits.change_financialanalysis"],
+    }
     queryset = (
         FinancialAnalysis.objects.select_related(
             "application", "application__client", "created_by"
@@ -933,33 +938,19 @@ class FinancialAnalysisViewSet(TenantScopedViewSet):
             author_role=user_role_label(self.request.user),
         )
 
-    def _assert_author(self, instance):
-        from apps.accounts.capabilities import is_tenant_administrator
+    def _assert_mutable(self, instance):
+        from .access import can_edit_financial_analysis
 
-        user = self.request.user
-        if not (
-            user.is_superuser
-            or is_tenant_administrator(user)
-            or instance.created_by_id == user.id
-        ):
+        if can_edit_financial_analysis(instance, self.request.user):
+            return
+        if instance.created_by_id != self.request.user.id:
             raise PermissionDenied(
                 "Seul l'auteur peut modifier ou supprimer cette analyse."
             )
-
-    def _assert_mutable(self, instance):
-        from .access import ANALYSIS_LOCKED_STATUSES, can_mutate_contribution
-
-        self._assert_author(instance)
-        if instance.application.status in ANALYSIS_LOCKED_STATUSES:
-            raise PermissionDenied(
-                "Cette analyse ne peut plus être modifiée : le dossier est "
-                "mis en place ou clôturé."
-            )
-        if not can_mutate_contribution(instance.application, self.request.user):
-            raise PermissionDenied(
-                "Cette analyse ne peut plus être modifiée : la fenêtre de "
-                "contribution est fermée."
-            )
+        raise PermissionDenied(
+            "Cette analyse ne peut plus être modifiée : le dossier est déjà "
+            "soumis. Elle redevient modifiable s'il est retourné."
+        )
 
     def perform_update(self, serializer):
         self._assert_mutable(serializer.instance)

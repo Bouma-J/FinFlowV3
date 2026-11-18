@@ -242,7 +242,10 @@ export function GuaranteesPage() {
                       <td>{g.type_display}</td>
                       <td className="num">{formatMoney(g.current_value)}</td>
                       <td>
-                        <Badge value={g.status} />
+                        <Badge
+                          value={g.status}
+                          label={g.status_display || g.status}
+                        />
                         {g.formalized_at ? (
                           <Badge value="OK" label="Formalisée" />
                         ) : null}

@@ -111,21 +111,11 @@ class FinancialAnalysisSerializer(serializers.ModelSerializer):
         return str(obj.created_by) if obj.created_by_id else ""
 
     def get_can_edit(self, obj):
-        from .access import ANALYSIS_LOCKED_STATUSES, can_mutate_contribution
+        from .access import can_edit_financial_analysis
 
         request = self.context.get("request")
-        if not request or not request.user.is_authenticated:
-            return False
-        if obj.application_id and obj.application.status in ANALYSIS_LOCKED_STATUSES:
-            return False
-        user = request.user
-        from apps.accounts.capabilities import is_tenant_administrator
-
-        if user.is_superuser or is_tenant_administrator(user):
-            return True
-        if obj.created_by_id != user.id:
-            return False
-        return can_mutate_contribution(obj.application, user)
+        user = getattr(request, "user", None)
+        return can_edit_financial_analysis(obj, user)
 
     @staticmethod
     def _to_plain(value):

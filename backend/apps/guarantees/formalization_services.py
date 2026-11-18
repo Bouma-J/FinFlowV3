@@ -1,8 +1,8 @@
 """Services métier : formalisation / constitution juridique des garanties.
 
-Par défaut le processus est parallèle au crédit (ne bloque pas la mise en place).
-La politique filiale ``require_formalization_before_disbursement`` peut le rendre
-bloquant via ``missing_formalizations_for_disbursement``.
+Une garantie n'est active qu'une fois sa formalisation clôturée.
+La politique filiale ``require_formalization_before_disbursement`` peut en
+plus bloquer la mise en place via ``missing_formalizations_for_disbursement``.
 """
 from __future__ import annotations
 
@@ -10,6 +10,7 @@ from datetime import date
 from decimal import Decimal, InvalidOperation
 
 from django.db import transaction
+from django.db.models import Q
 from django.utils import timezone
 
 from apps.workflow.models import WorkflowDefinition
@@ -46,9 +47,12 @@ def missing_formalizations_for_disbursement(application) -> list[str]:
     """
     qs = Guarantee.objects.filter(
         application_id=application.pk,
-        status=Guarantee.Status.ACTIVE,
         guarantee_type__in=_FORMALIZABLE_TYPES,
         formalized_at__isnull=True,
+        status__in=(
+            Guarantee.Status.PENDING,
+            Guarantee.Status.ACTIVE,
+        ),
     )
     return [
         g.reference or str(g.pk)
@@ -60,6 +64,13 @@ _EDITABLE_STATUSES = (
     GuaranteeFormalizationRequest.Status.IN_PROGRESS,
     GuaranteeFormalizationRequest.Status.RETURNED,
 )
+
+def _awaiting_formalization():
+    """Garantie pas encore active : la formalisation n'est pas clôturée."""
+    return Q(formalized_at__isnull=True) & Q(
+        status__in=(Guarantee.Status.PENDING, Guarantee.Status.ACTIVE)
+    )
+
 
 _LEGAL_STAGE_ORDER = [
     GuaranteeFormalizationRequest.LegalStage.NOT_SENT,
@@ -164,15 +175,24 @@ def initiate_formalization_request(
     as_draft=True,
 ):
     """
-    Ouvre un dossier de formalisation sur une garantie ACTIVE
+    Ouvre un dossier de formalisation sur une garantie encore non active,
     rattachée à un dossier de crédit.
 
-    N'altère pas le statut de la garantie (reste ACTIVE) → mise en place non bloqué.
+    La garantie reste en attente : elle ne devient active qu'à la clôture.
     """
-    if guarantee.status != Guarantee.Status.ACTIVE:
+    if guarantee.formalized_at:
+        raise ProcessError("Cette garantie est déjà formalisée.")
+    if guarantee.status not in (
+        Guarantee.Status.PENDING,
+        Guarantee.Status.ACTIVE,
+    ):
         raise ProcessError(
-            "Seule une garantie active peut faire l'objet d'une formalisation."
+            "Seule une garantie en attente de formalisation peut "
+            "faire l'objet d'une formalisation."
         )
+    if guarantee.status != Guarantee.Status.PENDING:
+        guarantee.status = Guarantee.Status.PENDING
+        guarantee.save(update_fields=["status", "updated_at"])
     if not guarantee.application_id:
         raise ProcessError(
             "La formalisation ne concerne que les garanties attachées "
@@ -224,15 +244,13 @@ def formalization_compose_context(*, client=None, application=None) -> dict:
         apps_qs = CreditApplication.objects.filter(pk=application.pk)
         guarantees_qs = Guarantee.objects.filter(
             application_id=application.pk,
-            status=Guarantee.Status.ACTIVE,
-        )
+        ).filter(_awaiting_formalization())
     else:
         apps_qs = CreditApplication.objects.filter(client_id=client.pk)
         guarantees_qs = Guarantee.objects.filter(
             client_id=client.pk,
-            status=Guarantee.Status.ACTIVE,
             application_id__isnull=False,
-        )
+        ).filter(_awaiting_formalization())
 
     from .busy import busy_map
 
@@ -246,9 +264,10 @@ def formalization_compose_context(*, client=None, application=None) -> dict:
         app_ids_with_gar = set(
             Guarantee.objects.filter(
                 client_id=client.pk,
-                status=Guarantee.Status.ACTIVE,
                 application_id__isnull=False,
-            ).values_list("application_id", flat=True)
+            )
+            .filter(_awaiting_formalization())
+            .values_list("application_id", flat=True)
         )
         apps_qs = apps_qs.filter(pk__in=app_ids_with_gar)
 
@@ -460,9 +479,7 @@ def submit_formalization_request(request: GuaranteeFormalizationRequest, *, user
 @transaction.atomic
 def complete_formalization_request(request: GuaranteeFormalizationRequest, *, user=None):
     """
-    Clôture la formalisation : enregistre les preuves sur la garantie.
-
-    Ne change pas le statut ACTIVE de la garantie (déjà collatéralisable).
+    Clôture la formalisation et rend la garantie active.
     """
     if request.status in (
         GuaranteeFormalizationRequest.Status.COMPLETED,
@@ -495,12 +512,19 @@ def complete_formalization_request(request: GuaranteeFormalizationRequest, *, us
     if request.registration_authority:
         guarantee.registration_authority = request.registration_authority
     guarantee.formalized_at = now
+    if guarantee.status not in (
+        Guarantee.Status.RELEASED,
+        Guarantee.Status.REALIZED,
+        Guarantee.Status.TRANSFERRED,
+    ):
+        guarantee.status = Guarantee.Status.ACTIVE
     guarantee.save(
         update_fields=[
             "registration_number",
             "registration_date",
             "registration_authority",
             "formalized_at",
+            "status",
             "updated_at",
         ]
     )

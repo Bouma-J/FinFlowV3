@@ -5501,6 +5501,13 @@ code {
   font-weight: 600;
   flex: 1;
 }
+.guarantee-dossier-status {
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 6px;
+}
 .link-list li svg {
   color: var(--brand);
 }

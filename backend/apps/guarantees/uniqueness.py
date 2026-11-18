@@ -65,7 +65,10 @@ def find_conflicting_guarantee(
         tenant_id = tenant_id or get_current_tenant_id()
         qs = (
             Guarantee.objects.filter(
-                status=Guarantee.Status.ACTIVE,
+                status__in=(
+                    Guarantee.Status.ACTIVE,
+                    Guarantee.Status.PENDING,
+                ),
                 guarantee_type=Guarantee.GuaranteeType.MORTGAGE,
                 document_type=document_type,
             )
@@ -90,7 +93,10 @@ def find_conflicting_guarantee(
         tenant_id = tenant_id or get_current_tenant_id()
         qs = (
             Guarantee.objects.filter(
-                status=Guarantee.Status.ACTIVE,
+                status__in=(
+                    Guarantee.Status.ACTIVE,
+                    Guarantee.Status.PENDING,
+                ),
                 guarantee_type=Guarantee.GuaranteeType.PLEDGE,
                 pledge_category=PledgeCategory.VEHICLE,
             )

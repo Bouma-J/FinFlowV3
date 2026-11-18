@@ -484,7 +484,7 @@ function ClientPortfolio({ client }: { client: Client }) {
                       {g.collection_stage_display || "Recouvrement"}
                     </Link>
                   ) : null}
-                  <Badge value={g.status} />
+                  <Badge value={g.status} label={g.status_display || g.status} />
                 </li>
               ))}
             </ul>

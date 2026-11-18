@@ -2032,6 +2032,13 @@ export interface Guarantee {
   // Suivi
   status: string;
   status_display?: string;
+  formalization?: {
+    id: string;
+    status: string;
+    status_display: string;
+    legal_stage: string;
+    legal_stage_display: string;
+  } | null;
   last_valuation_date: string | null;
   registration_number?: string;
   registration_date?: string | null;
@@ -2116,6 +2123,7 @@ export const GUARANTEE_LABELS = {
     WIDOWED: "Veuf/Veuve",
   } as Record<string, string>,
   status: {
+    PENDING: "En attente de formalisation",
     ACTIVE: "Active",
     RELEASED: "Mainlevée",
     REALIZED: "Réalisée",

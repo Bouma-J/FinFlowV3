@@ -1,4 +1,4 @@
-"""Tests formalisation de garantie : initiate, advance, complete — garantie reste ACTIVE."""
+"""Tests formalisation de garantie : la garantie n'est active qu'à la clôture."""
 from decimal import Decimal
 
 import pytest
@@ -7,6 +7,7 @@ from django.contrib.auth.models import Group
 
 from apps.common.tenancy import tenant_context
 from apps.credits.models import CreditApplication
+from apps.guarantees.serializers import GuaranteeListSerializer
 from apps.guarantees.formalization_services import (
     advance_legal_stage,
     complete_formalization_request,
@@ -151,7 +152,7 @@ def test_initiate_formalization_keeps_guarantee_active(
         assert req.application_id == app.pk
         assert req.fees.count() == 1
         assert req.fees_client_total == Decimal("25000")
-        assert g.status == Guarantee.Status.ACTIVE
+        assert g.status == Guarantee.Status.PENDING
         assert g.formalized_at is None
 
 
@@ -186,7 +187,7 @@ def test_advance_legal_stage(tenant_a, client_a, product_a, agent, form_circuit)
             == GuaranteeFormalizationRequest.LegalStage.SIGNED
         )
         g.refresh_from_db()
-        assert g.status == Guarantee.Status.ACTIVE
+        assert g.status == Guarantee.Status.PENDING
 
 
 def test_complete_formalization_stays_active(
@@ -224,3 +225,31 @@ def test_complete_formalization_stays_active(
             guarantee=g,
             movement_type=GuaranteeMovement.MovementType.FORMALIZATION,
         ).exists()
+
+
+def test_dossier_guarantee_status_follows_formalization(
+    tenant_a, client_a, product_a, agent, form_circuit
+):
+    with tenant_context(tenant_a.id):
+        app = _app(tenant_a, client_a, product_a, ref="CR-FORM-4")
+        g = _guarantee(tenant_a, client_a, app, ref="GAR-FORM-4")
+        assert GuaranteeListSerializer(g).data["formalization"] is None
+
+        req = initiate_formalization_request(
+            guarantee=g, user=agent, as_draft=True
+        )
+        reading = GuaranteeListSerializer(g).data["formalization"]
+        assert reading["status"] == GuaranteeFormalizationRequest.Status.DRAFT
+        assert reading["status_display"] == "Brouillon"
+        assert reading["legal_stage"] == GuaranteeFormalizationRequest.LegalStage.NOT_SENT
+
+        advance_legal_stage(
+            req,
+            GuaranteeFormalizationRequest.LegalStage.AT_NOTARY,
+            user=agent,
+            notary_name="Me Diallo",
+        )
+        reading = GuaranteeListSerializer(g).data["formalization"]
+        assert reading["status"] == GuaranteeFormalizationRequest.Status.IN_PROGRESS
+        assert reading["legal_stage"] == GuaranteeFormalizationRequest.LegalStage.AT_NOTARY
+        assert reading["legal_stage_display"] == "Chez le notaire"

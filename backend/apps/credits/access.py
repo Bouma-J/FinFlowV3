@@ -8,8 +8,12 @@ Une contribution (analyse financière, visite terrain) peut être ajoutée par :
   crédit et risque et l'analyste crédit, sur tous les dossiers de la filiale ;
 - le chef d'agence, uniquement sur les dossiers de son agence.
 
-Modification / suppression : auteur **et** encore contributeur
-(ou super-administrateur, ou administrateur filiale).
+Modification / suppression d'une visite : auteur et fenêtre de contribution
+encore ouverte (ou super-administrateur, ou administrateur filiale).
+
+Une analyse financière se consulte par toute personne qui voit le dossier.
+Seul son auteur la modifie ou la supprime, et seulement tant que le dossier
+n'est pas soumis ou après un retour.
 """
 from django.contrib.contenttypes.models import ContentType
 
@@ -32,7 +36,13 @@ _OPEN_STATUSES = {
     CreditApplication.Status.RETURNED,
 }
 
-# Plus d'ajout / modification d'analyse financière après mise en place.
+# L'auteur peut encore modifier ou supprimer son analyse.
+ANALYSIS_AUTHOR_MUTABLE_STATUSES = {
+    CreditApplication.Status.DRAFT,
+    CreditApplication.Status.RETURNED,
+}
+
+# Plus d'ajout d'analyse financière après mise en place.
 ANALYSIS_LOCKED_STATUSES = {
     CreditApplication.Status.DISBURSED,
     CreditApplication.Status.CLOSED,
@@ -139,6 +149,18 @@ def _open_instruction_scope(application, user):
         and application.status in _OPEN_STATUSES
         and covers_dossier_contribution(application, user)
     )
+
+
+def can_edit_financial_analysis(analysis, user):
+    """L'auteur modifie ou supprime son analyse sur un dossier non soumis ou retourné."""
+    if not user or not getattr(user, "is_authenticated", False):
+        return False
+    if getattr(analysis, "created_by_id", None) != user.id:
+        return False
+    application = getattr(analysis, "application", None)
+    if application is None:
+        return False
+    return application.status in ANALYSIS_AUTHOR_MUTABLE_STATUSES
 
 
 def can_add_financial_analysis(application, user):

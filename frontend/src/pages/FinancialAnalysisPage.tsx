@@ -1,20 +1,20 @@
 import { useQuery } from "@tanstack/react-query";
 import { ArrowLeft, LineChart } from "lucide-react";
-import { Link, useNavigate, useParams } from "react-router-dom";
+import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
 
 import { api } from "@/api/client";
 import type { CreditApplication, FinancialAnalysis } from "@/api/types";
-import { useAuth } from "@/auth/AuthContext";
-import { hasPerm } from "@/auth/permissions";
 import { FinancialAnalysisForm } from "@/components/FinancialAnalysisForm";
+import { FinancialAnalysisReadout } from "@/components/FinancialAnalysisReadout";
 import { ErrorState, PageHeader, Spinner } from "@/components/ui";
 
 const ANALYSIS_LOCKED = ["DISBURSED", "CLOSED", "CANCELLED", "REJECTED"];
 
 export function FinancialAnalysisPage() {
   const { id, analysisId } = useParams<{ id: string; analysisId?: string }>();
+  const [searchParams] = useSearchParams();
   const navigate = useNavigate();
-  const { user } = useAuth();
+  const readOnly = searchParams.get("lecture") === "1";
 
   const {
     data: app,
@@ -97,43 +97,32 @@ export function FinancialAnalysisPage() {
 
   const backTo = `/dossiers/${id}`;
   const isEdit = !!analysisId;
-  const uid = user?.id;
-  const isSuper = !!user?.is_superuser;
-  const isFilialeAdmin = !!user?.capabilities?.includes("tenant_admin");
-  const canChange = hasPerm(user, "credits.change_financialanalysis");
   const analysisLocked = ANALYSIS_LOCKED.includes(app.status);
   const canContributeWindow = app.can_add_financial_analysis === true;
+  const canEditExisting = existing?.can_edit === true && !readOnly;
 
-  if (isEdit) {
-    const isAuthor = isSuper || isFilialeAdmin || (!!uid && existing?.created_by === uid);
-    if (
-      analysisLocked ||
-      !canChange ||
-      !isAuthor ||
-      !(existing?.can_edit || ((isSuper || isFilialeAdmin) && !analysisLocked))
-    ) {
-      return (
-        <div className="page-shell">
-          <PageHeader
-            icon={LineChart}
-            title="Analyse financière"
-            subtitle="Accès refusé"
-            actions={
-              <Link className="btn btn-ghost" to={backTo}>
-                <ArrowLeft />
-                Retour au dossier
-              </Link>
-            }
-          />
-          <p className="form-error">
-            {analysisLocked
-              ? "Ce dossier est mis en place ou clôturé : l'analyse financière n'est plus modifiable."
-              : "Vous ne pouvez pas modifier cette analyse (droits insuffisants ou fenêtre de contribution fermée)."}
-          </p>
-        </div>
-      );
-    }
-  } else if (!canContributeWindow) {
+  if (isEdit && existing && !canEditExisting) {
+    return (
+      <div className="page-shell">
+        <PageHeader
+          icon={LineChart}
+          title="Consulter l'analyse financière"
+          subtitle={`${app.client_display} · dossier ${app.reference || app.id.slice(0, 8)}`}
+          actions={
+            <Link className="btn btn-ghost" to={backTo}>
+              <ArrowLeft />
+              Retour au dossier
+            </Link>
+          }
+        />
+        <p className="muted small">Lecture seule. La modification et la suppression restent réservées à l&apos;auteur tant que le dossier n&apos;est pas soumis, ou après un retour.</p>
+        <FinancialAnalysisReadout analysis={existing} currency={app.currency} part="topics" />
+        <FinancialAnalysisReadout analysis={existing} currency={app.currency} part="indicators" />
+      </div>
+    );
+  }
+
+  if (!isEdit && !canContributeWindow) {
     return (
       <div>
         <PageHeader

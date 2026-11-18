@@ -161,7 +161,7 @@ def assert_analysis_ready_for_submission(application):
     product = application.product
     if product and getattr(product, "requires_guarantee", False):
         has_g = application.guarantees.filter(
-            status=Guarantee.Status.ACTIVE
+            status__in=(Guarantee.Status.ACTIVE, Guarantee.Status.PENDING)
         ).exists()
         has_s = SuretyEngagement.objects.filter(
             application=application,

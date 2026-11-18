@@ -92,6 +92,43 @@ def _open_formalization_id(guarantee) -> str | None:
     return str(req.id) if req else None
 
 
+def _current_formalization(guarantee):
+    """Formalisation qui dicte le statut visible de la garantie.
+
+    Un dossier encore ouvert prime sur une clôture, qui prime sur le dernier
+    rejet ou la dernière annulation.
+    """
+    requests = list(guarantee.formalization_requests.all())
+    if not requests:
+        return None
+    open_statuses = set(_OPEN_FORMALIZATION_STATUSES)
+    completed = GuaranteeFormalizationRequest.Status.COMPLETED
+
+    def latest(items):
+        return max(items, key=lambda req: (req.created_at, req.pk))
+
+    opened = [req for req in requests if req.status in open_statuses]
+    if opened:
+        return latest(opened)
+    done = [req for req in requests if req.status == completed]
+    if done:
+        return latest(done)
+    return latest(requests)
+
+
+def _formalization_reading(guarantee) -> dict | None:
+    req = _current_formalization(guarantee)
+    if req is None:
+        return None
+    return {
+        "id": str(req.id),
+        "status": req.status,
+        "status_display": req.get_status_display(),
+        "legal_stage": req.legal_stage,
+        "legal_stage_display": req.get_legal_stage_display(),
+    }
+
+
 def _completed_dation_id(guarantee) -> str | None:
     """Dation qui a réalisé cette garantie (bien source)."""
     link = (
@@ -234,6 +271,9 @@ class GuaranteeListSerializer(serializers.ModelSerializer):
     type_display = serializers.CharField(
         source="get_guarantee_type_display", read_only=True
     )
+    status_display = serializers.CharField(
+        source="get_status_display", read_only=True
+    )
     renewed_from_reference = serializers.CharField(
         source="renewed_from.reference", read_only=True, default=None
     )
@@ -248,6 +288,7 @@ class GuaranteeListSerializer(serializers.ModelSerializer):
     completed_dation_id = serializers.SerializerMethodField()
     origin_dation_id = serializers.SerializerMethodField()
     process_busy = serializers.SerializerMethodField()
+    formalization = serializers.SerializerMethodField()
 
     class Meta:
         model = Guarantee
@@ -256,9 +297,10 @@ class GuaranteeListSerializer(serializers.ModelSerializer):
             "pledge_category", "client", "client_display",
             "application", "application_reference",
             "belongs_to_applicant", "surety", "surety_display",
-            "current_value", "ltv_ratio", "status",
+            "current_value", "ltv_ratio", "status", "status_display",
             "registration_number", "registration_date",
             "registration_authority", "formalized_at",
+            "formalization",
             "open_formalization_id", "open_dation_id", "open_release_id",
             "completed_dation_id", "origin_dation_id", "process_busy",
             "collection_case_id", "collection_stage_display",
@@ -307,6 +349,9 @@ class GuaranteeListSerializer(serializers.ModelSerializer):
 
         return guarantee_busy(obj)
 
+    def get_formalization(self, obj):
+        return _formalization_reading(obj)
+
 
 class GuaranteeSerializer(serializers.ModelSerializer):
     movements = GuaranteeMovementSerializer(many=True, read_only=True)
@@ -334,6 +379,7 @@ class GuaranteeSerializer(serializers.ModelSerializer):
     completed_dation_id = serializers.SerializerMethodField()
     origin_dation_id = serializers.SerializerMethodField()
     process_busy = serializers.SerializerMethodField()
+    formalization = serializers.SerializerMethodField()
     accept_existing = serializers.BooleanField(
         write_only=True, required=False, default=False
     )
@@ -390,6 +436,7 @@ class GuaranteeSerializer(serializers.ModelSerializer):
             "jewelry_items", "renewed_from", "renewed_from_reference",
             "registration_number", "registration_date",
             "registration_authority", "formalized_at",
+            "formalization",
             "open_formalization_id", "open_dation_id", "open_release_id",
             "completed_dation_id", "origin_dation_id", "process_busy",
             "accept_existing",
@@ -402,6 +449,7 @@ class GuaranteeSerializer(serializers.ModelSerializer):
             "collection_case_id", "collection_stage_display",
             "registration_number", "registration_date",
             "registration_authority", "formalized_at",
+            "formalization",
             "open_formalization_id", "open_dation_id", "open_release_id",
             "completed_dation_id", "origin_dation_id", "process_busy",
             "created_at", "updated_at",
@@ -452,6 +500,9 @@ class GuaranteeSerializer(serializers.ModelSerializer):
         from .busy import guarantee_busy
 
         return guarantee_busy(obj)
+
+    def get_formalization(self, obj):
+        return _formalization_reading(obj)
 
     def to_representation(self, instance):
         return presign_file_fields(

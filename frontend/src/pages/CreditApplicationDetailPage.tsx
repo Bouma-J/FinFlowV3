@@ -224,6 +224,98 @@ function friendlyCbsSituationError(e: unknown): string {
   return raw;
 }
 
+function formalizationTone(
+  status: string,
+): "success" | "warning" | "danger" | "info" | "muted" {
+  switch (status) {
+    case "COMPLETED":
+    case "APPROVED":
+      return "success";
+    case "REJECTED":
+      return "danger";
+    case "RETURNED":
+      return "warning";
+    case "IN_PROGRESS":
+    case "IN_APPROVAL":
+      return "info";
+    default:
+      return "muted";
+  }
+}
+
+const FORMALIZATION_STATUS_LABEL: Record<string, string> = {
+  DRAFT: "Formalisation : brouillon",
+  IN_PROGRESS: "Formalisation en cours",
+  IN_APPROVAL: "Formalisation en validation",
+  APPROVED: "Formalisation approuvée",
+  RETURNED: "Formalisation retournée",
+  REJECTED: "Formalisation rejetée",
+  CANCELLED: "Formalisation annulée",
+  COMPLETED: "Formalisée",
+};
+
+function GuaranteeDossierStatus({ g }: { g: Guarantee }) {
+  const formalization = g.formalization;
+  if (
+    g.status === "RELEASED" ||
+    g.status === "REALIZED" ||
+    g.status === "TRANSFERRED"
+  ) {
+    return (
+      <span className="guarantee-dossier-status">
+        <Badge
+          value={g.status}
+          label={lbl(GUARANTEE_LABELS.status, g.status)}
+        />
+      </span>
+    );
+  }
+  if (g.status === "ACTIVE") {
+    return (
+      <span className="guarantee-dossier-status">
+        <Badge
+          value="ACTIVE"
+          label="Active"
+          tone="success"
+          title="Formalisation terminée"
+        />
+      </span>
+    );
+  }
+  if (!formalization) {
+    return (
+      <span className="guarantee-dossier-status">
+        <Badge value="PENDING" label="Non formalisée" tone="muted" />
+      </span>
+    );
+  }
+  const showStage =
+    !!formalization.legal_stage &&
+    formalization.legal_stage !== "NOT_SENT" &&
+    formalization.status !== "COMPLETED" &&
+    formalization.status !== "CANCELLED" &&
+    formalization.status !== "REJECTED";
+  return (
+    <span className="guarantee-dossier-status">
+      <Badge
+        value={formalization.status}
+        label={
+          FORMALIZATION_STATUS_LABEL[formalization.status] ||
+          formalization.status_display ||
+          formalization.status
+        }
+        tone={formalizationTone(formalization.status)}
+        title="Statut de formalisation"
+      />
+      {showStage && (
+        <em className="muted small">
+          {formalization.legal_stage_display || formalization.legal_stage}
+        </em>
+      )}
+    </span>
+  );
+}
+
 function describeGuarantee(g: Guarantee): string {
   if (g.guarantee_type === "MORTGAGE") {
     return [g.document_number, g.address].filter(Boolean).join(" — ");
@@ -748,6 +840,13 @@ function AnalysisDetail({
   appId: string;
   paymentCycle?: { client: number | null; supplier: number | null };
 }) {
+  const qc = useQueryClient();
+  const removeAnalysis = useMutation({
+    mutationFn: async () => api.delete(`/financial-analyses/${analysis.id}/`),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["financial-analysis", appId] });
+    },
+  });
   const cur = currency;
   const isCorp = analysis.client_type === "CORPORATE";
   const isGroupement = analysis.client_type === "PROFESSIONAL";
@@ -805,6 +904,13 @@ function AnalysisDetail({
               }
             />
           )}
+          <Link
+            className="btn btn-ghost btn-sm"
+            to={`/dossiers/${appId}/analyse-financiere/${analysis.id}?lecture=1`}
+          >
+            <FileText size={14} />
+            Consulter
+          </Link>
           {analysis.can_edit && (
             <Link
               className="btn btn-ghost btn-sm"
@@ -814,8 +920,22 @@ function AnalysisDetail({
               {analysis.is_draft ? "Continuer" : "Modifier"}
             </Link>
           )}
+          {analysis.can_edit && (
+            <button
+              type="button"
+              className="btn btn-ghost btn-sm"
+              disabled={removeAnalysis.isPending}
+              onClick={() => {
+                if (window.confirm("Supprimer cette analyse financière ?")) removeAnalysis.mutate();
+              }}
+            >
+              <Trash2 size={14} />
+              Supprimer
+            </button>
+          )}
         </div>
       </div>
+      {removeAnalysis.isError && <p className="form-error">La suppression n&apos;a pas abouti. Le dossier est peut-être déjà soumis.</p>}
 
       <p className="muted small" style={{ marginTop: 0 }}>
         {pathLabel(path)}{" "}
@@ -3265,7 +3385,7 @@ export function CreditApplicationDetailPage() {
                         <> · Couverture {(Number(g.ltv_ratio) * 100).toFixed(0)} %</>
                       )}
                     </span>
-                    <Badge value={g.status} />
+                    <GuaranteeDossierStatus g={g} />
                   </li>
                 ))}
               </ul>

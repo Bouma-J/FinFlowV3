@@ -209,7 +209,7 @@ def renew_guarantee(
         client_id=application.client_id,
         application=application,
         renewed_from=source,
-        status=Guarantee.Status.ACTIVE,
+        status=Guarantee.Status.PENDING,
         created_by=user,
         updated_by=user,
     )

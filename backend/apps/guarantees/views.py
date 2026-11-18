@@ -130,7 +130,7 @@ class GuaranteeViewSet(AgencyScopedViewSet):
         elif formalized == "0":
             qs = qs.filter(formalized_at__isnull=True)
         if self.action == "list":
-            return qs
+            return qs.prefetch_related("formalization_requests")
         return qs.select_related("surety").prefetch_related(
             "movements", "photos", "jewelry_items", "documents",
         )

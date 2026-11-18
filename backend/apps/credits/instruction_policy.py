@@ -196,7 +196,7 @@ def build_readiness(application) -> dict:
 
     if product and getattr(product, "requires_guarantee", False):
         has_g = application.guarantees.filter(
-            status=Guarantee.Status.ACTIVE
+            status__in=(Guarantee.Status.ACTIVE, Guarantee.Status.PENDING)
         ).exists()
         has_s = SuretyEngagement.objects.filter(
             application=application,
@@ -204,7 +204,7 @@ def build_readiness(application) -> dict:
         ).exists()
         add(
             "collateral_presence",
-            "Garantie ou caution active (exigée par le produit)",
+            "Garantie ou caution rattachée (exigée par le produit)",
             has_g or has_s,
             message=""
             if has_g or has_s

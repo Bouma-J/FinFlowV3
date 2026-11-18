@@ -194,7 +194,7 @@ export function GuaranteeDetailPage({
     !busy &&
     hasPerm(user, "guarantees.initiate_guaranteereleaserequest");
   const canFormalize =
-    g.status === "ACTIVE" &&
+    (g.status === "PENDING" || g.status === "ACTIVE") &&
     !!g.application &&
     !busy &&
     !g.formalized_at &&

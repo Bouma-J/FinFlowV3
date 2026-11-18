@@ -280,7 +280,7 @@ def test_renew_active_mortgage_excludes_source(
         assert clone.pk != source.pk
         assert clone.renewed_from_id == source.pk
         assert clone.document_number == source.document_number
-        assert clone.status == Guarantee.Status.ACTIVE
+        assert clone.status == Guarantee.Status.PENDING
 
 
 def test_renew_blocked_when_other_active_same_title(
