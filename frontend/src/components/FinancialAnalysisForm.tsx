@@ -1947,7 +1947,7 @@ export function FinancialAnalysisForm({
                 {recap.perCapita !== null && <RecapItem label={`Reste à vivre / personne (${(dependents ?? 0) + 1})`} value={formatMoney(recap.perCapita, cur)} />}
                 <RecapItem label="Échéance institution maximale" value={recordedInstallment == null ? "—" : formatMoney(recordedInstallment, cur)} />
                 <RecapItem label="Taux d'endettement (%)" value={liveDebtRatio == null ? "—" : new Intl.NumberFormat("fr-FR", { minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(liveDebtRatio)} />
-                <RecapItem label="Score interne (/100)" value={initial?.internal_score ? initial.internal_score : "—"} />
+                <RecapItem label="Score enregistré (/100)" value={initial?.internal_score ? initial.internal_score : "—"} />
               </div>
             </FormSection>
           </>}

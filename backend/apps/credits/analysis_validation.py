@@ -264,12 +264,7 @@ def _purpose_test_failures(application, reference, detailed):
             and getattr(client, "client_type", "") == "INDIVIDUAL"
         )
         needs_delay = not informal_service or _dec(reference.activity_receivables) > 0
-        informal_activity = (
-            getattr(application, "tax_regime", "") == "INFORMAL"
-            and getattr(client, "client_type", "") == "INDIVIDUAL"
-            and reference.is_individual
-        )
-        if needs_delay and not informal_activity and details.get("receivable_delay_days") in (None, ""):
+        if needs_delay and details.get("receivable_delay_days") in (None, ""):
             failures.append(
                 "Cet objet exige l'allongement des créances : indiquez le retard clients, y compris zéro s'il n'y en a pas."
             )

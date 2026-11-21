@@ -488,7 +488,7 @@ def test_submit_then_proposed_amount_updates_workflow_instance(
             application=app,
             is_reference=True,
             recommendation=FinancialAnalysis.Recommendation.FAVORABLE,
-            salary_income=Decimal("300000"),
+            salary_income=Decimal("2500000"),
             client_type=client_a.client_type,
         )
         submit_application(app, submitter)

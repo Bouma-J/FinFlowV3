@@ -618,6 +618,7 @@ class GuaranteeReleaseRequest(TenantScopedModel, AuthoredModel):
     acte_generated = models.FileField(
         "acte généré",
         upload_to=release_acte_upload_path,
+        max_length=255,
         blank=True,
         null=True,
     )
@@ -627,6 +628,7 @@ class GuaranteeReleaseRequest(TenantScopedModel, AuthoredModel):
     acte_signed = models.FileField(
         "acte signé",
         upload_to=release_acte_upload_path,
+        max_length=255,
         blank=True,
         null=True,
     )
@@ -1136,18 +1138,21 @@ class GuaranteeFormalizationRequest(TenantScopedModel, AuthoredModel):
     acte_file = models.FileField(
         "projet / acte",
         upload_to=formalization_acte_upload_path,
+        max_length=255,
         blank=True,
         null=True,
     )
     acte_signed_file = models.FileField(
         "acte signé",
         upload_to=formalization_acte_upload_path,
+        max_length=255,
         blank=True,
         null=True,
     )
     registration_proof = models.FileField(
         "preuve d'enregistrement",
         upload_to=formalization_acte_upload_path,
+        max_length=255,
         blank=True,
         null=True,
     )

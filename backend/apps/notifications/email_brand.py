@@ -57,12 +57,10 @@ def branded_shell(tenant, inner_html: str) -> str:
     label = ""
     if tenant is not None:
         label = (getattr(tenant, "name", None) or getattr(tenant, "code", None) or "").strip()
-    header = ""
-    if label:
-        header = (
-            f'<div style="background:{colors["sidebar"]};color:{colors["sidebar_text"]};'
-            f'padding:14px 18px;font-weight:600;">{escape(label)}</div>'
-        )
+    header = (
+        f'<div style="background:{colors["sidebar"]};color:{colors["sidebar_text"]};'
+        f'padding:14px 18px;font-weight:600;">{escape(label) if label else "&nbsp;"}</div>'
+    )
     return f"""
     <div style="font-family:Segoe UI,Arial,sans-serif;font-size:14px;color:#17231f;max-width:560px;">
       {header}

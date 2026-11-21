@@ -190,9 +190,6 @@ def initiate_formalization_request(
             "Seule une garantie en attente de formalisation peut "
             "faire l'objet d'une formalisation."
         )
-    if guarantee.status != Guarantee.Status.PENDING:
-        guarantee.status = Guarantee.Status.PENDING
-        guarantee.save(update_fields=["status", "updated_at"])
     if not guarantee.application_id:
         raise ProcessError(
             "La formalisation ne concerne que les garanties attachées "
@@ -203,6 +200,9 @@ def initiate_formalization_request(
     busy = guarantee_busy(guarantee)
     if busy:
         raise ProcessError(busy["message"])
+    if guarantee.status != Guarantee.Status.PENDING:
+        guarantee.status = Guarantee.Status.PENDING
+        guarantee.save(update_fields=["status", "updated_at"])
 
     ensure_formalization_document_categories(guarantee.tenant)
     req = GuaranteeFormalizationRequest(
@@ -379,6 +379,21 @@ def advance_legal_stage(
         raise ProcessError(
             "Passez par la clôture du dossier pour marquer la formalisation terminée."
         )
+    try:
+        current_rank = _LEGAL_STAGE_ORDER.index(request.legal_stage)
+        target_rank = _LEGAL_STAGE_ORDER.index(legal_stage)
+    except ValueError as exc:
+        raise ProcessError("Étape juridique invalide.") from exc
+    if target_rank < current_rank:
+        raise ProcessError("L'étape juridique ne peut pas revenir en arrière.")
+    registration_number = extra.get("registration_number", request.registration_number)
+    if (
+        legal_stage == GuaranteeFormalizationRequest.LegalStage.REGISTERED
+        and not str(registration_number or "").strip()
+    ):
+        raise ProcessError(
+            "Indiquez le numéro d'enregistrement pour passer à « Enregistré »."
+        )
 
     request.legal_stage = legal_stage
     if request.status == GuaranteeFormalizationRequest.Status.DRAFT:
@@ -504,6 +519,32 @@ def complete_formalization_request(request: GuaranteeFormalizationRequest, *, us
         )
 
     guarantee = request.guarantee
+    if guarantee.guarantee_type in _FORMALIZABLE_TYPES:
+        if request.legal_stage not in (
+            GuaranteeFormalizationRequest.LegalStage.REGISTERED,
+            GuaranteeFormalizationRequest.LegalStage.DONE,
+        ):
+            raise ProcessError(
+                "Une hypothèque, un gage ou un nantissement ne devient actif "
+                "qu'après enregistrement ou publicité."
+            )
+        if not (request.registration_number or "").strip():
+            raise ProcessError(
+                "Le numéro d'enregistrement est obligatoire avant de rendre "
+                "cette garantie active."
+            )
+        has_signed_proof = bool(request.acte_signed_file) or bool(
+            request.registration_proof
+        )
+        if not has_signed_proof:
+            has_signed_proof = formalization_documents(request).filter(
+                category__code__in=("FORM_ACTE_SIGNE", "FORM_ENREGISTREMENT")
+            ).exists()
+        if not has_signed_proof:
+            raise ProcessError(
+                "Déposez l'acte signé ou la preuve d'enregistrement avant "
+                "de clôturer la formalisation."
+            )
     now = timezone.now()
     if request.registration_number:
         guarantee.registration_number = request.registration_number

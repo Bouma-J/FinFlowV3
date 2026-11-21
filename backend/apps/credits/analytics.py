@@ -567,7 +567,11 @@ def _apply_campaign_capacity(m, flags, analysis, th, existing, total_effort, ins
 
 
 def _apply_creation_dscr(m, flags, analysis, th):
-    """En création, le DSCR suit la prévision. Le taux d'endettement reste historique."""
+    """En création, la capacité et le DSCR suivent la prévision.
+
+    Le taux d'endettement historique n'est pas recalculé : il n'y a pas
+    encore de revenu passé.
+    """
     if not getattr(analysis, "uses_creation", False):
         return
     has_forecast = (
@@ -576,18 +580,31 @@ def _apply_creation_dscr(m, flags, analysis, th):
     )
     if not has_forecast:
         m["dscr_basis"] = "missing_forecast"
+        flags["capacity_ok"] = False
         return
-    surplus = analysis.projected_monthly_surplus
+    surplus = _dec(analysis.projected_monthly_surplus)
     service = m.get("global_debt_service")
+    effort = _dec(m.get("total_cash_effort"))
+    household = _dec(analysis.monthly_household_charges)
     stress = _dec(th.stress_pct) / Decimal("100")
-    stressed = _dec(analysis.projected_monthly_inflows) * (Decimal("1") - stress) - _dec(analysis.projected_monthly_outflows)
+    stressed = (
+        _dec(analysis.projected_monthly_inflows) * (Decimal("1") - stress)
+        - _dec(analysis.projected_monthly_outflows)
+    )
+    cover = surplus - household
+    stressed_cover = stressed - household
     m["dscr_basis"] = "forecast"
     m["forecast_monthly_surplus"] = _q(surplus)
     m["dscr"] = _q(_div(surplus, m.get("installment")))
     m["global_dscr"] = _q(_div(surplus, service))
     m["dscr_stress"] = _q(_div(stressed, service))
+    m["repayment_capacity"] = _q(surplus - household - _dec(analysis.existing_debt_monthly))
+    m["safety_margin"] = _q(cover - effort)
+    m["income_positive"] = surplus > 0
     flags["dscr_ok"] = _cmp_ge(m["global_dscr"], th.min_dscr)
     flags["dscr_stress_ok"] = _cmp_ge(m["dscr_stress"], th.min_dscr)
+    flags["capacity_ok"] = surplus > 0 and cover >= effort
+    flags["capacity_stress_ok"] = stressed > 0 and stressed_cover >= effort
 
 
 def _cmp_ge(value, threshold):
@@ -729,10 +746,21 @@ def compute_score(analysis, m, th, *, grid=None):
             stability_s = Decimal("100")
         elif quota_ok is False:
             stability_s = Decimal("20")
+        if analysis.individual_profile == "INDEPENDANT":
+            seniority_points = [analysis.activity_business_age_months]
+        elif analysis.individual_profile == "MIXTE":
+            seniority_points = [
+                analysis.employment_seniority_months,
+                analysis.activity_business_age_months,
+            ]
+        else:
+            seniority_points = [analysis.employment_seniority_months]
+        known_seniority = [value for value in seniority_points if value is not None]
         seniority = (
-            analysis.activity_business_age_months
-            if analysis.individual_profile == "INDEPENDANT"
-            else analysis.employment_seniority_months
+            sum((Decimal(value) for value in known_seniority), Decimal("0"))
+            / Decimal(len(known_seniority))
+            if known_seniority
+            else None
         )
         if seniority is not None:
             stability_s = _avg([

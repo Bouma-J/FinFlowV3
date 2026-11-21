@@ -210,9 +210,16 @@ def test_complete_formalization_stays_active(
             registration_date="2024-01-15",
             registration_authority="Conservation",
         )
+        from django.core.files.base import ContentFile
+
         req.refresh_from_db()
+        req.registration_proof.save(
+            "preuve-enregistrement.pdf",
+            ContentFile(b"preuve d'enregistrement"),
+            save=False,
+        )
         req.status = GuaranteeFormalizationRequest.Status.APPROVED
-        req.save(update_fields=["status", "updated_at"])
+        req.save(update_fields=["status", "registration_proof", "updated_at"])
         complete_formalization_request(req, user=agent)
         req.refresh_from_db()
         g.refresh_from_db()

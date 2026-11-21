@@ -116,6 +116,10 @@ const COMPLETABLE_STAGES = [
   "DONE",
 ];
 
+const REGISTRATION_GUARANTEE_TYPES = ["MORTGAGE", "PLEDGE", "LIEN"];
+
+const REGISTERED_STAGES = ["REGISTERED", "DONE"];
+
 function legalStageLabel(value: string, display?: string) {
   return (
     display ||
@@ -1186,10 +1190,15 @@ export function FormalizationDetailPage() {
   const canSubmit =
     canInitiate &&
     ["DRAFT", "IN_PROGRESS", "RETURNED"].includes(r.status);
+  const needsRegistration = REGISTRATION_GUARANTEE_TYPES.includes(
+    r.guarantee_type || "",
+  );
   const canComplete =
     canInitiate &&
     r.status === "APPROVED" &&
-    COMPLETABLE_STAGES.includes(r.legal_stage);
+    (needsRegistration ? REGISTERED_STAGES : COMPLETABLE_STAGES).includes(
+      r.legal_stage,
+    );
   const canUploadDocs =
     canInitiate &&
     !["COMPLETED", "CANCELLED", "REJECTED"].includes(r.status);
@@ -1316,11 +1325,10 @@ export function FormalizationDetailPage() {
                 type="button"
                 className="btn btn-banner btn-banner-primary"
                 onClick={() => {
-                  if (
-                    !window.confirm(
-                      "Clôturer cette formalisation et reporter les preuves sur la garantie ?",
-                    )
-                  ) {
+                  const message = needsRegistration
+                    ? "Clôturer cette formalisation ? La garantie devient active seulement après l'enregistrement, avec le numéro et l'acte signé ou la preuve."
+                    : "Clôturer cette formalisation et reporter les preuves sur la garantie ?";
+                  if (!window.confirm(message)) {
                     return;
                   }
                   complete.mutate();
@@ -1655,6 +1663,9 @@ export function FormalizationDetailPage() {
                 <p className="muted small">
                   Faites progresser le parcours juridique. Les champs
                   contextuels s&apos;affichent selon l&apos;étape choisie.
+                  {needsRegistration
+                    ? " Hypothèque, gage et nantissement se clôturent à l'enregistrement, avec le numéro et l'acte signé ou la preuve."
+                    : ""}
                 </p>
                 <div className="form-grid" style={{ marginTop: 10 }}>
                   <label className="field full-span">

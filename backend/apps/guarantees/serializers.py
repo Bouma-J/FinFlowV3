@@ -1159,6 +1159,9 @@ class GuaranteeFormalizationRequestSerializer(serializers.ModelSerializer):
     guarantee_reference = serializers.CharField(
         source="guarantee.reference", read_only=True, default=None
     )
+    guarantee_type = serializers.CharField(
+        source="guarantee.guarantee_type", read_only=True, default=None
+    )
     fees = FormalizationFeeSerializer(many=True, read_only=True)
     acte_file_url = serializers.SerializerMethodField()
     acte_signed_file_url = serializers.SerializerMethodField()
@@ -1171,6 +1174,7 @@ class GuaranteeFormalizationRequestSerializer(serializers.ModelSerializer):
             "reference",
             "guarantee",
             "guarantee_reference",
+            "guarantee_type",
             "client",
             "client_display",
             "application",
@@ -1217,6 +1221,7 @@ class GuaranteeFormalizationRequestSerializer(serializers.ModelSerializer):
             "client_display",
             "application_reference",
             "guarantee_reference",
+            "guarantee_type",
             "completed_at",
             "created_at",
             "updated_at",

@@ -222,15 +222,15 @@ def initiate_release_request(
     Par défaut en brouillon pour permettre le dépôt de la demande client,
     la génération de l'acte et les frais avant soumission.
     """
-    if guarantee.status != Guarantee.Status.ACTIVE:
-        raise ProcessError(
-            "Seule une garantie active peut faire l'objet d'une main levée."
-        )
     from .busy import guarantee_busy
 
     busy = guarantee_busy(guarantee)
     if busy:
         raise ProcessError(busy["message"])
+    if guarantee.status != Guarantee.Status.ACTIVE:
+        raise ProcessError(
+            "Seule une garantie active peut faire l'objet d'une main levée."
+        )
 
     loan_obj, loan_ref = _resolve_loan_ref(guarantee, loan, cbs_loan_reference)
     if not loan_ref:
@@ -913,10 +913,6 @@ def _build_dation_asset_lines(
             raise ProcessError(
                 f"Garantie introuvable pour ce client : {gid}."
             ) from exc
-        if guarantee.status != Guarantee.Status.ACTIVE:
-            raise ProcessError(
-                f"La garantie {guarantee.reference or gid} n'est pas active."
-            )
         if gid in other_dation:
             raise ProcessError(
                 f"La garantie {guarantee.reference or gid} est déjà "
@@ -925,6 +921,10 @@ def _build_dation_asset_lines(
         busy = occupied.get(gid)
         if busy:
             raise ProcessError(busy["message"])
+        if guarantee.status != Guarantee.Status.ACTIVE:
+            raise ProcessError(
+                f"La garantie {guarantee.reference or gid} n'est pas active."
+            )
         value = (
             guarantee.current_value
             or guarantee.value_to_consider

@@ -674,6 +674,7 @@ export interface GuaranteeFormalizationRequest {
   reference: string;
   guarantee: string;
   guarantee_reference: string;
+  guarantee_type?: string | null;
   client?: string | null;
   client_display: string;
   application: string | null;
